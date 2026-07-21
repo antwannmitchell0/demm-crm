@@ -57,23 +57,27 @@ enum ActivityType {
 }
 
 model Organization {
-  id          String       @id @default(uuid())
-  name        String
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  workspaces  Workspace[]
-  memberships Membership[]
-  invitations Invitation[]
+  id            String         @id @default(uuid())
+  name          String
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  workspaces    Workspace[]
+  memberships   Membership[]
+  invitations   Invitation[]
+  businessUnits BusinessUnit[]
+  engrams       Engram[]
 }
 
 model Workspace {
-  id             String          @id @default(uuid())
+  id             String            @id @default(uuid())
   name           String
-  subdomain      String          @unique
+  subdomain      String            @unique
   organizationId String
-  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  businessUnitId String?
+  businessUnit   BusinessUnit?     @relation(fields: [businessUnitId], references: [id])
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
   contacts       Contact[]
   companies      Company[]
   pipelines      Pipeline[]
@@ -83,89 +87,611 @@ model Workspace {
   memberships    Membership[]
   tasks          Task[]
   invitations    Invitation[]
+  bookings       Booking[]
+  equipment      Equipment[]
+  wtaeEvents     WtaeEvent[]
+  candidates     MemoryCandidate[]
+  engrams        Engram[]
+}
+
+model BusinessUnit {
+  id                 String                @id @default(uuid())
+  name               String // "DEMM Marketing", "DEMM Photo Booths", etc.
+  key                String // "MARKETING", "PHOTO_BOOTHS", "WTAE"
+  organizationId     String
+  organization       Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workspaces         Workspace[]
+  profiles           RelationshipProfile[]
+  policies           MemoryAccessPolicy[]
+  originatingConsent ConsentDirective[]    @relation("OriginatingConsent")
+  destinationConsent ConsentDirective[]    @relation("DestinationConsent")
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  engrams            Engram[]
+
+  @@unique([organizationId, key])
+}
+
+enum BookingStatus {
+  INQUIRY
+  QUOTE_SENT
+  CONTRACT_SENT
+  DEPOSIT_PAID
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+}
+
+model Booking {
+  id               String             @id @default(uuid())
+  clientName       String
+  clientEmail      String
+  startTime        DateTime
+  endTime          DateTime
+  location         String
+  packageSelected  String
+  totalPrice       Decimal            @db.Decimal(12, 2)
+  depositPaid      Decimal            @default(0.00) @db.Decimal(12, 2)
+  status           BookingStatus      @default(INQUIRY)
+  workspaceId      String
+  workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  equipment        BookingEquipment[]
+  operatorId       String?
+  operator         User?              @relation(fields: [operatorId], references: [id])
+  wtaeEventId      String?            @unique
+  wtaeEvent        WtaeEvent?         @relation(fields: [wtaeEventId], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  engramGraphEdges EngramGraphEdge[]
+}
+
+model Equipment {
+  id             String             @id @default(uuid())
+  name           String // "Booth Alpha", "Booth Beta", etc.
+  type           String // "IPAD", "DSLR"
+  serialNumber   String             @unique
+  status         String // "ACTIVE", "MAINTENANCE", "INACTIVE"
+  lastInspection DateTime?
+  nextInspection DateTime?
+  workspaceId    String
+  workspace      Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  bookings       BookingEquipment[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+}
+
+model BookingEquipment {
+  bookingId   String
+  booking     Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  equipmentId String
+  equipment   Equipment @relation(fields: [equipmentId], references: [id], onDelete: Cascade)
+
+  @@id([bookingId, equipmentId])
+}
+
+model WtaeEvent {
+  id               String                 @id @default(uuid())
+  name             String
+  eventDate        DateTime
+  organizerName    String
+  organizerEmail   String
+  slug             String                 @unique
+  workspaceId      String
+  workspace        Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  photos           PhotoAsset[]
+  consentRecords   ConsentRecord[]
+  attendees        AttendeeRegistration[]
+  booking          Booking?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  flowers          Flower[]
+  engramGraphEdges EngramGraphEdge[]
+}
+
+model PhotoAsset {
+  id          String        @id @default(uuid())
+  url         String
+  wtaeEventId String
+  wtaeEvent   WtaeEvent     @relation(fields: [wtaeEventId], references: [id], onDelete: Cascade)
+  claims      MomentClaim[]
+  createdAt   DateTime      @default(now())
+}
+
+model AttendeeRegistration {
+  id              String          @id @default(uuid())
+  email           String?
+  phone           String?
+  sessionCode     String          @unique
+  wtaeEventId     String
+  wtaeEvent       WtaeEvent       @relation(fields: [wtaeEventId], references: [id], onDelete: Cascade)
+  consentRecords  ConsentRecord[]
+  momentClaims    MomentClaim[]
+  flowersGiven    Flower[]        @relation("FlowersGiver")
+  flowersReceived Flower[]        @relation("FlowersRecipient")
+  createdAt       DateTime        @default(now())
+}
+
+model ConsentRecord {
+  id                     String               @id @default(uuid())
+  attendeeRegistrationId String
+  attendee               AttendeeRegistration @relation(fields: [attendeeRegistrationId], references: [id], onDelete: Cascade)
+  wtaeEventId            String
+  wtaeEvent              WtaeEvent            @relation(fields: [wtaeEventId], references: [id], onDelete: Cascade)
+  noticeVersion          String // E.g. "v1.0"
+  photoParticipation     Boolean              @default(false)
+  communicationsAllowed  Boolean              @default(false)
+  crossBusinessAllowed   Boolean              @default(false)
+  withdrawalState        Boolean              @default(false)
+  withdrawalTimestamp    DateTime?
+  createdAt              DateTime             @default(now())
+}
+
+model MomentClaim {
+  id                     String               @id @default(uuid())
+  photoAssetId           String
+  photoAsset             PhotoAsset           @relation(fields: [photoAssetId], references: [id], onDelete: Cascade)
+  attendeeRegistrationId String
+  attendee               AttendeeRegistration @relation(fields: [attendeeRegistrationId], references: [id], onDelete: Cascade)
+  flowers                Flower[]
+  createdAt              DateTime             @default(now())
+}
+
+model Flower {
+  id              String               @id @default(uuid())
+  giverId         String
+  giver           AttendeeRegistration @relation("FlowersGiver", fields: [giverId], references: [id])
+  recipientId     String
+  recipient       AttendeeRegistration @relation("FlowersRecipient", fields: [recipientId], references: [id])
+  wtaeEventId     String
+  wtaeEvent       WtaeEvent            @relation(fields: [wtaeEventId], references: [id])
+  momentClaimId   String?
+  momentClaim     MomentClaim?         @relation(fields: [momentClaimId], references: [id])
+  category        String // "TRUST", "EXCELLENCE", "SERVICE"
+  moderationState String // "PENDING", "APPROVED", "FLAGGED"
+  createdAt       DateTime             @default(now())
+}
+
+// // --- DOM26-R Known & Remembered Engine (Revision 6) ---
+
+enum MemoryForm {
+  SEMANTIC
+  EPISODIC
+  PROCEDURAL
+  WORKING
+  GOVERNANCE
+}
+
+enum MemoryTopic {
+  IDENTITY
+  RELATIONSHIP
+  PREFERENCE
+  JOURNEY
+  MILESTONE
+  COMMITMENT
+  SERVICE_CONTEXT
+  ISSUE_AND_RESOLUTION
+}
+
+enum TruthClassification {
+  CONFIRMED
+  OBSERVED
+  INFERRED
+  EXPIRED
+  DISPUTED
+}
+
+enum SensitivityClassification {
+  PUBLIC
+  INTERNAL
+  RESTRICTED
+  CONFIDENTIAL
+}
+
+enum EngramState {
+  ACTIVE
+  EXPIRED
+  DISPUTED
+  DELETED
+}
+
+enum PulseState {
+  NEW
+  ACTIVE
+  GROWING
+  AT_RISK
+  INACTIVE
+  RETURNING
+  ADVOCATE
+}
+
+enum SubjectType {
+  CONTACT
+  COMPANY
+}
+
+enum CandidateState {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum SourceType {
+  AGENT
+  MANUAL
+  EVENT
+}
+
+enum SeverityState {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum SignalState {
+  ACTIVE
+  RESOLVED
+}
+
+enum ConsentStatus {
+  GRANTED
+  WITHDRAWN
+  EXPIRED
+}
+
+enum ConsentChannel {
+  WEB
+  MOBILE
+  EMAIL
+  IN_PERSON
+}
+
+model RelationshipSubject {
+  id        String                @id @default(uuid())
+  type      SubjectType
+  contactId String?               @unique
+  contact   Contact?              @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  companyId String?               @unique
+  company   Company?              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  profiles  RelationshipProfile[]
+  consent   ConsentDirective[]
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+}
+
+model RelationshipProfile {
+  id             String               @id @default(uuid())
+  subjectId      String
+  subject        RelationshipSubject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  businessUnitId String
+  businessUnit   BusinessUnit         @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  pulse          PulseState           @default(NEW)
+  engrams        Engram[]
+  signals        RelationshipSignal[]
+  briefs         RelationshipBrief[]
+  candidates     MemoryCandidate[]
+  pulseHistory   PulseChangeHistory[]
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@unique([subjectId, businessUnitId])
+}
+
+model PulseChangeHistory {
+  id        String              @id @default(uuid())
+  profileId String
+  profile   RelationshipProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  oldPulse  PulseState
+  newPulse  PulseState
+  reason    String
+  actorId   String?
+  createdAt DateTime            @default(now())
+}
+
+model Engram {
+  id                  String                    @id @default(uuid())
+  profileId           String
+  profile             RelationshipProfile       @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  organizationId      String
+  organization        Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  businessUnitId      String
+  businessUnit        BusinessUnit              @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  workspaceId         String?
+  workspace           Workspace?                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  form                MemoryForm
+  topic               MemoryTopic
+  truthClassification TruthClassification
+  sensitivity         SensitivityClassification @default(INTERNAL)
+  state               EngramState               @default(ACTIVE)
+  summary             String
+  structuredContent   Json?
+  evidence            EngramEvidence[]
+  corrections         MemoryCorrection[]
+  graphEdges          EngramGraphEdge[]         @relation("SourceEngram")
+  targetEdges         EngramGraphEdge[]         @relation("TargetEngram")
+  briefs              BriefEvidence[]
+  signals             SignalEvidence[]
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  lastConfirmedAt     DateTime?
+  expiresAt           DateTime?
+}
+
+model EngramSource {
+  id                String              @id @default(uuid())
+  type              SourceType
+  referenceId       String?
+  actorId           String?
+  evidence          EngramEvidence[]
+  candidateEvidence CandidateEvidence[]
+  createdAt         DateTime            @default(now())
+}
+
+model EngramEvidence {
+  id        String       @id @default(uuid())
+  engramId  String
+  engram    Engram       @relation(fields: [engramId], references: [id], onDelete: Cascade)
+  sourceId  String
+  source    EngramSource @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  createdAt DateTime     @default(now())
+
+  @@unique([engramId, sourceId])
+}
+
+model EngramGraphEdge {
+  id               String     @id @default(uuid())
+  sourceEngramId   String
+  sourceEngram     Engram     @relation("SourceEngram", fields: [sourceEngramId], references: [id], onDelete: Cascade)
+  targetEngramId   String?
+  targetEngram     Engram?    @relation("TargetEngram", fields: [targetEngramId], references: [id], onDelete: Cascade)
+  bookingId        String?
+  booking          Booking?   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  wtaeEventId      String?
+  wtaeEvent        WtaeEvent? @relation(fields: [wtaeEventId], references: [id], onDelete: Cascade)
+  relationshipType String // "REPLACES", "CONFLICTS_WITH", "BOOKING_LINK"
+  createdAt        DateTime   @default(now())
+}
+
+model MemoryCandidate {
+  id             String                    @id @default(uuid())
+  profileId      String
+  profile        RelationshipProfile       @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  organizationId String
+  workspaceId    String?
+  workspace      Workspace?                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  form           MemoryForm
+  topic          MemoryTopic
+  proposedTruth  TruthClassification
+  confidence     Decimal                   @db.Decimal(5, 2)
+  sensitivity    SensitivityClassification
+  consentBasis   String
+  summary        String
+  content        Json?
+  expiresAt      DateTime?
+  status         CandidateState            @default(PENDING)
+  approvals      MemoryApproval[]
+  evidence       CandidateEvidence[]
+  createdAt      DateTime                  @default(now())
+}
+
+model CandidateEvidence {
+  id          String          @id @default(uuid())
+  candidateId String
+  candidate   MemoryCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  sourceId    String
+  source      EngramSource    @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  createdAt   DateTime        @default(now())
+
+  @@unique([candidateId, sourceId])
+}
+
+model MemoryApproval {
+  id           String          @id @default(uuid())
+  candidateId  String
+  candidate    MemoryCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  status       CandidateState
+  resolvedById String?
+  resolvedBy   User?           @relation(fields: [resolvedById], references: [id])
+  createdAt    DateTime        @default(now())
+}
+
+model MemoryCorrection {
+  id               String   @id @default(uuid())
+  engramId         String
+  engram           Engram   @relation(fields: [engramId], references: [id], onDelete: Cascade)
+  previousSummary  String
+  previousContent  Json?
+  correctedSummary String
+  correctedContent Json?
+  actorId          String?
+  reason           String
+  createdAt        DateTime @default(now())
+}
+
+model MemoryAccessPolicy {
+  id                   String                      @id @default(uuid())
+  businessUnitId       String
+  businessUnit         BusinessUnit                @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  role                 Role
+  allowedForms         MemoryForm[]
+  allowedTopics        MemoryTopic[]
+  allowedSensitivities SensitivityClassification[]
+  createdAt            DateTime                    @default(now())
+}
+
+model MemoryAuditEvent {
+  id             String   @id @default(uuid())
+  organizationId String
+  businessUnitId String
+  workspaceId    String?
+  profileId      String?
+  engramId       String?
+  candidateId    String?
+  actorType      String // "USER", "AGENT"
+  actorId        String?
+  action         String
+  purpose        String
+  outcome        String
+  correlationId  String
+  metadata       Json?
+  createdAt      DateTime @default(now())
+}
+
+model ConsentDirective {
+  id                     String              @id @default(uuid())
+  subjectId              String
+  subject                RelationshipSubject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  originatingBusinessId  String
+  originatingBusiness    BusinessUnit        @relation("OriginatingConsent", fields: [originatingBusinessId], references: [id])
+  destinationBusinessId  String?
+  destinationBusiness    BusinessUnit?       @relation("DestinationConsent", fields: [destinationBusinessId], references: [id])
+  dataCategory           MemoryTopic
+  purpose                String
+  channel                ConsentChannel
+  noticeVersion          String
+  effectiveDate          DateTime
+  expirationDate         DateTime?
+  withdrawn              Boolean             @default(false)
+  withdrawnAt            DateTime?
+  supersedingDirectiveId String?
+  status                 ConsentStatus       @default(GRANTED)
+  createdAt              DateTime            @default(now())
+}
+
+model RelationshipSignal {
+  id         String              @id @default(uuid())
+  profileId  String
+  profile    RelationshipProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  type       String // "MILESTONE_ALERT", "BROKEN_COMMITMENT"
+  summary    String
+  confidence Decimal             @db.Decimal(5, 2)
+  severity   SeverityState
+  state      SignalState         @default(ACTIVE)
+  ownerId    String?
+  evidence   SignalEvidence[]
+  expiresAt  DateTime?
+  resolvedAt DateTime?
+  createdAt  DateTime            @default(now())
+}
+
+model SignalEvidence {
+  id       String             @id @default(uuid())
+  signalId String
+  signal   RelationshipSignal @relation(fields: [signalId], references: [id], onDelete: Cascade)
+  engramId String
+  engram   Engram             @relation(fields: [engramId], references: [id], onDelete: Cascade)
+
+  @@unique([signalId, engramId])
+}
+
+model RelationshipBrief {
+  id          String                    @id @default(uuid())
+  profileId   String
+  profile     RelationshipProfile       @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  briefText   String
+  generator   String
+  version     String
+  sensitivity SensitivityClassification
+  evidence    BriefEvidence[]
+  generatedAt DateTime                  @default(now())
+  expiresAt   DateTime?
+}
+
+model BriefEvidence {
+  id       String            @id @default(uuid())
+  briefId  String
+  brief    RelationshipBrief @relation(fields: [briefId], references: [id], onDelete: Cascade)
+  engramId String
+  engram   Engram            @relation(fields: [engramId], references: [id], onDelete: Cascade)
+
+  @@unique([briefId, engramId])
 }
 
 model Membership {
-  id             String        @id @default(uuid())
+  id             String       @id @default(uuid())
   userId         String
-  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   organizationId String
-  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   workspaceId    String?
-  workspace      Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  role           Role          @default(USER)
-  permissions    String[]      // Explicit scopes e.g. ["contact:create"]
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  workspace      Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  role           Role         @default(USER)
+  permissions    String[] // Explicit scopes e.g. ["contact:create"]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
   @@unique([userId, organizationId, workspaceId])
 }
 
 model User {
-  id            String          @id @default(uuid())
-  email         String          @unique
-  passwordHash  String
-  firstName     String
-  lastName      String
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
-  memberships   Membership[]
-  contacts      Contact[] // Assigned owner
-  opportunities Opportunity[] // Assigned owner
-  auditLogs     AuditLog[]
-  approvals     AgentApproval[] @relation("ResolverRelation")
-  refreshTokens RefreshToken[]
+  id              String           @id @default(uuid())
+  email           String           @unique
+  passwordHash    String
+  firstName       String
+  lastName        String
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  memberships     Membership[]
+  contacts        Contact[] // Assigned owner
+  opportunities   Opportunity[] // Assigned owner
+  auditLogs       AuditLog[]
+  approvals       AgentApproval[]  @relation("ResolverRelation")
+  refreshTokens   RefreshToken[]
+  bookings        Booking[]
+  memoryApprovals MemoryApproval[]
 }
 
 model RefreshToken {
-  id          String    @id @default(uuid())
-  hashedToken String    @unique
+  id          String   @id @default(uuid())
+  hashedToken String   @unique
   userId      String
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspaceId String?
   expiresAt   DateTime
-  revoked     Boolean   @default(false)
-  createdAt   DateTime  @default(now())
+  revoked     Boolean  @default(false)
+  createdAt   DateTime @default(now())
 }
 
 model Company {
-  id          String    @id @default(uuid())
-  name        String
-  domain      String?
-  industry    String?
-  workspaceId String
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  contacts    Contact[]
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id                  String               @id @default(uuid())
+  name                String
+  domain              String?
+  industry            String?
+  workspaceId         String
+  workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contacts            Contact[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  relationshipSubject RelationshipSubject?
 }
 
 model Contact {
-  id            String          @id @default(uuid())
+  id            String               @id @default(uuid())
   firstName     String
   lastName      String
   emails        String[] // Supports multiple emails
   phones        String[] // Supports multiple phones
   address       Json? // Structured street, city, state, zip, country
   tags          String[]
-  status        ContactStatus   @default(LEAD)
+  status        ContactStatus        @default(LEAD)
   source        String?
-  leadScore     Int             @default(0)
+  leadScore     Int                  @default(0)
   customFields  Json? // User-defined key-values
   aiSummary     String?
   aiRecommends  Json? // Structured recommendations & explanation
   workspaceId   String
-  workspace     Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace     Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   companyId     String?
-  company       Company?        @relation(fields: [companyId], references: [id])
+  company       Company?             @relation(fields: [companyId], references: [id])
   ownerId       String?
-  owner         User?           @relation(fields: [ownerId], references: [id]) // Account manager/salesperson
+  owner         User?                @relation(fields: [ownerId], references: [id]) // Account manager/salesperson
   opportunities Opportunity[]
   notes         Note[]
   activities    Activity[]
   tasks         Task[]
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  subject       RelationshipSubject?
 }
 
 model Pipeline {

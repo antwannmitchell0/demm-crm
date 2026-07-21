@@ -1,0 +1,50 @@
+-- 1. Drop Foreign Keys and Tables
+ALTER TABLE "Workspace" DROP CONSTRAINT IF EXISTS "Workspace_businessUnitId_fkey";
+
+DROP TABLE IF EXISTS "BriefEvidence" CASCADE;
+DROP TABLE IF EXISTS "RelationshipBrief" CASCADE;
+DROP TABLE IF EXISTS "SignalEvidence" CASCADE;
+DROP TABLE IF EXISTS "RelationshipSignal" CASCADE;
+DROP TABLE IF EXISTS "ConsentDirective" CASCADE;
+DROP TABLE IF EXISTS "MemoryAuditEvent" CASCADE;
+DROP TABLE IF EXISTS "MemoryAccessPolicy" CASCADE;
+DROP TABLE IF EXISTS "MemoryCorrection" CASCADE;
+DROP TABLE IF EXISTS "MemoryApproval" CASCADE;
+DROP TABLE IF EXISTS "CandidateEvidence" CASCADE;
+DROP TABLE IF EXISTS "MemoryCandidate" CASCADE;
+DROP TABLE IF EXISTS "EngramGraphEdge" CASCADE;
+DROP TABLE IF EXISTS "EngramEvidence" CASCADE;
+DROP TABLE IF EXISTS "EngramSource" CASCADE;
+DROP TABLE IF EXISTS "Engram" CASCADE;
+DROP TABLE IF EXISTS "PulseChangeHistory" CASCADE;
+DROP TABLE IF EXISTS "RelationshipProfile" CASCADE;
+DROP TABLE IF EXISTS "RelationshipSubject" CASCADE;
+DROP TABLE IF EXISTS "Flower" CASCADE;
+DROP TABLE IF EXISTS "MomentClaim" CASCADE;
+DROP TABLE IF EXISTS "ConsentRecord" CASCADE;
+DROP TABLE IF EXISTS "AttendeeRegistration" CASCADE;
+DROP TABLE IF EXISTS "PhotoAsset" CASCADE;
+DROP TABLE IF EXISTS "WtaeEvent" CASCADE;
+DROP TABLE IF EXISTS "BookingEquipment" CASCADE;
+DROP TABLE IF EXISTS "Equipment" CASCADE;
+DROP TABLE IF EXISTS "Booking" CASCADE;
+DROP TABLE IF EXISTS "BusinessUnit" CASCADE;
+
+-- 2. Drop Columns
+ALTER TABLE "Workspace" DROP COLUMN IF EXISTS "businessUnitId";
+
+-- 3. Drop Custom Enums
+DROP TYPE IF EXISTS "BookingStatus";
+DROP TYPE IF EXISTS "MemoryForm";
+DROP TYPE IF EXISTS "MemoryTopic";
+DROP TYPE IF EXISTS "TruthClassification";
+DROP TYPE IF EXISTS "SensitivityClassification";
+DROP TYPE IF EXISTS "EngramState";
+DROP TYPE IF EXISTS "PulseState";
+DROP TYPE IF EXISTS "SubjectType";
+DROP TYPE IF EXISTS "CandidateState";
+DROP TYPE IF EXISTS "SourceType";
+DROP TYPE IF EXISTS "SeverityState";
+DROP TYPE IF EXISTS "SignalState";
+DROP TYPE IF EXISTS "ConsentStatus";
+DROP TYPE IF EXISTS "ConsentChannel";
