@@ -1,0 +1,240 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  SUPERADMIN
+  ORG_OWNER
+  ORG_ADMIN
+  WORKSPACE_ADMIN
+  AGENT
+  USER
+}
+
+model Organization {
+  id          String       @id @default(uuid())
+  name        String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  workspaces  Workspace[]
+  memberships Membership[]
+}
+
+model Workspace {
+  id             String          @id @default(uuid())
+  name           String
+  subdomain      String          @unique
+  organizationId String
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  contacts       Contact[]
+  companies      Company[]
+  pipelines      Pipeline[]
+  opportunities  Opportunity[]
+  auditLogs      AuditLog[]
+  aiMemories     AIMemory[]
+  memberships    Membership[]
+  tasks          Task[]
+}
+
+model Membership {
+  id             String        @id @default(uuid())
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workspaceId    String?
+  workspace      Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  role           Role          @default(USER)
+  permissions    String[]      // Explicit scopes e.g. ["contact:create"]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@unique([userId, organizationId, workspaceId])
+}
+
+model User {
+  id            String          @id @default(uuid())
+  email         String          @unique
+  passwordHash  String
+  firstName     String
+  lastName      String
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  memberships   Membership[]
+  contacts      Contact[] // Assigned owner
+  opportunities Opportunity[] // Assigned owner
+  auditLogs     AuditLog[]
+  approvals     AgentApproval[] @relation("ResolverRelation")
+}
+
+model Company {
+  id          String    @id @default(uuid())
+  name        String
+  domain      String?
+  industry    String?
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contacts    Contact[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Contact {
+  id            String        @id @default(uuid())
+  firstName     String
+  lastName      String
+  emails        String[] // Supports multiple emails
+  phones        String[] // Supports multiple phones
+  address       Json? // Structured street, city, state, zip, country
+  tags          String[]
+  status        String        @default("LEAD")
+  source        String?
+  leadScore     Int           @default(0)
+  customFields  Json? // User-defined key-values
+  aiSummary     String?
+  aiRecommends  Json? // Structured recommendations & explanation
+  workspaceId   String
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  companyId     String?
+  company       Company?      @relation(fields: [companyId], references: [id])
+  ownerId       String?
+  owner         User?         @relation(fields: [ownerId], references: [id]) // Account manager/salesperson
+  opportunities Opportunity[]
+  notes         Note[]
+  activities    Activity[]
+  tasks         Task[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model Pipeline {
+  id            String        @id @default(uuid())
+  name          String
+  workspaceId   String
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  stages        Stage[]
+  opportunities Opportunity[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model Stage {
+  id            String        @id @default(uuid())
+  name          String
+  order         Int
+  pipelineId    String
+  pipeline      Pipeline      @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  opportunities Opportunity[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model Opportunity {
+  id            String     @id @default(uuid())
+  name          String
+  value         Float      @default(0.0)
+  probability   Int        @default(0)
+  expectedClose DateTime?
+  status        String     @default("OPEN") // OPEN, WON, LOST
+  workspaceId   String
+  workspace     Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  pipelineId    String
+  pipeline      Pipeline   @relation(fields: [pipelineId], references: [id])
+  stageId       String
+  stage         Stage      @relation(fields: [stageId], references: [id])
+  contactId     String?
+  contact       Contact?   @relation(fields: [contactId], references: [id])
+  ownerId       String?
+  owner         User?      @relation(fields: [ownerId], references: [id])
+  aiInsights    String?
+  notes         Note[]
+  activities    Activity[]
+  tasks         Task[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+}
+
+model Task {
+  id            String       @id @default(uuid())
+  title         String
+  description   String?
+  status        String       @default("PENDING") // PENDING, COMPLETED, CANCELLED
+  dueDate       DateTime?
+  workspaceId   String
+  workspace     Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contactId     String?
+  contact       Contact?     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+}
+
+model Note {
+  id            String       @id @default(uuid())
+  content       String
+  contactId     String?
+  contact       Contact?     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  createdAt     DateTime     @default(now())
+}
+
+model Activity {
+  id            String       @id @default(uuid())
+  type          String // CALL, EMAIL, MEETING, SYSTEM_EVENT
+  description   String
+  contactId     String?
+  contact       Contact?     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  createdAt     DateTime     @default(now())
+}
+
+model AuditLog {
+  id          String    @id @default(uuid())
+  actorType   String // USER, AGENT, SYSTEM
+  actorId     String? // User ID or Agent ID
+  action      String // API method name (e.g., createContact)
+  payload     Json // Full input payload
+  response    Json? // Response payload (excluding sensitive info)
+  ipAddress   String?
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id])
+  createdAt   DateTime  @default(now())
+}
+
+model AIMemory {
+  id          String    @id @default(uuid())
+  domain      String // E.g., "sales", "Atlanta workflow"
+  key         String // memory-key
+  value       Json
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model AgentApproval {
+  id            String    @id @default(uuid())
+  toolName      String
+  arguments     Json
+  status        String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  workspaceId   String
+  requestedById String
+  resolvedById  String?
+  resolvedBy    User?     @relation("ResolverRelation", fields: [resolvedById], references: [id])
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
