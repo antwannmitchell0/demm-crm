@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
+import { OpportunityStatus, ContactStatus } from '@prisma/client';
 
 @Injectable()
 export class DashboardService {
@@ -21,7 +22,7 @@ export class DashboardService {
     const openOpps = await this.prisma.opportunity.findMany({
       where: {
         workspaceId,
-        status: 'OPEN',
+        status: OpportunityStatus.OPEN,
       },
     });
 
@@ -30,7 +31,8 @@ export class DashboardService {
     let projectedRevenue = 0;
     let likelyToBookCount = 0;
     openOpps.forEach((opp) => {
-      projectedRevenue += (opp.value * opp.probability) / 100;
+      const numericVal = Number(opp.value);
+      projectedRevenue += (numericVal * opp.probability) / 100;
       if (opp.probability >= 70) {
         likelyToBookCount++;
       }
@@ -41,7 +43,7 @@ export class DashboardService {
     const contactsNeedingFollowup = await this.prisma.contact.count({
       where: {
         workspaceId,
-        status: 'LEAD',
+        status: ContactStatus.LEAD,
         notes: { none: {} },
         activities: { none: {} },
       },

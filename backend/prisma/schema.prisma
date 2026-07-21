@@ -18,6 +18,44 @@ enum Role {
   USER
 }
 
+enum OpportunityStatus {
+  OPEN
+  WON
+  LOST
+}
+
+enum TaskStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+enum ContactStatus {
+  LEAD
+  CONTACTED
+  PROPOSAL
+  CUSTOMER
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ActivityType {
+  CALL
+  EMAIL
+  MEETING
+  SYSTEM_EVENT
+}
+
 model Organization {
   id          String       @id @default(uuid())
   name        String
@@ -76,6 +114,18 @@ model User {
   opportunities Opportunity[] // Assigned owner
   auditLogs     AuditLog[]
   approvals     AgentApproval[] @relation("ResolverRelation")
+  refreshTokens RefreshToken[]
+}
+
+model RefreshToken {
+  id          String    @id @default(uuid())
+  hashedToken String    @unique
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceId String?
+  expiresAt   DateTime
+  revoked     Boolean   @default(false)
+  createdAt   DateTime  @default(now())
 }
 
 model Company {
@@ -91,31 +141,31 @@ model Company {
 }
 
 model Contact {
-  id            String        @id @default(uuid())
+  id            String          @id @default(uuid())
   firstName     String
   lastName      String
   emails        String[] // Supports multiple emails
   phones        String[] // Supports multiple phones
   address       Json? // Structured street, city, state, zip, country
   tags          String[]
-  status        String        @default("LEAD")
+  status        ContactStatus   @default(LEAD)
   source        String?
-  leadScore     Int           @default(0)
+  leadScore     Int             @default(0)
   customFields  Json? // User-defined key-values
   aiSummary     String?
   aiRecommends  Json? // Structured recommendations & explanation
   workspaceId   String
-  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace     Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   companyId     String?
-  company       Company?      @relation(fields: [companyId], references: [id])
+  company       Company?        @relation(fields: [companyId], references: [id])
   ownerId       String?
-  owner         User?         @relation(fields: [ownerId], references: [id]) // Account manager/salesperson
+  owner         User?           @relation(fields: [ownerId], references: [id]) // Account manager/salesperson
   opportunities Opportunity[]
   notes         Note[]
   activities    Activity[]
   tasks         Task[]
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
 }
 
 model Pipeline {
@@ -141,35 +191,35 @@ model Stage {
 }
 
 model Opportunity {
-  id            String     @id @default(uuid())
+  id            String            @id @default(uuid())
   name          String
-  value         Float      @default(0.0)
-  probability   Int        @default(0)
+  value         Decimal           @default(0.00) @db.Decimal(12, 2)
+  probability   Int               @default(0)
   expectedClose DateTime?
-  status        String     @default("OPEN") // OPEN, WON, LOST
+  status        OpportunityStatus @default(OPEN)
   workspaceId   String
-  workspace     Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace     Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   pipelineId    String
-  pipeline      Pipeline   @relation(fields: [pipelineId], references: [id])
+  pipeline      Pipeline          @relation(fields: [pipelineId], references: [id])
   stageId       String
-  stage         Stage      @relation(fields: [stageId], references: [id])
+  stage         Stage             @relation(fields: [stageId], references: [id])
   contactId     String?
-  contact       Contact?   @relation(fields: [contactId], references: [id])
+  contact       Contact?          @relation(fields: [contactId], references: [id])
   ownerId       String?
-  owner         User?      @relation(fields: [ownerId], references: [id])
+  owner         User?             @relation(fields: [ownerId], references: [id])
   aiInsights    String?
   notes         Note[]
   activities    Activity[]
   tasks         Task[]
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
 }
 
 model Task {
   id            String       @id @default(uuid())
   title         String
   description   String?
-  status        String       @default("PENDING") // PENDING, COMPLETED, CANCELLED
+  status        TaskStatus   @default(PENDING)
   dueDate       DateTime?
   workspaceId   String
   workspace     Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -193,7 +243,7 @@ model Note {
 
 model Activity {
   id            String       @id @default(uuid())
-  type          String // CALL, EMAIL, MEETING, SYSTEM_EVENT
+  type          ActivityType @default(SYSTEM_EVENT)
   description   String
   contactId     String?
   contact       Contact?     @relation(fields: [contactId], references: [id], onDelete: Cascade)
@@ -229,28 +279,28 @@ model AIMemory {
 }
 
 model AgentApproval {
-  id            String    @id @default(uuid())
+  id            String         @id @default(uuid())
   toolName      String
   arguments     Json
-  status        String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  status        ApprovalStatus @default(PENDING)
   workspaceId   String
   requestedById String
   resolvedById  String?
-  resolvedBy    User?     @relation("ResolverRelation", fields: [resolvedById], references: [id])
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  resolvedBy    User?          @relation("ResolverRelation", fields: [resolvedById], references: [id])
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 }
 
 model Invitation {
-  id             String       @id @default(uuid())
+  id             String           @id @default(uuid())
   email          String
-  role           Role         @default(USER)
+  role           Role             @default(USER)
   workspaceId    String
-  workspace      Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace      Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   organizationId String
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  token          String       @unique
-  status         String       @default("PENDING") // PENDING, ACCEPTED, EXPIRED
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  token          String           @unique
+  status         InvitationStatus @default(PENDING)
   expiresAt      DateTime
-  createdAt      DateTime     @default(now())
+  createdAt      DateTime         @default(now())
 }

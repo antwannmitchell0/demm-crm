@@ -1,9 +1,30 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
+import { ContactStatus } from '@prisma/client';
 
 @Injectable()
 export class ContactService {
   constructor(private prisma: PrismaService) {}
+
+  private async validateRelations(workspaceId: string, companyId?: string, ownerId?: string) {
+    if (companyId) {
+      const company = await this.prisma.company.findFirst({
+        where: { id: companyId, workspaceId },
+      });
+      if (!company) {
+        throw new ForbiddenException('Relation violation: Company does not belong to this workspace');
+      }
+    }
+
+    if (ownerId) {
+      const owner = await this.prisma.membership.findFirst({
+        where: { userId: ownerId, workspaceId },
+      });
+      if (!owner) {
+        throw new ForbiddenException('Relation violation: Owner does not belong to this workspace');
+      }
+    }
+  }
 
   async create(
     workspaceId: string,
@@ -14,7 +35,7 @@ export class ContactService {
       phones?: string[];
       address?: any;
       tags?: string[];
-      status?: string;
+      status?: ContactStatus;
       source?: string;
       leadScore?: number;
       customFields?: any;
@@ -22,10 +43,13 @@ export class ContactService {
       ownerId?: string;
     },
   ) {
+    await this.validateRelations(workspaceId, data.companyId, data.ownerId);
+
     return this.prisma.contact.create({
       data: {
         ...data,
         workspaceId,
+        status: data.status || ContactStatus.LEAD,
         emails: data.emails || [],
         phones: data.phones || [],
         tags: data.tags || [],
@@ -47,7 +71,7 @@ export class ContactService {
       phones?: string[];
       address?: any;
       tags?: string[];
-      status?: string;
+      status?: ContactStatus;
       source?: string;
       leadScore?: number;
       customFields?: any;
@@ -57,13 +81,14 @@ export class ContactService {
       ownerId?: string;
     },
   ) {
-    // Verify it exists in workspace
     const contact = await this.prisma.contact.findFirst({
       where: { id, workspaceId },
     });
     if (!contact) {
       throw new NotFoundException('Contact not found in this workspace');
     }
+
+    await this.validateRelations(workspaceId, data.companyId, data.ownerId);
 
     return this.prisma.contact.update({
       where: { id },

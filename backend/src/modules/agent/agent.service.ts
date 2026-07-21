@@ -4,24 +4,24 @@ import { ContactService } from '../contact/contact.service';
 import { PipelineService } from '../pipeline/pipeline.service';
 import { OpportunityService } from '../opportunity/opportunity.service';
 import { DashboardService } from '../dashboard/dashboard.service';
+import { redactAuditPayload } from '../../common/utils/audit-redactor';
+import { ApprovalStatus } from '@prisma/client';
 
 @Injectable()
 export class AgentService {
   private toolRegistry = new Map<string, {
     description: string;
-    permissions: string[]; // E.g. ['ORG_OWNER', 'ORG_ADMIN', 'WORKSPACE_ADMIN', 'USER']
+    permissions: string[];
     isHighRisk: (args: any) => boolean;
     handler: (workspaceId: string, userId: string, args: any) => Promise<any>;
   }>();
 
-  // Active execution sessions to allow cancellation
   private activeExecutions = new Map<string, {
     abortController: AbortController;
     toolName: string;
     startedAt: Date;
   }>();
 
-  // Set to track completed sessions
   private completedExecutions = new Set<string>();
 
   constructor(
@@ -35,7 +35,6 @@ export class AgentService {
   }
 
   private registerTools() {
-    // 1. Get Dashboard
     this.toolRegistry.set('getDashboard', {
       description: 'Retrieve the daily executive brief and key performance indicators.',
       permissions: ['ORG_OWNER', 'ORG_ADMIN', 'WORKSPACE_ADMIN', 'USER'],
@@ -46,7 +45,6 @@ export class AgentService {
       },
     });
 
-    // 2. Create Contact
     this.toolRegistry.set('createContact', {
       description: 'Create a new contact record.',
       permissions: ['ORG_OWNER', 'ORG_ADMIN', 'WORKSPACE_ADMIN'],
@@ -56,7 +54,6 @@ export class AgentService {
       },
     });
 
-    // 3. Search Contacts
     this.toolRegistry.set('searchContacts', {
       description: 'Search contacts by name, email, phone, or tags.',
       permissions: ['ORG_OWNER', 'ORG_ADMIN', 'WORKSPACE_ADMIN', 'USER'],
@@ -66,7 +63,6 @@ export class AgentService {
       },
     });
 
-    // 4. Create Pipeline
     this.toolRegistry.set('createPipeline', {
       description: 'Create a new deal pipeline.',
       permissions: ['ORG_OWNER', 'ORG_ADMIN', 'WORKSPACE_ADMIN'],
@@ -76,18 +72,15 @@ export class AgentService {
       },
     });
 
-    // 5. Create Opportunity
     this.toolRegistry.set('createOpportunity', {
       description: 'Create a new deal opportunity.',
       permissions: ['ORG_OWNER', 'ORG_ADMIN', 'WORKSPACE_ADMIN'],
-      // High risk if value is > $5000
       isHighRisk: (args) => (args.value || 0) > 5000,
       handler: async (workspaceId, userId, args) => {
         return this.opportunityService.create(workspaceId, args);
       },
     });
 
-    // 6. Move Opportunity
     this.toolRegistry.set('moveOpportunity', {
       description: 'Move an opportunity to another stage.',
       permissions: ['ORG_OWNER', 'ORG_ADMIN', 'WORKSPACE_ADMIN'],
@@ -110,7 +103,6 @@ export class AgentService {
     return list;
   }
 
-  // Preview plan step (Scenario 3-4)
   async previewPlan(workspaceId: string, userId: string, description: string) {
     const plan = [];
     if (description.toLowerCase().includes('wedding')) {
@@ -127,7 +119,6 @@ export class AgentService {
     };
   }
 
-  // Cancel Execution (Scenario 8) - Best-effort pre-commit cancellation
   async cancelExecution(sessionId: string) {
     const active = this.activeExecutions.get(sessionId);
     if (!active) {
@@ -137,7 +128,6 @@ export class AgentService {
           message: 'Best-effort pre-commit cancellation: pre-commit already resolved.',
         };
       }
-      // Pre-emptively register an aborted controller for this session ID
       const abortController = new AbortController();
       abortController.abort();
       this.activeExecutions.set(sessionId, {
@@ -161,7 +151,6 @@ export class AgentService {
     };
   }
 
-  // Core execution routing
   async executeTool(
     workspaceId: string,
     userId: string,
@@ -175,18 +164,19 @@ export class AgentService {
       throw new NotFoundException(`Tool '${toolName}' not found`);
     }
 
-    // 1. Permission Check
     if (!tool.permissions.includes(userRole)) {
       throw new ForbiddenException(`Access Denied: Role '${userRole}' lacks permission for '${toolName}'`);
     }
 
-    // 2. High Risk / Approval Gate
+    // Scrub sensitive parameters in arguments before staging audit log
+    const sanitizedArgs = redactAuditPayload(args);
+
     if (tool.isHighRisk(args)) {
       const approval = await this.prisma.agentApproval.create({
         data: {
           toolName,
-          arguments: args,
-          status: 'PENDING',
+          arguments: sanitizedArgs,
+          status: ApprovalStatus.PENDING,
           workspaceId,
           requestedById: userId,
         },
@@ -199,7 +189,6 @@ export class AgentService {
       };
     }
 
-    // Session tracking and pre-emptive cancellation detection
     const finalSessionId = sessionId || `session_${Date.now()}`;
     let abortController = new AbortController();
     
@@ -214,35 +203,33 @@ export class AgentService {
       });
     }
 
-    // Create audit log entry
+    // Redact payload before writing AuditLog
     const auditLog = await this.prisma.auditLog.create({
       data: {
         actorType: 'AGENT',
         actorId: userId,
         action: toolName,
-        payload: args,
+        payload: sanitizedArgs,
         workspaceId,
         userId,
       },
     });
 
     try {
-      // Check for pre-emptive cancellation
       if (abortController.signal.aborted) {
         throw new Error('Transaction aborted early via best-effort pre-commit cancellation.');
       }
 
-      // Execute tool
       const result = await tool.handler(workspaceId, userId, args);
 
-      // Clean up session registry
       this.activeExecutions.delete(finalSessionId);
       this.completedExecutions.add(finalSessionId);
 
-      // Update audit log
+      const sanitizedResult = redactAuditPayload(result);
+
       await this.prisma.auditLog.update({
         where: { id: auditLog.id },
-        data: { response: result },
+        data: { response: sanitizedResult },
       });
 
       return {
@@ -266,7 +253,6 @@ export class AgentService {
     }
   }
 
-  // Approve a staged action
   async resolveApproval(workspaceId: string, userId: string, approvalId: string, action: 'APPROVE' | 'REJECT') {
     const approval = await this.prisma.agentApproval.findUnique({
       where: { id: approvalId },
@@ -279,7 +265,7 @@ export class AgentService {
     if (action === 'REJECT') {
       await this.prisma.agentApproval.update({
         where: { id: approvalId },
-        data: { status: 'REJECTED', resolvedById: userId },
+        data: { status: ApprovalStatus.REJECTED, resolvedById: userId },
       });
       return { status: 'REJECTED', message: 'High-risk action rejected by user.' };
     }
@@ -300,7 +286,7 @@ export class AgentService {
 
     await this.prisma.agentApproval.update({
       where: { id: approvalId },
-      data: { status: 'APPROVED', resolvedById: userId },
+      data: { status: ApprovalStatus.APPROVED, resolvedById: userId },
     });
 
     return {
