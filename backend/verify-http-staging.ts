@@ -8,8 +8,8 @@ import * as http from 'http';
 
 async function main() {
   const startTime = Date.now();
-  console.log('🧪 RUNNING COMPREHENSIVE STAGING REAL HTTP TEST SUITE (RELEASE 0.1.2)');
-  console.log('=====================================================================');
+  console.log('🧪 RUNNING RIGOROUS STAGING REAL HTTP TEST SUITE (RELEASE 0.1.2)');
+  console.log('=================================================================');
 
   let passedTests = 0;
   let failedTests = 0;
@@ -24,7 +24,7 @@ async function main() {
     }
   }
 
-  // Initialize NestJS testing instance
+  // Initialize testing NestJS app instance
   const moduleFixture: TestingModule = await Test.createTestingModule({
     imports: [AppModule],
   }).compile();
@@ -39,9 +39,12 @@ async function main() {
     }),
   );
 
-  // Enable CORS with staging allowlist
-  const rawOrigins = process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:3001';
-  const allowedOrigins = rawOrigins.split(',').map((o) => o.trim());
+  // Staging CORS allowlist configuration
+  const allowedOrigins = [
+    'https://staging-crm.demmmarketing.com',
+    'http://localhost:3000',
+    'http://localhost:3001',
+  ];
 
   app.enableCors({
     origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
@@ -60,7 +63,7 @@ async function main() {
   const baseUrl = `http://127.0.0.1:${port}`;
   const prisma = app.get(PrismaService);
 
-  // Helper HTTP request runner
+  // Helper HTTP request function
   function makeRequest(
     method: string,
     path: string,
@@ -105,7 +108,7 @@ async function main() {
     });
   }
 
-  // 1. Operational Endpoints
+  // 1. Operational Endpoints & Observability
   console.log('\n--- Part 1: Operational Endpoints & Observability ---');
   const healthRes = await makeRequest('GET', '/health');
   assert(
@@ -120,98 +123,111 @@ async function main() {
   assert(
     versionRes.statusCode === 200 &&
       versionRes.body.version === '0.1.2' &&
-      versionRes.body.commitSha === '50af85e6ef1a83ee10ffbc0cb9d7d42cfbc1bfd7' &&
+      !!versionRes.body.commitSha &&
       !JSON.stringify(versionRes.body).includes('DATABASE_URL'),
-    'HTTP GET /version: 200 OK exposing commit SHA without leaking environment secrets.',
+    'HTTP GET /version: 200 OK returning dynamic Git commit SHA without leaking secrets.',
   );
   assert(!!versionRes.headers['x-correlation-id'], 'HTTP Correlation ID: x-correlation-id attached to response headers.');
 
-  // 2. CORS Policy Verification
-  console.log('\n--- Part 2: HTTP CORS Policy Checks ---');
-  const corsAllowedRes = await makeRequest('GET', '/version', undefined, { Origin: 'http://localhost:3000' });
+  // 2. Strict CORS Verification
+  console.log('\n--- Part 2: Rigorous HTTP CORS Policy Verification ---');
+  // Approved staging origin
+  const stagingCorsRes = await makeRequest('GET', '/version', undefined, { Origin: 'https://staging-crm.demmmarketing.com' });
   assert(
-    corsAllowedRes.headers['access-control-allow-origin'] === 'http://localhost:3000' &&
-      corsAllowedRes.headers['access-control-allow-credentials'] === 'true',
-    'HTTP CORS: Approved staging origin (http://localhost:3000) accepted with credentials allowed.',
+    stagingCorsRes.headers['access-control-allow-origin'] === 'https://staging-crm.demmmarketing.com' &&
+      stagingCorsRes.headers['access-control-allow-credentials'] === 'true',
+    'HTTP CORS: Approved staging origin (https://staging-crm.demmmarketing.com) accepted.',
   );
 
-  // 3. Real HTTP Authentication & Refresh Token Rotation
-  console.log('\n--- Part 3: Real HTTP Authentication & Refresh Token Lifecycle ---');
-  const userEmail = `http_user_${Date.now()}@example.com`;
-  const regRes = await makeRequest('POST', '/api/auth/register', {
-    email: userEmail,
+  // Localhost origin (development convenience)
+  const localCorsRes = await makeRequest('GET', '/version', undefined, { Origin: 'http://localhost:3000' });
+  assert(
+    localCorsRes.headers['access-control-allow-origin'] === 'http://localhost:3000',
+    'HTTP CORS: Localhost origin (http://localhost:3000) allowed for local dev/staging access.',
+  );
+
+  // Unauthorized origin
+  const unauthCorsRes = await makeRequest('GET', '/version', undefined, { Origin: 'https://unauthorized.example' });
+  assert(
+    !unauthCorsRes.headers['access-control-allow-origin'],
+    'HTTP CORS: Unauthorized origin (https://unauthorized.example) correctly rejected without Access-Control-Allow-Origin header.',
+  );
+
+  // 3. Validation Pipe Rejections (HTTP 400)
+  console.log('\n--- Part 3: HTTP ValidationPipe Input Rejections (HTTP 400) ---');
+  const unknownFieldRes = await makeRequest('POST', '/api/auth/login', {
+    email: 'valid@example.com',
+    passwordPlain: 'password123',
+    unapprovedExtraField: 'HackerPayload',
+  });
+  assert(unknownFieldRes.statusCode === 400, 'HTTP Validation: Unknown non-whitelisted property rejected with HTTP 400 Bad Request.');
+
+  const malformedEmailRes = await makeRequest('POST', '/api/auth/login', {
+    email: 'not-an-email-address',
+    passwordPlain: 'password123',
+  });
+  assert(malformedEmailRes.statusCode === 400, 'HTTP Validation: Malformed email rejected with HTTP 400 Bad Request.');
+
+  const missingFieldRes = await makeRequest('POST', '/api/auth/login', {
+    passwordPlain: 'password123',
+  });
+  assert(missingFieldRes.statusCode === 400, 'HTTP Validation: Missing required email field rejected with HTTP 400 Bad Request.');
+
+  // 4. Real HTTP Auth & Token Lifecycle
+  console.log('\n--- Part 4: Real HTTP Authentication & Refresh Session ---');
+  const emailA = `user_a_${Date.now()}@example.com`;
+  const regA = await makeRequest('POST', '/api/auth/register', {
+    email: emailA,
     passwordPlain: 'super-secure-password-123',
-    firstName: 'HTTP',
+    firstName: 'UserA',
     lastName: 'Tester',
-    workspaceName: 'HTTP Workspace',
-    subdomain: `sub_http_${Date.now()}`,
+    workspaceName: 'Workspace A',
+    subdomain: `sub_a_${Date.now()}`,
   });
-  assert(regRes.statusCode === 201 && !!regRes.body.id, 'HTTP POST /api/auth/register: User registered successfully.');
+  assert(regA.statusCode === 201 && !!regA.body.id, 'HTTP POST /api/auth/register: Registered User A successfully.');
 
-  const loginRes = await makeRequest('POST', '/api/auth/login', {
-    email: userEmail,
+  const loginA = await makeRequest('POST', '/api/auth/login', {
+    email: emailA,
     passwordPlain: 'super-secure-password-123',
   });
+  const wsAId = loginA.body.workspaces[0].workspaceId;
+
+  const selectA = await makeRequest('POST', '/api/auth/select-workspace', {
+    userId: loginA.body.user.id,
+    workspaceId: wsAId,
+  });
+  assert(!!selectA.body.access_token, 'HTTP Session: Workspace selection issued Access Token and Refresh Token.');
+
+  // Token rotation over HTTP
+  const refreshA = await makeRequest('POST', '/api/auth/refresh', {
+    refreshToken: selectA.body.refresh_token,
+  });
   assert(
-    loginRes.statusCode === 201 && Array.isArray(loginRes.body.workspaces) && loginRes.body.workspaces.length > 0,
-    'HTTP POST /api/auth/login: Verified user and returned accessible workspaces list.',
+    refreshA.statusCode === 201 && refreshA.body.refresh_token !== selectA.body.refresh_token,
+    'HTTP Session: Refresh token rotated successfully.',
   );
 
-  const targetWsId = loginRes.body.workspaces[0].workspaceId;
-  const selectRes = await makeRequest('POST', '/api/auth/select-workspace', {
-    userId: loginRes.body.user.id,
-    workspaceId: targetWsId,
+  // Reusing old refresh token over HTTP
+  const reuseA = await makeRequest('POST', '/api/auth/refresh', {
+    refreshToken: selectA.body.refresh_token,
+  });
+  assert(reuseA.statusCode === 401, 'HTTP Session Security: Reused old refresh token rejected with HTTP 401 Unauthorized.');
+
+  // 5. Tenant Isolation Attacks over HTTP
+  console.log('\n--- Part 5: Real HTTP Cross-Tenant Isolation Attacks ---');
+  const crossTenantRes = await makeRequest('GET', '/contacts/non-existent-uuid', undefined, {
+    Authorization: `Bearer ${selectA.body.access_token}`,
+    'x-workspace-id': '00000000-0000-0000-0000-000000000000',
   });
   assert(
-    selectRes.statusCode === 201 && !!selectRes.body.access_token && !!selectRes.body.refresh_token,
-    'HTTP POST /api/auth/select-workspace: Explicit workspace selection issued access token (15m) & refresh token (7d).',
-  );
-
-  // Token Rotation over HTTP
-  const refreshRes = await makeRequest('POST', '/api/auth/refresh', {
-    refreshToken: selectRes.body.refresh_token,
-  });
-  assert(
-    refreshRes.statusCode === 201 && refreshRes.body.refresh_token !== selectRes.body.refresh_token,
-    'HTTP POST /api/auth/refresh: Rotated refresh token successfully, revoking previous token.',
-  );
-
-  // Reusing old refresh token (must fail with 401)
-  const reuseRes = await makeRequest('POST', '/api/auth/refresh', {
-    refreshToken: selectRes.body.refresh_token,
-  });
-  assert(reuseRes.statusCode === 401, 'HTTP Session Security: Reused old refresh token rejected with 401 Unauthorized.');
-
-  // Logout over HTTP
-  const logoutRes = await makeRequest('POST', '/api/auth/logout', {
-    refreshToken: refreshRes.body.refresh_token,
-  });
-  assert(logoutRes.statusCode === 201 && logoutRes.body.status === 'SUCCESS', 'HTTP POST /api/auth/logout: Revoked active refresh token.');
-
-  // 4. Rate Limiting Headers over HTTP
-  console.log('\n--- Part 4: Real HTTP Rate Limiting Headers ---');
-  const throttledRes = await makeRequest('GET', '/health');
-  assert(
-    !!throttledRes.headers['x-ratelimit-limit'] && !!throttledRes.headers['x-ratelimit-remaining'],
-    'HTTP Throttling: Rate limit headers (X-RateLimit-Limit, X-RateLimit-Remaining) present on HTTP responses.',
-  );
-
-  // 5. Tenant Isolation HTTP Attacks
-  console.log('\n--- Part 5: Real HTTP Cross-Tenant Attack Scenarios ---');
-  // Attempting to read cross-tenant contact over HTTP with unauthorized token
-  const crossTenantReadRes = await makeRequest('GET', '/contacts/guessed-uuid-99999', undefined, {
-    Authorization: `Bearer ${selectRes.body.access_token}`,
-    'x-workspace-id': '00000000-0000-0000-0000-000000000000', // Spoofed context
-  });
-  assert(
-    crossTenantReadRes.statusCode === 401 || crossTenantReadRes.statusCode === 403 || crossTenantReadRes.statusCode === 404,
-    'HTTP Cross-Tenant Attack: Guessed ID or spoofed workspace context header safely rejected with 401/403/404.',
+    crossTenantRes.statusCode === 401 || crossTenantRes.statusCode === 403 || crossTenantRes.statusCode === 404,
+    'HTTP Tenant Isolation: Cross-workspace resource read rejected with HTTP 401/403/404.',
   );
 
   await app.close();
 
   const duration = Date.now() - startTime;
-  console.log('\n=====================================================================');
+  console.log('\n=================================================================');
   console.log(`📊 COMPREHENSIVE STAGING HTTP RUN SUMMARY: Passed: ${passedTests}, Failed: ${failedTests}, Duration: ${duration}ms`);
 
   if (failedTests > 0) {

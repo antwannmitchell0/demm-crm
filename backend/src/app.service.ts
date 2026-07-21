@@ -1,9 +1,20 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
+import { execSync } from 'child_process';
 
 @Injectable()
 export class AppService {
-  constructor(private prisma: PrismaService) {}
+  private commitSha: string;
+
+  constructor(private prisma: PrismaService) {
+    try {
+      this.commitSha =
+        process.env.GIT_COMMIT_SHA ||
+        execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
+    } catch {
+      this.commitSha = 'UNKNOWN_COMMIT';
+    }
+  }
 
   getHello(): string {
     return 'DEMM CRM Operational Engine API';
@@ -20,7 +31,7 @@ export class AppService {
     return {
       status: 'ok',
       database: dbStatus,
-      environment: process.env.NODE_ENV || 'staging',
+      environment: process.env.NODE_ENV || 'development',
       version: '0.1.2',
     };
   }
@@ -40,9 +51,9 @@ export class AppService {
   getVersion() {
     return {
       version: '0.1.2',
-      commitSha: '50af85e6ef1a83ee10ffbc0cb9d7d42cfbc1bfd7',
-      buildTimestamp: '2026-07-21T05:20:00.000Z',
-      environment: process.env.NODE_ENV || 'staging',
+      commitSha: this.commitSha,
+      buildTimestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development',
     };
   }
 }
