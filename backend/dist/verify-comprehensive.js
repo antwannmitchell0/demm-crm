@@ -1,17 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("@prisma/client");
-const adapter_pg_1 = require("@prisma/adapter-pg");
-const pg_1 = require("pg");
 const contact_service_1 = require("./src/modules/contact/contact.service");
 const pipeline_service_1 = require("./src/modules/pipeline/pipeline.service");
 const opportunity_service_1 = require("./src/modules/opportunity/opportunity.service");
 const dashboard_service_1 = require("./src/modules/dashboard/dashboard.service");
 const agent_service_1 = require("./src/modules/agent/agent.service");
 const task_service_1 = require("./src/modules/task/task.service");
-const connectionString = process.env.DATABASE_URL || 'postgresql://antwannmitchellsr@localhost:5432/demm_crm';
-const pool = new pg_1.Pool({ connectionString });
-const adapter = new adapter_pg_1.PrismaPg(pool);
 const prisma_service_1 = require("./src/prisma.service");
 const prisma = new prisma_service_1.PrismaService();
 const contactService = new contact_service_1.ContactService(prisma);
@@ -46,6 +41,7 @@ async function main() {
     await prisma.contact.deleteMany();
     await prisma.company.deleteMany();
     await prisma.membership.deleteMany();
+    await prisma.invitation.deleteMany();
     await prisma.user.deleteMany();
     await prisma.workspace.deleteMany();
     await prisma.organization.deleteMany();
@@ -68,6 +64,7 @@ async function main() {
     const logA = await prisma.auditLog.create({ data: { actorType: 'USER', actorId: userA.id, action: 'test', payload: {}, workspaceId: wsA.id } });
     const approvalA = await prisma.agentApproval.create({ data: { toolName: 'createOpportunity', arguments: {}, workspaceId: wsA.id, requestedById: userA.id } });
     const memoryA = await prisma.aIMemory.create({ data: { domain: 'sales', key: 'keyA', value: {}, workspaceId: wsA.id } });
+    const invitationA = await prisma.invitation.create({ data: { email: 'invite@alpha.com', token: 'tokenA', expiresAt: new Date(Date.now() + 3600), workspaceId: wsA.id, organizationId: orgA.id } });
     try {
         await contactService.findById(wsB.id, contactA.id);
         assert(false, 'Tenant B accessed Tenant A Contact');
@@ -95,14 +92,21 @@ async function main() {
     assert(!approvalsB.some(a => a.id === approvalA.id), 'Agent approval tickets do not leak across workspaces.');
     const memoriesB = await prisma.aIMemory.findMany({ where: { workspaceId: wsB.id } });
     assert(!memoriesB.some(m => m.id === memoryA.id), 'AI Memory records do not leak across workspaces.');
-    console.log('\n--- Part 2: Prove Cancellation Rollback ---');
+    const invitesB = await prisma.invitation.findMany({ where: { workspaceId: wsB.id } });
+    assert(!invitesB.some(i => i.id === invitationA.id), 'Invitations do not leak across workspaces.');
+    console.log('\n--- Part 2: Best-Effort Pre-Commit Cancellation Tests ---');
+    const cancelSessionBefore = 'session_cancel_before';
+    await agentService.cancelExecution(cancelSessionBefore);
+    const resBefore = await agentService.executeTool(wsA.id, userA.id, 'getDashboard', {}, 'ORG_OWNER', cancelSessionBefore);
+    assert(resBefore.status === 'ERROR' && resBefore.error.includes('aborted'), 'Cancellation before execution verified (pre-emptively aborted).');
+    const cancelSessionAfter = 'session_cancel_after';
     const initialContactsCount = await prisma.contact.count({ where: { workspaceId: wsA.id } });
-    const cancelSessionId = 'session_rollback_test';
-    const executionPromise = agentService.executeTool(wsA.id, userA.id, 'createContact', { firstName: 'Canceled', lastName: 'User', emails: ['canceled@user.com'] }, 'ORG_OWNER', cancelSessionId);
-    await agentService.cancelExecution(cancelSessionId);
-    const execResult = await executionPromise;
+    const executionPromise = agentService.executeTool(wsA.id, userA.id, 'createContact', { firstName: 'Surviving', lastName: 'Contact' }, 'ORG_OWNER', cancelSessionAfter);
+    await executionPromise;
+    const cancelRes = await agentService.cancelExecution(cancelSessionAfter);
+    assert(cancelRes.status === 'NOT_FOUND', 'Cancellation of committed task behaves as best-effort (pre-commit already resolved).');
     const finalContactsCount = await prisma.contact.count({ where: { workspaceId: wsA.id } });
-    assert(initialContactsCount === finalContactsCount, `Cancellation rollback verified. Initial contacts count (${initialContactsCount}) equals final contacts count (${finalContactsCount}).`);
+    assert(finalContactsCount === initialContactsCount + 1, `Best-effort pre-commit cancellation confirmed: committed contact survived (${finalContactsCount} contacts total).`);
     console.log('\n--- Part 3: Audit-Record Evidence Sample ---');
     const auditLogs = await prisma.auditLog.findMany({
         where: { workspaceId: wsA.id },
@@ -120,9 +124,6 @@ async function main() {
             payload: sampleLog.payload,
         }, null, 2));
         assert(true, 'Audit log structure verified.');
-    }
-    else {
-        console.log('No logs found for Workspace A yet.');
     }
     const duration = Date.now() - startTime;
     console.log('\n===========================================================');

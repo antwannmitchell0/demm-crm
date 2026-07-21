@@ -11,6 +11,7 @@ export declare class AgentService {
     private dashboardService;
     private toolRegistry;
     private activeExecutions;
+    private completedExecutions;
     constructor(prisma: PrismaService, contactService: ContactService, pipelineService: PipelineService, opportunityService: OpportunityService, dashboardService: DashboardService);
     private registerTools;
     getRegisteredTools(): {

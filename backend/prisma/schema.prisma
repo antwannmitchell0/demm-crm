@@ -25,6 +25,7 @@ model Organization {
   updatedAt   DateTime     @updatedAt
   workspaces  Workspace[]
   memberships Membership[]
+  invitations Invitation[]
 }
 
 model Workspace {
@@ -43,6 +44,7 @@ model Workspace {
   aiMemories     AIMemory[]
   memberships    Membership[]
   tasks          Task[]
+  invitations    Invitation[]
 }
 
 model Membership {
@@ -237,4 +239,18 @@ model AgentApproval {
   resolvedBy    User?     @relation("ResolverRelation", fields: [resolvedById], references: [id])
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+}
+
+model Invitation {
+  id             String       @id @default(uuid())
+  email          String
+  role           Role         @default(USER)
+  workspaceId    String
+  workspace      Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  token          String       @unique
+  status         String       @default("PENDING") // PENDING, ACCEPTED, EXPIRED
+  expiresAt      DateTime
+  createdAt      DateTime     @default(now())
 }

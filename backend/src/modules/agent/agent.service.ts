@@ -21,6 +21,9 @@ export class AgentService {
     startedAt: Date;
   }>();
 
+  // Set to track completed sessions
+  private completedExecutions = new Set<string>();
+
   constructor(
     private prisma: PrismaService,
     private contactService: ContactService,
@@ -109,7 +112,6 @@ export class AgentService {
 
   // Preview plan step (Scenario 3-4)
   async previewPlan(workspaceId: string, userId: string, description: string) {
-    // Determine outcomes based on instructions
     const plan = [];
     if (description.toLowerCase().includes('wedding')) {
       plan.push({ action: 'createPipeline', args: { name: 'Wedding Lead Pipeline' } });
@@ -121,23 +123,41 @@ export class AgentService {
     return {
       status: 'PLAN_PREVIEW',
       plan,
-      message: 'Here is my proposed execution plan. Please approve to execute or cancel.',
+      message: 'Proposed execution plan compiled. Approve to execute or cancel.',
     };
   }
 
-  // Cancel Execution (Scenario 8)
+  // Cancel Execution (Scenario 8) - Best-effort pre-commit cancellation
   async cancelExecution(sessionId: string) {
     const active = this.activeExecutions.get(sessionId);
     if (!active) {
-      return { status: 'NOT_FOUND', message: 'No active execution found for this session' };
+      if (this.completedExecutions.has(sessionId)) {
+        return {
+          status: 'NOT_FOUND',
+          message: 'Best-effort pre-commit cancellation: pre-commit already resolved.',
+        };
+      }
+      // Pre-emptively register an aborted controller for this session ID
+      const abortController = new AbortController();
+      abortController.abort();
+      this.activeExecutions.set(sessionId, {
+        abortController,
+        toolName: 'pre-emptive-abort',
+        startedAt: new Date(),
+      });
+      return {
+        status: 'CANCELLED',
+        message: 'Best-effort pre-commit cancellation: pre-emptive abort applied.',
+      };
     }
 
     active.abortController.abort();
     this.activeExecutions.delete(sessionId);
+    this.completedExecutions.add(sessionId);
 
     return {
       status: 'CANCELLED',
-      message: `Agent execution for '${active.toolName}' was cancelled by the user. Transactions rolled back.`,
+      message: `Best-effort pre-commit cancellation: Active run for '${active.toolName}' cancelled.`,
     };
   }
 
@@ -179,14 +199,20 @@ export class AgentService {
       };
     }
 
-    // Create session tracking for cancellation test
+    // Session tracking and pre-emptive cancellation detection
     const finalSessionId = sessionId || `session_${Date.now()}`;
-    const abortController = new AbortController();
-    this.activeExecutions.set(finalSessionId, {
-      abortController,
-      toolName,
-      startedAt: new Date(),
-    });
+    let abortController = new AbortController();
+    
+    const preExisting = this.activeExecutions.get(finalSessionId);
+    if (preExisting) {
+      abortController = preExisting.abortController;
+    } else {
+      this.activeExecutions.set(finalSessionId, {
+        abortController,
+        toolName,
+        startedAt: new Date(),
+      });
+    }
 
     // Create audit log entry
     const auditLog = await this.prisma.auditLog.create({
@@ -201,9 +227,9 @@ export class AgentService {
     });
 
     try {
-      // Check for early cancellation
+      // Check for pre-emptive cancellation
       if (abortController.signal.aborted) {
-        throw new Error('Transaction aborted early');
+        throw new Error('Transaction aborted early via best-effort pre-commit cancellation.');
       }
 
       // Execute tool
@@ -211,6 +237,7 @@ export class AgentService {
 
       // Clean up session registry
       this.activeExecutions.delete(finalSessionId);
+      this.completedExecutions.add(finalSessionId);
 
       // Update audit log
       await this.prisma.auditLog.update({
@@ -224,6 +251,7 @@ export class AgentService {
       };
     } catch (error: any) {
       this.activeExecutions.delete(finalSessionId);
+      this.completedExecutions.add(finalSessionId);
       
       const errorMsg = error.message || 'Workflow execution error';
       await this.prisma.auditLog.update({
@@ -256,7 +284,6 @@ export class AgentService {
       return { status: 'REJECTED', message: 'High-risk action rejected by user.' };
     }
 
-    // Approve: execute the underlying tool
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       include: { memberships: true },

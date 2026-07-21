@@ -24,6 +24,7 @@ let AgentService = class AgentService {
     dashboardService;
     toolRegistry = new Map();
     activeExecutions = new Map();
+    completedExecutions = new Set();
     constructor(prisma, contactService, pipelineService, opportunityService, dashboardService) {
         this.prisma = prisma;
         this.contactService = contactService;
@@ -106,19 +107,36 @@ let AgentService = class AgentService {
         return {
             status: 'PLAN_PREVIEW',
             plan,
-            message: 'Here is my proposed execution plan. Please approve to execute or cancel.',
+            message: 'Proposed execution plan compiled. Approve to execute or cancel.',
         };
     }
     async cancelExecution(sessionId) {
         const active = this.activeExecutions.get(sessionId);
         if (!active) {
-            return { status: 'NOT_FOUND', message: 'No active execution found for this session' };
+            if (this.completedExecutions.has(sessionId)) {
+                return {
+                    status: 'NOT_FOUND',
+                    message: 'Best-effort pre-commit cancellation: pre-commit already resolved.',
+                };
+            }
+            const abortController = new AbortController();
+            abortController.abort();
+            this.activeExecutions.set(sessionId, {
+                abortController,
+                toolName: 'pre-emptive-abort',
+                startedAt: new Date(),
+            });
+            return {
+                status: 'CANCELLED',
+                message: 'Best-effort pre-commit cancellation: pre-emptive abort applied.',
+            };
         }
         active.abortController.abort();
         this.activeExecutions.delete(sessionId);
+        this.completedExecutions.add(sessionId);
         return {
             status: 'CANCELLED',
-            message: `Agent execution for '${active.toolName}' was cancelled by the user. Transactions rolled back.`,
+            message: `Best-effort pre-commit cancellation: Active run for '${active.toolName}' cancelled.`,
         };
     }
     async executeTool(workspaceId, userId, toolName, args, userRole, sessionId) {
@@ -146,12 +164,18 @@ let AgentService = class AgentService {
             };
         }
         const finalSessionId = sessionId || `session_${Date.now()}`;
-        const abortController = new AbortController();
-        this.activeExecutions.set(finalSessionId, {
-            abortController,
-            toolName,
-            startedAt: new Date(),
-        });
+        let abortController = new AbortController();
+        const preExisting = this.activeExecutions.get(finalSessionId);
+        if (preExisting) {
+            abortController = preExisting.abortController;
+        }
+        else {
+            this.activeExecutions.set(finalSessionId, {
+                abortController,
+                toolName,
+                startedAt: new Date(),
+            });
+        }
         const auditLog = await this.prisma.auditLog.create({
             data: {
                 actorType: 'AGENT',
@@ -164,10 +188,11 @@ let AgentService = class AgentService {
         });
         try {
             if (abortController.signal.aborted) {
-                throw new Error('Transaction aborted early');
+                throw new Error('Transaction aborted early via best-effort pre-commit cancellation.');
             }
             const result = await tool.handler(workspaceId, userId, args);
             this.activeExecutions.delete(finalSessionId);
+            this.completedExecutions.add(finalSessionId);
             await this.prisma.auditLog.update({
                 where: { id: auditLog.id },
                 data: { response: result },
@@ -179,6 +204,7 @@ let AgentService = class AgentService {
         }
         catch (error) {
             this.activeExecutions.delete(finalSessionId);
+            this.completedExecutions.add(finalSessionId);
             const errorMsg = error.message || 'Workflow execution error';
             await this.prisma.auditLog.update({
                 where: { id: auditLog.id },
