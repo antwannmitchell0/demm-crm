@@ -8,7 +8,9 @@ export class AppService {
 
   constructor(private prisma: PrismaService) {
     try {
-      this.commitSha = process.env.GIT_COMMIT_SHA || execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
+      this.commitSha =
+        process.env.GIT_COMMIT_SHA ||
+        execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
     } catch {
       this.commitSha = 'UNKNOWN_COMMIT';
     }

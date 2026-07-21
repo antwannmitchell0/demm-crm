@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "verify:backend": "cd backend && npm run lint && npm run typecheck && npm run prisma:validate && npm run prisma:status && npm run test:e2e && npm run test:http && npm run build",
-    "verify:frontend": "cd frontend && npm run lint && npm run typecheck && npm run test && npm run build",
+    "verify:frontend": "cd frontend && npm run lint && npm run typecheck && npm run test:e2e && npm run build",
     "verify": "npm run verify:backend && npm run verify:frontend"
   }
 }

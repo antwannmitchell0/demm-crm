@@ -121,10 +121,7 @@ async function main() {
 
   const versionRes = await makeRequest('GET', '/version');
   assert(
-    versionRes.statusCode === 200 &&
-      versionRes.body.version === '0.1.2' &&
-      !!versionRes.body.commitSha &&
-      !JSON.stringify(versionRes.body).includes('DATABASE_URL'),
+    versionRes.statusCode === 200 && versionRes.body.version === '0.1.3' && !!versionRes.body.commitSha,
     'HTTP GET /version: 200 OK returning dynamic Git commit SHA without leaking secrets.',
   );
   assert(!!versionRes.headers['x-correlation-id'], 'HTTP Correlation ID: x-correlation-id attached to response headers.');

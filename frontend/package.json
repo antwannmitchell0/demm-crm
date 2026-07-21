@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "tsc --noEmit && next build"
+    "test": "tsc --noEmit && next build",
+    "test:e2e": "node ../backend/node_modules/ts-node/dist/bin.js test-pilot-e2e.ts",
+    "verify": "npm run lint && npm run typecheck && npm run test:e2e && npm run build"
   },
   "dependencies": {
     "lucide-react": "^1.25.0",
