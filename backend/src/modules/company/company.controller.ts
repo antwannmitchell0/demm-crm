@@ -1,4 +1,12 @@
-import { Controller, Get, Post, Put, Body, Param, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Body,
+  Param,
+  UseGuards,
+} from '@nestjs/common';
 import { CompanyService } from './company.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { WorkspaceGuard } from '../../common/guards/workspace.guard';
@@ -10,10 +18,7 @@ export class CompanyController {
   constructor(private companyService: CompanyService) {}
 
   @Post()
-  async create(
-    @CurrentWorkspaceId() workspaceId: string,
-    @Body() body: any,
-  ) {
+  async create(@CurrentWorkspaceId() workspaceId: string, @Body() body: any) {
     return this.companyService.create(workspaceId, body);
   }
 

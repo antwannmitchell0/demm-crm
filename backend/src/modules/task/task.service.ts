@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import { TaskStatus } from '@prisma/client';
 
@@ -6,13 +10,19 @@ import { TaskStatus } from '@prisma/client';
 export class TaskService {
   constructor(private prisma: PrismaService) {}
 
-  private async validateRelations(workspaceId: string, contactId?: string, opportunityId?: string) {
+  private async validateRelations(
+    workspaceId: string,
+    contactId?: string,
+    opportunityId?: string,
+  ) {
     if (contactId) {
       const contact = await this.prisma.contact.findFirst({
         where: { id: contactId, workspaceId },
       });
       if (!contact) {
-        throw new ForbiddenException('Relation violation: Contact does not belong to this workspace');
+        throw new ForbiddenException(
+          'Relation violation: Contact does not belong to this workspace',
+        );
       }
     }
 
@@ -21,16 +31,28 @@ export class TaskService {
         where: { id: opportunityId, workspaceId },
       });
       if (!opp) {
-        throw new ForbiddenException('Relation violation: Opportunity does not belong to this workspace');
+        throw new ForbiddenException(
+          'Relation violation: Opportunity does not belong to this workspace',
+        );
       }
     }
   }
 
   async create(
     workspaceId: string,
-    data: { title: string; description?: string; dueDate?: Date; contactId?: string; opportunityId?: string },
+    data: {
+      title: string;
+      description?: string;
+      dueDate?: Date;
+      contactId?: string;
+      opportunityId?: string;
+    },
   ) {
-    await this.validateRelations(workspaceId, data.contactId, data.opportunityId);
+    await this.validateRelations(
+      workspaceId,
+      data.contactId,
+      data.opportunityId,
+    );
 
     return this.prisma.task.create({
       data: {
@@ -44,7 +66,12 @@ export class TaskService {
   async update(
     workspaceId: string,
     id: string,
-    data: { title?: string; description?: string; status?: TaskStatus; dueDate?: Date },
+    data: {
+      title?: string;
+      description?: string;
+      status?: TaskStatus;
+      dueDate?: Date;
+    },
   ) {
     const task = await this.prisma.task.findFirst({
       where: { id, workspaceId },

@@ -23,15 +23,22 @@ async function bootstrap() {
   );
 
   // Environment-driven CORS allowlist
-  const rawOrigins = process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:3001';
+  const rawOrigins =
+    process.env.ALLOWED_ORIGINS ||
+    'http://localhost:3000,http://localhost:3001';
   const allowedOrigins = rawOrigins.split(',').map((o) => o.trim());
 
   app.enableCors({
-    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    origin: (
+      origin: string | undefined,
+      callback: (err: Error | null, allow?: boolean) => void,
+    ) => {
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        callback(new Error(`CORS Violation: Origin '${origin}' is not allowed.`));
+        callback(
+          new Error(`CORS Violation: Origin '${origin}' is not allowed.`),
+        );
       }
     },
     credentials: true,
@@ -39,6 +46,8 @@ async function bootstrap() {
 
   const port = process.env.PORT || 3001;
   await app.listen(port);
-  console.log(`🚀 DEMM CRM Security-Hardened API engine running on port ${port}`);
+  console.log(
+    `🚀 DEMM CRM Security-Hardened API engine running on port ${port}`,
+  );
 }
-bootstrap();
+bootstrap().catch(console.error);

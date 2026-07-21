@@ -1,4 +1,12 @@
-import { Controller, Get, Post, Put, Body, Param, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Body,
+  Param,
+  UseGuards,
+} from '@nestjs/common';
 import { TaskService } from './task.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { WorkspaceGuard } from '../../common/guards/workspace.guard';
@@ -10,10 +18,7 @@ export class TaskController {
   constructor(private taskService: TaskService) {}
 
   @Post()
-  async create(
-    @CurrentWorkspaceId() workspaceId: string,
-    @Body() body: any,
-  ) {
+  async create(@CurrentWorkspaceId() workspaceId: string, @Body() body: any) {
     return this.taskService.create(workspaceId, body);
   }
 

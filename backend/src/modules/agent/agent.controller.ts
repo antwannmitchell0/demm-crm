@@ -11,7 +11,7 @@ export class AgentController {
   constructor(private agentService: AgentService) {}
 
   @Get('tools')
-  async listTools() {
+  listTools() {
     return this.agentService.getRegisteredTools();
   }
 
@@ -23,11 +23,18 @@ export class AgentController {
     @Body('arguments') args: any,
     @Body('sessionId') sessionId?: string,
   ) {
-    return this.agentService.executeTool(workspaceId, user.id, toolName, args, user.role, sessionId);
+    return this.agentService.executeTool(
+      workspaceId,
+      user.id,
+      toolName,
+      args,
+      user.role,
+      sessionId,
+    );
   }
 
   @Post('plan/preview')
-  async previewPlan(
+  previewPlan(
     @CurrentWorkspaceId() workspaceId: string,
     @CurrentUser() user: any,
     @Body('description') description: string,
@@ -36,9 +43,7 @@ export class AgentController {
   }
 
   @Post('execute/cancel')
-  async cancel(
-    @Body('sessionId') sessionId: string,
-  ) {
+  cancel(@Body('sessionId') sessionId: string) {
     return this.agentService.cancelExecution(sessionId);
   }
 

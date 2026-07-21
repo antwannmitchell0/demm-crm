@@ -1,4 +1,13 @@
-import { Controller, Get, Post, Put, Body, Param, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ContactService } from './contact.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { WorkspaceGuard } from '../../common/guards/workspace.guard';
@@ -10,10 +19,7 @@ export class ContactController {
   constructor(private contactService: ContactService) {}
 
   @Post()
-  async create(
-    @CurrentWorkspaceId() workspaceId: string,
-    @Body() body: any,
-  ) {
+  async create(@CurrentWorkspaceId() workspaceId: string, @Body() body: any) {
     return this.contactService.create(workspaceId, body);
   }
 

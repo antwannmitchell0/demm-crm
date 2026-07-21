@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import { Prisma, OpportunityStatus } from '@prisma/client';
 
@@ -20,7 +24,9 @@ export class OpportunityService {
         where: { id: relations.pipelineId, workspaceId },
       });
       if (!pipeline) {
-        throw new ForbiddenException('Relation violation: Pipeline does not belong to this workspace');
+        throw new ForbiddenException(
+          'Relation violation: Pipeline does not belong to this workspace',
+        );
       }
     }
 
@@ -29,7 +35,9 @@ export class OpportunityService {
         where: { id: relations.stageId, pipeline: { workspaceId } },
       });
       if (!stage) {
-        throw new ForbiddenException('Relation violation: Stage does not belong to this workspace');
+        throw new ForbiddenException(
+          'Relation violation: Stage does not belong to this workspace',
+        );
       }
     }
 
@@ -38,7 +46,9 @@ export class OpportunityService {
         where: { id: relations.contactId, workspaceId },
       });
       if (!contact) {
-        throw new ForbiddenException('Relation violation: Contact does not belong to this workspace');
+        throw new ForbiddenException(
+          'Relation violation: Contact does not belong to this workspace',
+        );
       }
     }
 
@@ -47,7 +57,9 @@ export class OpportunityService {
         where: { userId: relations.ownerId, workspaceId },
       });
       if (!owner) {
-        throw new ForbiddenException('Relation violation: Owner does not belong to this workspace');
+        throw new ForbiddenException(
+          'Relation violation: Owner does not belong to this workspace',
+        );
       }
     }
   }
@@ -73,7 +85,10 @@ export class OpportunityService {
       ownerId: data.ownerId,
     });
 
-    const numericValue = data.value !== undefined ? new Prisma.Decimal(data.value.toString()) : new Prisma.Decimal(0.00);
+    const numericValue =
+      data.value !== undefined
+        ? new Prisma.Decimal(data.value.toString())
+        : new Prisma.Decimal(0.0);
 
     return this.prisma.opportunity.create({
       data: {

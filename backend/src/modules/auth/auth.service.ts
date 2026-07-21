@@ -1,4 +1,9 @@
-import { Injectable, UnauthorizedException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  UnauthorizedException,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../prisma.service';
 import * as bcrypt from 'bcrypt';
@@ -125,7 +130,9 @@ export class AuthService {
     });
 
     if (!membership) {
-      throw new ForbiddenException('Access Denied: User is not a member of this workspace');
+      throw new ForbiddenException(
+        'Access Denied: User is not a member of this workspace',
+      );
     }
 
     const payload = {
@@ -183,7 +190,9 @@ export class AuthService {
     });
 
     if (!stored.workspaceId) {
-      throw new UnauthorizedException('Missing workspace context on refresh token');
+      throw new UnauthorizedException(
+        'Missing workspace context on refresh token',
+      );
     }
 
     return this.selectWorkspace(stored.userId, stored.workspaceId);

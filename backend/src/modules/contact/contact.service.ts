@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import { ContactStatus } from '@prisma/client';
 
@@ -6,13 +10,19 @@ import { ContactStatus } from '@prisma/client';
 export class ContactService {
   constructor(private prisma: PrismaService) {}
 
-  private async validateRelations(workspaceId: string, companyId?: string, ownerId?: string) {
+  private async validateRelations(
+    workspaceId: string,
+    companyId?: string,
+    ownerId?: string,
+  ) {
     if (companyId) {
       const company = await this.prisma.company.findFirst({
         where: { id: companyId, workspaceId },
       });
       if (!company) {
-        throw new ForbiddenException('Relation violation: Company does not belong to this workspace');
+        throw new ForbiddenException(
+          'Relation violation: Company does not belong to this workspace',
+        );
       }
     }
 
@@ -21,7 +31,9 @@ export class ContactService {
         where: { userId: ownerId, workspaceId },
       });
       if (!owner) {
-        throw new ForbiddenException('Relation violation: Owner does not belong to this workspace');
+        throw new ForbiddenException(
+          'Relation violation: Owner does not belong to this workspace',
+        );
       }
     }
   }
