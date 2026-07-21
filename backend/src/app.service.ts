@@ -8,9 +8,7 @@ export class AppService {
 
   constructor(private prisma: PrismaService) {
     try {
-      this.commitSha =
-        process.env.GIT_COMMIT_SHA ||
-        execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
+      this.commitSha = process.env.GIT_COMMIT_SHA || execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
     } catch {
       this.commitSha = 'UNKNOWN_COMMIT';
     }
@@ -32,7 +30,7 @@ export class AppService {
       status: 'ok',
       database: dbStatus,
       environment: process.env.NODE_ENV || 'development',
-      version: '0.1.2',
+      version: '0.1.3',
     };
   }
 
@@ -50,7 +48,7 @@ export class AppService {
 
   getVersion() {
     return {
-      version: '0.1.2',
+      version: '0.1.3',
       commitSha: this.commitSha,
       buildTimestamp: new Date().toISOString(),
       environment: process.env.NODE_ENV || 'development',
