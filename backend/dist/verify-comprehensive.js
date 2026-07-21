@@ -7,6 +7,7 @@ const opportunity_service_1 = require("./src/modules/opportunity/opportunity.ser
 const dashboard_service_1 = require("./src/modules/dashboard/dashboard.service");
 const agent_service_1 = require("./src/modules/agent/agent.service");
 const task_service_1 = require("./src/modules/task/task.service");
+const company_service_1 = require("./src/modules/company/company.service");
 const prisma_service_1 = require("./src/prisma.service");
 const prisma = new prisma_service_1.PrismaService();
 const contactService = new contact_service_1.ContactService(prisma);
@@ -94,6 +95,37 @@ async function main() {
     assert(!memoriesB.some(m => m.id === memoryA.id), 'AI Memory records do not leak across workspaces.');
     const invitesB = await prisma.invitation.findMany({ where: { workspaceId: wsB.id } });
     assert(!invitesB.some(i => i.id === invitationA.id), 'Invitations do not leak across workspaces.');
+    const companyService = new company_service_1.CompanyService(prisma);
+    try {
+        await companyService.findById(wsB.id, companyA.id);
+        assert(false, 'Tenant B accessed Tenant A Company');
+    }
+    catch (e) {
+        assert(e.message.includes('not found'), 'Workspace isolation protected Companies from cross-workspace read.');
+    }
+    try {
+        await pipelineService.findById(wsB.id, pipelineA.id);
+        assert(false, 'Tenant B accessed Tenant A Pipeline');
+    }
+    catch (e) {
+        assert(e.message.includes('not found'), 'Workspace isolation protected Pipelines from cross-workspace read.');
+    }
+    try {
+        await pipelineService.addStage(wsB.id, pipelineA.id, 'Illegal Stage', 99);
+        assert(false, 'Tenant B added stage to Tenant A Pipeline');
+    }
+    catch (e) {
+        assert(e.message.includes('not found'), 'Workspace isolation protected Stages from cross-workspace modification.');
+    }
+    const activitiesB = await prisma.activity.findMany({ where: { contact: { workspaceId: wsB.id } } });
+    assert(!activitiesB.some(a => a.id === actA.id), 'Activities timeline does not leak across workspaces.');
+    try {
+        await agentService.executeTool(wsA.id, userB.id, 'createContact', { firstName: 'Hack' }, 'USER');
+        assert(false, 'Agent tool execution allowed cross-workspace actions');
+    }
+    catch (e) {
+        assert(e.message.includes('not a member') || e.message.includes('Denied'), 'Agent Gateway isolation blocks cross-workspace agent execution.');
+    }
     console.log('\n--- Part 2: Best-Effort Pre-Commit Cancellation Tests ---');
     const cancelSessionBefore = 'session_cancel_before';
     await agentService.cancelExecution(cancelSessionBefore);

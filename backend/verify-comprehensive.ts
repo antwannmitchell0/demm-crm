@@ -5,6 +5,7 @@ import { OpportunityService } from './src/modules/opportunity/opportunity.servic
 import { DashboardService } from './src/modules/dashboard/dashboard.service';
 import { AgentService } from './src/modules/agent/agent.service';
 import { TaskService } from './src/modules/task/task.service';
+import { CompanyService } from './src/modules/company/company.service';
 import { PrismaService } from './src/prisma.service';
 
 const prisma = new PrismaService();
@@ -125,6 +126,47 @@ async function main() {
   // Check invitation isolation
   const invitesB = await prisma.invitation.findMany({ where: { workspaceId: wsB.id } });
   assert(!invitesB.some(i => i.id === invitationA.id), 'Invitations do not leak across workspaces.');
+
+  // Test Companies Isolation
+  const companyService = new CompanyService(prisma);
+  try {
+    await companyService.findById(wsB.id, companyA.id);
+    assert(false, 'Tenant B accessed Tenant A Company');
+  } catch (e: any) {
+    assert(e.message.includes('not found'), 'Workspace isolation protected Companies from cross-workspace read.');
+  }
+
+  // Test Pipelines Isolation
+  try {
+    await pipelineService.findById(wsB.id, pipelineA.id);
+    assert(false, 'Tenant B accessed Tenant A Pipeline');
+  } catch (e: any) {
+    assert(e.message.includes('not found'), 'Workspace isolation protected Pipelines from cross-workspace read.');
+  }
+
+  // Test Stages Isolation
+  try {
+    await pipelineService.addStage(wsB.id, pipelineA.id, 'Illegal Stage', 99);
+    assert(false, 'Tenant B added stage to Tenant A Pipeline');
+  } catch (e: any) {
+    assert(e.message.includes('not found'), 'Workspace isolation protected Stages from cross-workspace modification.');
+  }
+
+  // Test Activities Isolation
+  const activitiesB = await prisma.activity.findMany({ where: { contact: { workspaceId: wsB.id } } });
+  assert(!activitiesB.some(a => a.id === actA.id), 'Activities timeline does not leak across workspaces.');
+
+  // Test Agent Executions Isolation
+  try {
+    // User B tries to execute a tool in Workspace A
+    await agentService.executeTool(wsA.id, userB.id, 'createContact', { firstName: 'Hack' }, 'USER');
+    assert(false, 'Agent tool execution allowed cross-workspace actions');
+  } catch (e: any) {
+    assert(e.message.includes('not a member') || e.message.includes('Denied'), 'Agent Gateway isolation blocks cross-workspace agent execution.');
+  }
+  
+  // Need to import CompanyService in verify-comprehensive
+
 
   // 2. Best-Effort Pre-Commit Cancellation Verification
   console.log('\n--- Part 2: Best-Effort Pre-Commit Cancellation Tests ---');
