@@ -1,0 +1,10 @@
+{
+  "name": "demm-crm-root",
+  "version": "0.1.1",
+  "private": true,
+  "scripts": {
+    "verify:backend": "cd backend && npm run verify",
+    "verify:frontend": "cd frontend && npm run build",
+    "verify": "npm run verify:backend && npm run verify:frontend"
+  }
+}

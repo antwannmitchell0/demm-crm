@@ -9,16 +9,13 @@ export function redactAuditPayload(obj: any): any {
 
   const sensitiveKeys = [
     'password',
-    'passwordplain',
-    'passwordhash',
-    'token',
-    'access_token',
-    'refreshtoken',
     'secret',
-    'apikey',
+    'token',
+    'key',
+    'auth',
+    'cookie',
     'bearer',
-    'credentials',
-    'authorization',
+    'credential',
   ];
 
   const redacted: Record<string, any> = {};
