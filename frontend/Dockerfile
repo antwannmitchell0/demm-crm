@@ -11,6 +11,14 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 
+# Signals scripts/verify-production-config.js and
+# scripts/verify-no-localhost-in-bundle.js (npm prebuild/postbuild hooks)
+# to actually enforce their checks. Safe to set here: node_modules was
+# already installed in Stage 1 before this ENV takes effect, so it can't
+# suppress devDependency installation the way setting it before `npm
+# install` would.
+ENV NODE_ENV=production
+
 # NEXT_PUBLIC_* vars are inlined by Next.js at build time, not read at
 # runtime -- setting this on the Cloud Run *service* does nothing. It must
 # be present here, before `next build` runs, or the bundle silently keeps

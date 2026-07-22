@@ -4,12 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/verify-production-config.js",
     "build": "next build",
+    "postbuild": "node scripts/verify-no-localhost-in-bundle.js",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "tsc --noEmit && next build",
     "test:e2e": "node ../backend/node_modules/ts-node/dist/bin.js test-pilot-e2e.ts",
+    "test:build-guard": "node scripts/test-build-guard.js",
     "verify": "npm run lint && npm run typecheck && npm run test:e2e && npm run build"
   },
   "dependencies": {

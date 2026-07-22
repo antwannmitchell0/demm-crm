@@ -10,6 +10,11 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Plain Node/CommonJS build-tooling scripts (npm prebuild/postbuild
+    // hooks + their test runner), not part of the Next.js app bundle --
+    // this package.json has no "type": "module", so require() here is the
+    // correct, portable choice, not a lint violation.
+    "scripts/**",
   ]),
   {
     rules: {
