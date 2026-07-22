@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  ConflictException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
@@ -258,6 +259,20 @@ export class OfferService {
    *   - Any state -> itself: a no-op is not a transition; rejected so
    *     callers get a clear signal their state machine assumption is wrong
    *     rather than a silently-swallowed no-op.
+   *
+   * One-sellable-version-per-key invariant: promoting an offer to ACTIVE
+   * additionally requires that no OTHER offer sharing the same
+   * `businessUnitId` + `key` is currently ACTIVE. Without this, a material
+   * update on an ACTIVE offer creates a new DRAFT version (see `update()`)
+   * alongside the still-ACTIVE original, and nothing would stop someone
+   * from promoting that new version while the old one is still live --
+   * leaving two different price points simultaneously "the" active offer
+   * for the same key, which the rest of the design (and the Task 10 admin
+   * UI) assumes can't happen. Rather than silently auto-retiring the
+   * sibling as a side effect, this throws a 409 ConflictException and
+   * requires an explicit retire-then-promote flow -- matches this
+   * codebase's preference for explicit failures over implicit fallback
+   * behavior.
    */
   async setLifecycle(
     businessUnitId: string,
@@ -275,6 +290,22 @@ export class OfferService {
       throw new BadRequestException(
         `Cannot transition offer from ${current.lifecycleState} to ${state}`,
       );
+    }
+
+    if (state === OfferLifecycleState.ACTIVE) {
+      const activeSibling = await this.prisma.offer.findFirst({
+        where: {
+          businessUnitId,
+          key: current.key,
+          lifecycleState: OfferLifecycleState.ACTIVE,
+          id: { not: current.id },
+        },
+      });
+      if (activeSibling) {
+        throw new ConflictException(
+          `Offer ${activeSibling.id} is already ACTIVE for key ${current.key}; retire it first before promoting this version`,
+        );
+      }
     }
 
     return this.prisma.offer.update({
