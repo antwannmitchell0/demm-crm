@@ -826,7 +826,7 @@ model Opportunity {
 model Offer {
   id                     String              @id @default(uuid())
   businessUnitId         String
-  businessUnit           BusinessUnit        @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  businessUnit           BusinessUnit        @relation(fields: [businessUnitId], references: [id], onDelete: Restrict)
   key                    String
   version                Int                 @default(1)
   name                   String
