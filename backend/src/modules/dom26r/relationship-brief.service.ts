@@ -41,14 +41,21 @@ export class RelationshipBriefService {
       );
     }
 
-    // Every engram cited as evidence must belong to the same Business Unit —
-    // a brief can never smuggle another business's memory across the boundary.
+    // Every engram cited as evidence must belong to the SAME profile as the
+    // brief -- not merely the same Business Unit. Without this, a brief about
+    // one person could cite another person's memory just because they share
+    // a Business Unit, which is a real cross-person data leak, not a
+    // Business Unit boundary issue.
     const engrams = await this.prisma.engram.findMany({
-      where: { id: { in: input.engramIds }, businessUnitId },
+      where: {
+        id: { in: input.engramIds },
+        businessUnitId,
+        profileId: profile.id,
+      },
     });
     if (engrams.length !== input.engramIds.length) {
       throw new ForbiddenException(
-        'One or more evidence engrams are outside this Business Unit',
+        'One or more evidence engrams are outside this Business Unit or belong to a different relationship profile',
       );
     }
 

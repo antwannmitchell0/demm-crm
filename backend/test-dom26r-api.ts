@@ -108,6 +108,14 @@ async function runApiTests() {
   const forgotten = await forgetRes.json();
   check('Forget endpoint redacts summary', forgotten.summary === 'REDACTED / FORGOTTEN' && forgotten.structuredContent === null);
 
+  // --- A forgotten engram must not be revivable via correction ---
+  const correctForgottenRes = await fetch(`${base}/dom26r/engrams/${engram.id}/correct`, {
+    method: 'POST',
+    headers: headersFor(wsMktg.id),
+    body: JSON.stringify({ correctedSummary: 'Un-redacted attempt', reason: 'test' }),
+  });
+  check('Correcting a forgotten (DELETED) engram is rejected', correctForgottenRes.status === 403);
+
   // --- Memory Candidate -> Approve -> Engram promotion via API ---
   const candidateRes = await fetch(`${base}/dom26r/memory-candidates`, {
     method: 'POST',
@@ -175,6 +183,37 @@ async function runApiTests() {
   });
   const brief = await briefRes.json();
   check('POST /dom26r/relationship-briefs generates brief', !!brief.id);
+
+  // --- A brief must not be able to cite another person's engram, even within the same Business Unit ---
+  const otherContact = await prisma.contact.create({ data: { firstName: 'Other', lastName: 'Person', workspaceId: wsMktg.id } });
+  const otherEngramRes = await fetch(`${base}/dom26r/engrams`, {
+    method: 'POST',
+    headers: headersFor(wsMktg.id),
+    body: JSON.stringify({
+      subjectType: SubjectType.CONTACT,
+      subjectRefId: otherContact.id,
+      form: MemoryForm.SEMANTIC,
+      topic: MemoryTopic.PREFERENCE,
+      truthClassification: TruthClassification.CONFIRMED,
+      sensitivity: SensitivityClassification.INTERNAL,
+      summary: 'Belongs to a different person entirely.',
+      sources: [{ type: SourceType.MANUAL }],
+    }),
+  });
+  const otherEngram = await otherEngramRes.json();
+  const crossProfileBriefRes = await fetch(`${base}/dom26r/relationship-briefs`, {
+    method: 'POST',
+    headers: headersFor(wsMktg.id),
+    body: JSON.stringify({
+      profileId: profile!.id,
+      briefText: 'Attempting to smuggle another person\'s memory in.',
+      generator: 'test-suite',
+      version: 'v1',
+      sensitivity: SensitivityClassification.PUBLIC,
+      engramIds: [otherEngram.id],
+    }),
+  });
+  check('Brief generation rejects evidence engrams from a different relationship profile', crossProfileBriefRes.status === 403);
 
   const internalViewRes = await fetch(`${base}/dom26r/relationship-briefs/${brief.id}?view=INTERNAL_AGENT`, { headers: headersFor(wsMktg.id) });
   const internalView = await internalViewRes.json();

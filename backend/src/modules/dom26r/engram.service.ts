@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import { Dom26rAuditService } from './dom26r-audit.service';
 import { RelationshipProfileService } from './relationship-profile.service';
@@ -130,6 +134,15 @@ export class EngramService {
     reason: string,
   ) {
     const engram = await this.findByIdScoped(businessUnitId, id);
+
+    if (engram.state === 'DELETED') {
+      // A forgotten engram's redaction is the guarantee, not a draft state --
+      // "correcting" it would silently un-redact private content and defeat
+      // the right-to-be-forgotten workflow.
+      throw new ForbiddenException(
+        'This engram has been forgotten and cannot be corrected',
+      );
+    }
 
     const [correction, updated] = await this.prisma.$transaction([
       this.prisma.memoryCorrection.create({
