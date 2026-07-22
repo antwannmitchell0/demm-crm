@@ -1,0 +1,96 @@
+# DEMM CRM staging build + deploy pipeline.
+#
+# This did not exist before 2026-07-22 -- prior "staging deployment" commits
+# (e.g. 71756d8) shipped Dockerfiles and a verify script but no build/deploy
+# automation, which is why the live backend's /version endpoint returns
+# UNKNOWN_COMMIT and the live frontend was still running a build compiled
+# before NEXT_PUBLIC_API_URL existed in source. This pipeline embeds the real
+# commit SHA and the real backend URL as build-time arguments, matching
+# Build Spec Phase 0 requirement #8 and acceptance criterion "a documented
+# command or pipeline reproduces the deployment."
+#
+# Invoke with:
+#   gcloud builds submit --config=cloudbuild.yaml \
+#     --project=gen-lang-client-0096028843 \
+#     --substitutions=_GIT_COMMIT_SHA=$(git rev-parse HEAD)
+#
+# _NEXT_PUBLIC_API_URL and _REGION below default to the current known-good
+# staging values and normally don't need overriding.
+
+substitutions:
+  _GIT_COMMIT_SHA: 'UNKNOWN_COMMIT'
+  _NEXT_PUBLIC_API_URL: 'https://demm-crm-backend-staging-431876670120.us-east1.run.app'
+  _REGION: 'us-east1'
+  _REPO: 'us-east1-docker.pkg.dev/$PROJECT_ID/demm-crm-staging-repo'
+
+steps:
+  # --- Backend ---
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-backend
+    args:
+      - build
+      - '--build-arg'
+      - 'GIT_COMMIT_SHA=${_GIT_COMMIT_SHA}'
+      - '-t'
+      - '${_REPO}/backend:${_GIT_COMMIT_SHA}'
+      - '-t'
+      - '${_REPO}/backend:staging-latest'
+      - './backend'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-backend
+    args: ['push', '--all-tags', '${_REPO}/backend']
+    waitFor: ['build-backend']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-backend
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - demm-crm-backend-staging
+      - '--image=${_REPO}/backend:${_GIT_COMMIT_SHA}'
+      - '--region=${_REGION}'
+      - '--project=$PROJECT_ID'
+      - '--quiet'
+    waitFor: ['push-backend']
+
+  # --- Frontend ---
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-frontend
+    args:
+      - build
+      - '--build-arg'
+      - 'NEXT_PUBLIC_API_URL=${_NEXT_PUBLIC_API_URL}'
+      - '-t'
+      - '${_REPO}/frontend:${_GIT_COMMIT_SHA}'
+      - '-t'
+      - '${_REPO}/frontend:staging-latest'
+      - './frontend'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-frontend
+    args: ['push', '--all-tags', '${_REPO}/frontend']
+    waitFor: ['build-frontend']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-frontend
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - demm-crm-frontend-staging
+      - '--image=${_REPO}/frontend:${_GIT_COMMIT_SHA}'
+      - '--region=${_REGION}'
+      - '--project=$PROJECT_ID'
+      - '--quiet'
+    waitFor: ['push-frontend']
+
+images:
+  - '${_REPO}/backend:${_GIT_COMMIT_SHA}'
+  - '${_REPO}/backend:staging-latest'
+  - '${_REPO}/frontend:${_GIT_COMMIT_SHA}'
+  - '${_REPO}/frontend:staging-latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

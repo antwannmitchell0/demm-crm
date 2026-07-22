@@ -21,6 +21,12 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
+# Embeds the real commit at build time -- app.service.ts falls back to
+# `git rev-parse HEAD`, which fails inside this image (no .git copied in)
+# and silently returns UNKNOWN_COMMIT without this.
+ARG GIT_COMMIT_SHA=UNKNOWN_COMMIT
+ENV GIT_COMMIT_SHA=$GIT_COMMIT_SHA
+
 # Security: create non-root user
 USER node
 

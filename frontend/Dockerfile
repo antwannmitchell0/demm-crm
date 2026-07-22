@@ -10,6 +10,14 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+
+# NEXT_PUBLIC_* vars are inlined by Next.js at build time, not read at
+# runtime -- setting this on the Cloud Run *service* does nothing. It must
+# be present here, before `next build` runs, or the bundle silently keeps
+# whatever fallback is in source (previously the hardcoded localhost URL).
+ARG NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+
 RUN npm run build
 
 # --- Stage 3: Production Runner ---
