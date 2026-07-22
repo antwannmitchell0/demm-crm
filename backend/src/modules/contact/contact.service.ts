@@ -121,6 +121,10 @@ export class ContactService {
         notes: { orderBy: { createdAt: 'desc' } },
         activities: { orderBy: { createdAt: 'desc' } },
         opportunities: true,
+        // Lets the frontend tell "still a lead" from "already converted"
+        // without a second round trip, and gives it the ClientAccount id
+        // needed to fetch the Marketing client detail + Relationship Brief.
+        clientAccounts: true,
       },
     });
     if (!contact) {

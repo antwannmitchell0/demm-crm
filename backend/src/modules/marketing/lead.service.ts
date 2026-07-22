@@ -104,6 +104,7 @@ export class LeadService {
       },
       include: {
         company: true,
+        owner: true,
         tasks: {
           where: { status: TaskStatus.PENDING },
           orderBy: { createdAt: 'asc' },

@@ -647,6 +647,27 @@ async function runApiTests() {
   await prisma.relationshipBrief.deleteMany({
     where: { profile: { businessUnitId: buMktg.id } },
   });
+  // EngramSource has no businessUnitId of its own -- collect exactly the
+  // source ids THIS test created (via its evidence rows) before deleting
+  // those evidence rows, so the final engramSource cleanup is scoped to
+  // this run instead of a bare deleteMany({}) that would also delete any
+  // other session's or worktree's still-in-use EngramSource rows sharing
+  // this local DB.
+  const candidateEvidenceRows = await prisma.candidateEvidence.findMany({
+    where: { candidate: { profile: { businessUnitId: buMktg.id } } },
+    select: { sourceId: true },
+  });
+  const engramEvidenceRows = await prisma.engramEvidence.findMany({
+    where: { engram: { businessUnitId: buMktg.id } },
+    select: { sourceId: true },
+  });
+  const ownedSourceIds = [
+    ...new Set([
+      ...candidateEvidenceRows.map((r) => r.sourceId),
+      ...engramEvidenceRows.map((r) => r.sourceId),
+    ]),
+  ];
+
   await prisma.candidateEvidence.deleteMany({
     where: { candidate: { profile: { businessUnitId: buMktg.id } } },
   });
@@ -660,7 +681,9 @@ async function runApiTests() {
     where: { engram: { businessUnitId: buMktg.id } },
   });
   await prisma.engram.deleteMany({ where: { businessUnitId: buMktg.id } });
-  await prisma.engramSource.deleteMany({});
+  await prisma.engramSource.deleteMany({
+    where: { id: { in: ownedSourceIds } },
+  });
   await prisma.relationshipProfile.deleteMany({
     where: { businessUnitId: buMktg.id },
   });
