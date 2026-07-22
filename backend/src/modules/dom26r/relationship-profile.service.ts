@@ -1,4 +1,8 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import { SubjectType } from '@prisma/client';
 
@@ -18,7 +22,11 @@ export class RelationshipProfileService {
     subjectType: SubjectType,
     subjectRefId: string,
   ) {
-    const subject = await this.getOrCreateSubject(subjectType, subjectRefId);
+    const subject = await this.getOrCreateSubject(
+      businessUnitId,
+      subjectType,
+      subjectRefId,
+    );
 
     const existing = await this.prisma.relationshipProfile.findUnique({
       where: {
@@ -35,11 +43,30 @@ export class RelationshipProfileService {
     });
   }
 
+  /**
+   * A Contact/Company id is caller-supplied. Without validating it belongs to
+   * a Workspace inside the CALLER's own Business Unit, any authenticated user
+   * could link an arbitrary Contact/Company from a different Business Unit --
+   * or a different Organization entirely -- into their own Relationship
+   * Brain, permanently. This check is the only thing standing between
+   * DOM26-R and that cross-tenant leak.
+   */
   private async getOrCreateSubject(
+    businessUnitId: string,
     subjectType: SubjectType,
     subjectRefId: string,
   ) {
     if (subjectType === SubjectType.CONTACT) {
+      const contact = await this.prisma.contact.findFirst({
+        where: { id: subjectRefId, workspace: { businessUnitId } },
+        select: { id: true },
+      });
+      if (!contact) {
+        throw new ForbiddenException(
+          'Contact does not belong to this Business Unit',
+        );
+      }
+
       const existing = await this.prisma.relationshipSubject.findUnique({
         where: { contactId: subjectRefId },
       });
@@ -50,6 +77,16 @@ export class RelationshipProfileService {
     }
 
     if (subjectType === SubjectType.COMPANY) {
+      const company = await this.prisma.company.findFirst({
+        where: { id: subjectRefId, workspace: { businessUnitId } },
+        select: { id: true },
+      });
+      if (!company) {
+        throw new ForbiddenException(
+          'Company does not belong to this Business Unit',
+        );
+      }
+
       const existing = await this.prisma.relationshipSubject.findUnique({
         where: { companyId: subjectRefId },
       });

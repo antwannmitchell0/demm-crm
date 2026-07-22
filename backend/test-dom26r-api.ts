@@ -63,6 +63,9 @@ async function runApiTests() {
   const contact = await prisma.contact.create({
     data: { firstName: 'Bob', lastName: 'Miller', emails: ['bob@example.com'], workspaceId: wsMktg.id },
   });
+  const photoOnlyContact = await prisma.contact.create({
+    data: { firstName: 'Photo', lastName: 'Only', emails: ['photo-only@example.com'], workspaceId: wsPhoto.id },
+  });
 
   const token = jwt.sign(
     { sub: user.id, email: user.email, workspaceId: wsMktg.id },
@@ -94,6 +97,23 @@ async function runApiTests() {
   const engram = await engramRes.json();
   check('POST /dom26r/engrams creates engram (201/200)', engramRes.status < 300 && !!engram.id);
   check('Created engram has 1 evidence source', engram.evidence?.length === 1);
+
+  // --- IDOR: cannot link a Contact from a different Business Unit into your own Relationship Brain ---
+  const idorEngramRes = await fetch(`${base}/dom26r/engrams`, {
+    method: 'POST',
+    headers: headersFor(wsMktg.id),
+    body: JSON.stringify({
+      subjectType: SubjectType.CONTACT,
+      subjectRefId: photoOnlyContact.id,
+      form: MemoryForm.SEMANTIC,
+      topic: MemoryTopic.PREFERENCE,
+      truthClassification: TruthClassification.CONFIRMED,
+      sensitivity: SensitivityClassification.INTERNAL,
+      summary: 'Attempting to link a foreign-BU contact.',
+      sources: [{ type: SourceType.MANUAL }],
+    }),
+  });
+  check('Cannot create an engram against a Contact from a different Business Unit', idorEngramRes.status === 403);
 
   // --- Cross-business isolation over HTTP: Photo Booths workspace must not see the Marketing engram ---
   const crossListRes = await fetch(`${base}/dom26r/engrams`, { headers: headersFor(wsPhoto.id) });
@@ -146,6 +166,24 @@ async function runApiTests() {
   const promotedFetchRes = await fetch(`${base}/dom26r/engrams/${promoted.id}`, { headers: headersFor(wsMktg.id) });
   const promotedFetched = await promotedFetchRes.json();
   check('Promoted engram carries forward both evidence sources', promotedFetched.evidence?.length === 2);
+
+  // --- Consent forgery: cannot grant consent for a subject with no existing relationship in this Business Unit ---
+  const strangerSubject = await prisma.relationshipSubject.create({
+    data: { type: SubjectType.CONTACT, contactId: photoOnlyContact.id },
+  });
+  const forgedConsentRes = await fetch(`${base}/dom26r/consent-directives`, {
+    method: 'POST',
+    headers: headersFor(wsMktg.id),
+    body: JSON.stringify({
+      subjectId: strangerSubject.id,
+      dataCategory: MemoryTopic.PREFERENCE,
+      purpose: 'MARKETING_PROMOTION',
+      channel: ConsentChannel.WEB,
+      noticeVersion: 'v1.0',
+      effectiveDate: new Date().toISOString(),
+    }),
+  });
+  check('Cannot record consent for a subject with no relationship profile in this Business Unit', forgedConsentRes.status === 400);
 
   // --- Consent Directive: grant then withdraw via API ---
   const consentRes = await fetch(`${base}/dom26r/consent-directives`, {

@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import { Dom26rAuditService } from './dom26r-audit.service';
@@ -26,7 +27,14 @@ export class ConsentDirectiveService {
   ) {}
 
   /** A Business Unit may only originate consent on its own behalf. Sharing TO
-   * another business is the one place cross-BU reference is legitimate. */
+   * another business is the one place cross-BU reference is legitimate.
+   *
+   * A Business Unit may only RECORD consent for a subject it already has a
+   * relationship with (a RelationshipProfile). Without this check, any
+   * authenticated caller could fabricate a GRANTED consent directive for a
+   * person their Business Unit has never actually interacted with -- a
+   * forged compliance record, not a data leak, but just as dangerous the
+   * moment anything (e.g. isSharingAllowed) acts on it. */
   async create(
     organizationId: string,
     businessUnitId: string,
@@ -34,6 +42,20 @@ export class ConsentDirectiveService {
     correlationId: string,
     input: CreateConsentInput,
   ) {
+    const profile = await this.prisma.relationshipProfile.findUnique({
+      where: {
+        subjectId_businessUnitId: {
+          subjectId: input.subjectId,
+          businessUnitId,
+        },
+      },
+    });
+    if (!profile) {
+      throw new BadRequestException(
+        'No relationship exists between this Business Unit and this subject; consent cannot be recorded for an unrelated person',
+      );
+    }
+
     const directive = await this.prisma.consentDirective.create({
       data: {
         subjectId: input.subjectId,

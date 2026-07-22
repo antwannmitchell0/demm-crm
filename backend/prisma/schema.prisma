@@ -540,7 +540,7 @@ model MemoryAuditEvent {
 model ConsentDirective {
   id                     String              @id @default(uuid())
   subjectId              String
-  subject                RelationshipSubject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  subject                RelationshipSubject @relation(fields: [subjectId], references: [id], onDelete: Restrict)
   originatingBusinessId  String
   originatingBusiness    BusinessUnit        @relation("OriginatingConsent", fields: [originatingBusinessId], references: [id])
   destinationBusinessId  String?
