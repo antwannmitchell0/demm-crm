@@ -13,7 +13,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: { sub: string; email: string; workspaceId: string }) {
+  async validate(payload: {
+    sub: string;
+    email: string;
+    workspaceId?: string;
+  }) {
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
       include: { memberships: true },
@@ -21,6 +25,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (!user) {
       throw new UnauthorizedException('User not found');
     }
-    return user;
+    // The workspace the user authenticated into (set by selectWorkspace/
+    // refreshToken, and only after verifying real membership at issuance
+    // time). WorkspaceGuard treats this as a fallback when no per-request
+    // x-workspace-id header is sent -- it is re-validated against current
+    // membership state on every request, never trusted blindly.
+    return { ...user, tokenWorkspaceId: payload.workspaceId };
   }
 }
