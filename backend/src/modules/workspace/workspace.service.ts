@@ -1,5 +1,6 @@
 import { Injectable, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
+import { resolveAuthorizedWorkspace } from '../../common/guards/workspace-access.util';
 
 @Injectable()
 export class WorkspaceService {
@@ -63,6 +64,14 @@ export class WorkspaceService {
         },
       },
     });
+  }
+
+  /** Same as findById, but only after confirming the caller is actually
+   * authorized to see this Workspace (direct membership, or an org-wide
+   * role in the same Organization). Never an anonymous/arbitrary lookup. */
+  async findByIdAuthorized(user: any, id: string) {
+    await resolveAuthorizedWorkspace(this.prisma, user, id);
+    return this.findById(id);
   }
 
   async findAll() {

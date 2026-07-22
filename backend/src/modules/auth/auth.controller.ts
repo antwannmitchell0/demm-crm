@@ -7,6 +7,7 @@ import {
   Request,
   UnauthorizedException,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import {
@@ -20,6 +21,11 @@ import {
 export class AuthController {
   constructor(private authService: AuthService) {}
 
+  // Public account/workspace creation. Stricter than the global 100/min
+  // default -- this creates a new Organization + Workspace + User row per
+  // call, so it's a more expensive and more abuse-prone target than a
+  // normal read/write endpoint.
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('register')
   async register(@Body() body: RegisterDto) {
     return this.authService.register(body);

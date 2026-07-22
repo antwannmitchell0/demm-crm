@@ -6,17 +6,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
-import { Role } from '@prisma/client';
-
-// Only these roles carry an org-level (workspaceId === null) membership row
-// that legitimately spans every Workspace inside their own Organization.
-// This is the one place cross-workspace access is granted without a direct
-// workspace-scoped membership row -- and it never crosses Organizations.
-const ORG_WIDE_ROLES: Role[] = [
-  Role.SUPERADMIN,
-  Role.ORG_OWNER,
-  Role.ORG_ADMIN,
-];
+import { resolveAuthorizedWorkspace } from './workspace-access.util';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -41,9 +31,12 @@ const UUID_RE =
  * organization that owns the target workspace.
  *
  * Routes that should not require Workspace context simply don't apply this
- * guard (see WorkspaceController.create/get, AuthController, AppController,
- * dashboard/health endpoints) -- that is the existing, intentional opt-in
- * pattern in this codebase and this guard does not change it.
+ * guard (AuthController, AppController, health/ready/version endpoints) --
+ * that is the existing, intentional opt-in pattern in this codebase.
+ * WorkspaceController.get(:id) uses the same resolveAuthorizedWorkspace()
+ * check directly (it's a path-param route, not header/token-driven, so it
+ * can't apply this guard as-is) rather than a second hand-written copy of
+ * this logic.
  */
 @Injectable()
 export class WorkspaceGuard implements CanActivate {
@@ -77,36 +70,11 @@ export class WorkspaceGuard implements CanActivate {
       throw new BadRequestException('Invalid workspace identifier');
     }
 
-    const workspace = await this.prisma.workspace.findUnique({
-      where: { id: requestedWorkspaceId },
-      select: { id: true, organizationId: true },
-    });
-    if (!workspace) {
-      throw new ForbiddenException('Requested workspace does not exist');
-    }
-
-    const memberships: any[] = user.memberships || [];
-
-    let membership = memberships.find(
-      (m) =>
-        m.workspaceId === workspace.id &&
-        m.organizationId === workspace.organizationId,
+    const { workspace, membership } = await resolveAuthorizedWorkspace(
+      this.prisma,
+      user,
+      requestedWorkspaceId,
     );
-
-    if (!membership) {
-      membership = memberships.find(
-        (m) =>
-          m.workspaceId === null &&
-          m.organizationId === workspace.organizationId &&
-          ORG_WIDE_ROLES.includes(m.role),
-      );
-    }
-
-    if (!membership) {
-      throw new ForbiddenException(
-        'User is not a member of the requested workspace',
-      );
-    }
 
     // Enforce active workspace context on request
     request.workspaceId = workspace.id;

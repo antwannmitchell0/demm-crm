@@ -9,6 +9,7 @@ import { PrismaService } from '../../prisma.service';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { Role } from '@prisma/client';
+import { redactAuditPayload } from '../../common/utils/audit-redactor';
 
 @Injectable()
 export class AuthService {
@@ -69,6 +70,20 @@ export class AuthService {
         workspaceId: workspace.id,
         role: Role.ORG_OWNER,
         permissions: ['*'],
+      },
+    });
+
+    // Account creation is a security-relevant event -- log it the same way
+    // agent.service.ts logs tool executions. Password is stripped by
+    // redactAuditPayload before it ever reaches the audit table.
+    await this.prisma.auditLog.create({
+      data: {
+        actorType: 'USER',
+        actorId: user.id,
+        action: 'register',
+        payload: redactAuditPayload(data),
+        workspaceId: workspace.id,
+        userId: user.id,
       },
     });
 

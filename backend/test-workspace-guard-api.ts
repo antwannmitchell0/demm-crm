@@ -188,14 +188,19 @@ async function runGuardTests() {
     check('8. Header cannot escalate to a real workspace the user is not a member of -> 403', res.status === 403);
   }
 
-  // 9. Explicitly public / unscoped routes continue working without any workspace header.
+  // 9. Truly public routes need no auth at all. GET /workspaces/:id is NOT
+  // unscoped -- it requires resolveAuthorizedWorkspace() (see
+  // workspace-access.util.ts / test-workspace-controller-security.ts for
+  // that check in isolation). This just confirms it doesn't need a
+  // WorkspaceGuard-style header/token workspace claim on top of that --
+  // userScoped's real membership in wsA1 is what makes this call succeed.
   {
     const healthRes = await fetch(`${base}/health`);
     const readyRes = await fetch(`${base}/ready`);
     const token = signToken(userScoped.id, userScoped.email); // no workspace claim at all
-    const wsLookupRes = await fetch(`${base}/workspaces/${wsA1.id}`, { headers: { Authorization: `Bearer ${token}` } }); // JwtAuthGuard only, no WorkspaceGuard
+    const wsLookupRes = await fetch(`${base}/workspaces/${wsA1.id}`, { headers: { Authorization: `Bearer ${token}` } });
     check(
-      '9. Public/unscoped routes (/health, /ready, GET /workspaces/:id) work with no workspace context',
+      '9. /health and /ready need no auth; GET /workspaces/:id needs no workspace-header/token claim (real membership auth still applies separately)',
       healthRes.status === 200 && readyRes.status === 200 && wsLookupRes.status === 200,
     );
   }
