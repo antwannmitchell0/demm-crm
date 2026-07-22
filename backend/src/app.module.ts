@@ -12,6 +12,7 @@ import { TaskModule } from './modules/task/task.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { AgentModule } from './modules/agent/agent.module';
 import { Dom26rModule } from './modules/dom26r/dom26r.module';
+import { MarketingModule } from './modules/marketing/marketing.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
@@ -34,6 +35,7 @@ import { CorrelationIdMiddleware } from './common/middleware/correlation-id.midd
     DashboardModule,
     AgentModule,
     Dom26rModule,
+    MarketingModule,
   ],
   controllers: [AppController],
   providers: [
