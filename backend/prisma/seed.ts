@@ -85,6 +85,94 @@ async function main() {
           },
         });
       }
+
+      // Seed Founder-tier Offers for MARKETING BusinessUnit
+      console.log(`Seeding founder-tier offers for MARKETING business unit (${marketingBU.id})...`);
+      const founderTiers = [
+        {
+          key: 'FOUNDER_99',
+          version: 1,
+          name: 'Founder $99',
+          price: 99.00,
+          setupFee: null,
+          includedServices: ['Monthly strategy check-in', 'CRM access', 'Email support'],
+          excludedServices: ['Done-for-you ad management', 'Custom automation builds'],
+          onboardingRequirements: ['Complete intake form', 'Connect CRM workspace'],
+          supportBoundaries: 'Email support, 48-hour response time',
+          reportingCadence: 'Monthly summary report',
+          cancellationTerms: 'Cancel anytime, no refund for the current billing period',
+          expectedLaunchTime: '7 days from signed contract',
+        },
+        {
+          key: 'FOUNDER_299',
+          version: 1,
+          name: 'Founder $299',
+          price: 299.00,
+          setupFee: null,
+          includedServices: ['Everything in Founder $99', 'Bi-weekly strategy call', 'One automation build per month'],
+          excludedServices: ['Full done-for-you ad management', 'Dedicated account manager'],
+          onboardingRequirements: ['Complete intake form', 'Connect CRM workspace', 'Kickoff call scheduled'],
+          supportBoundaries: 'Email + chat support, 24-hour response time',
+          reportingCadence: 'Bi-weekly summary report',
+          cancellationTerms: 'Cancel anytime, no refund for the current billing period',
+          expectedLaunchTime: '5 days from signed contract',
+        },
+        {
+          key: 'FOUNDER_999',
+          version: 1,
+          name: 'Founder $999',
+          price: 999.00,
+          setupFee: null,
+          includedServices: ['Everything in Founder $299', 'Weekly strategy call', 'Dedicated account manager', 'Unlimited automation builds'],
+          excludedServices: ['Paid ad spend management (billed separately)'],
+          onboardingRequirements: ['Complete intake form', 'Connect CRM workspace', 'Kickoff call scheduled', 'Brand assets received'],
+          supportBoundaries: 'Priority email + chat + phone support, same-day response time',
+          reportingCadence: 'Weekly summary report',
+          cancellationTerms: '30-day notice required for cancellation',
+          expectedLaunchTime: '3 days from signed contract',
+        },
+      ];
+
+      for (const tier of founderTiers) {
+        await prisma.offer.upsert({
+          where: {
+            businessUnitId_key_version: {
+              businessUnitId: marketingBU.id,
+              key: tier.key,
+              version: tier.version,
+            },
+          },
+          update: {
+            name: tier.name,
+            price: tier.price,
+            setupFee: tier.setupFee,
+            includedServices: tier.includedServices,
+            excludedServices: tier.excludedServices,
+            onboardingRequirements: tier.onboardingRequirements,
+            supportBoundaries: tier.supportBoundaries,
+            reportingCadence: tier.reportingCadence,
+            cancellationTerms: tier.cancellationTerms,
+            expectedLaunchTime: tier.expectedLaunchTime,
+            lifecycleState: 'ACTIVE',
+          },
+          create: {
+            businessUnitId: marketingBU.id,
+            key: tier.key,
+            version: tier.version,
+            name: tier.name,
+            price: tier.price,
+            setupFee: tier.setupFee,
+            includedServices: tier.includedServices,
+            excludedServices: tier.excludedServices,
+            onboardingRequirements: tier.onboardingRequirements,
+            supportBoundaries: tier.supportBoundaries,
+            reportingCadence: tier.reportingCadence,
+            cancellationTerms: tier.cancellationTerms,
+            expectedLaunchTime: tier.expectedLaunchTime,
+            lifecycleState: 'ACTIVE',
+          },
+        });
+      }
     }
   }
 
