@@ -56,6 +56,26 @@ enum ActivityType {
   SYSTEM_EVENT
 }
 
+enum OfferLifecycleState {
+  DRAFT
+  ACTIVE
+  RETIRED
+}
+
+enum MarketingServiceStatus {
+  PENDING_ONBOARDING
+  ACTIVE
+  AT_RISK
+  PAUSED
+  CHURNED
+}
+
+enum MarketingOnboardingState {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETE
+}
+
 model Organization {
   id            String         @id @default(uuid())
   name          String
@@ -108,6 +128,8 @@ model BusinessUnit {
   createdAt          DateTime              @default(now())
   updatedAt          DateTime              @updatedAt
   engrams            Engram[]
+  offers             Offer[]
+  clientAccounts     ClientAccount[]
 
   @@unique([organizationId, key])
 }
@@ -676,21 +698,22 @@ model Membership {
 }
 
 model User {
-  id              String           @id @default(uuid())
-  email           String           @unique
-  passwordHash    String
-  firstName       String
-  lastName        String
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  memberships     Membership[]
-  contacts        Contact[] // Assigned owner
-  opportunities   Opportunity[] // Assigned owner
-  auditLogs       AuditLog[]
-  approvals       AgentApproval[]  @relation("ResolverRelation")
-  refreshTokens   RefreshToken[]
-  bookings        Booking[]
-  memoryApprovals MemoryApproval[]
+  id                     String                        @id @default(uuid())
+  email                  String                        @unique
+  passwordHash           String
+  firstName              String
+  lastName               String
+  createdAt              DateTime                      @default(now())
+  updatedAt              DateTime                      @updatedAt
+  memberships            Membership[]
+  contacts               Contact[] // Assigned owner
+  opportunities          Opportunity[] // Assigned owner
+  auditLogs              AuditLog[]
+  approvals              AgentApproval[]               @relation("ResolverRelation")
+  refreshTokens          RefreshToken[]
+  bookings               Booking[]
+  memoryApprovals        MemoryApproval[]
+  commercialStateChanges ClientCommercialStateChange[]
 }
 
 model RefreshToken {
@@ -715,35 +738,37 @@ model Company {
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
   relationshipSubject RelationshipSubject?
+  clientAccounts      ClientAccount[]
 }
 
 model Contact {
-  id            String               @id @default(uuid())
-  firstName     String
-  lastName      String
-  emails        String[] // Supports multiple emails
-  phones        String[] // Supports multiple phones
-  address       Json? // Structured street, city, state, zip, country
-  tags          String[]
-  status        ContactStatus        @default(LEAD)
-  source        String?
-  leadScore     Int                  @default(0)
-  customFields  Json? // User-defined key-values
-  aiSummary     String?
-  aiRecommends  Json? // Structured recommendations & explanation
-  workspaceId   String
-  workspace     Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  companyId     String?
-  company       Company?             @relation(fields: [companyId], references: [id])
-  ownerId       String?
-  owner         User?                @relation(fields: [ownerId], references: [id]) // Account manager/salesperson
-  opportunities Opportunity[]
-  notes         Note[]
-  activities    Activity[]
-  tasks         Task[]
-  createdAt     DateTime             @default(now())
-  updatedAt     DateTime             @updatedAt
-  subject       RelationshipSubject?
+  id             String               @id @default(uuid())
+  firstName      String
+  lastName       String
+  emails         String[] // Supports multiple emails
+  phones         String[] // Supports multiple phones
+  address        Json? // Structured street, city, state, zip, country
+  tags           String[]
+  status         ContactStatus        @default(LEAD)
+  source         String?
+  leadScore      Int                  @default(0)
+  customFields   Json? // User-defined key-values
+  aiSummary      String?
+  aiRecommends   Json? // Structured recommendations & explanation
+  workspaceId    String
+  workspace      Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  companyId      String?
+  company        Company?             @relation(fields: [companyId], references: [id])
+  ownerId        String?
+  owner          User?                @relation(fields: [ownerId], references: [id]) // Account manager/salesperson
+  opportunities  Opportunity[]
+  notes          Note[]
+  activities     Activity[]
+  tasks          Task[]
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  subject        RelationshipSubject?
+  clientAccounts ClientAccount[]
 }
 
 model Pipeline {
@@ -769,28 +794,128 @@ model Stage {
 }
 
 model Opportunity {
-  id            String            @id @default(uuid())
-  name          String
-  value         Decimal           @default(0.00) @db.Decimal(12, 2)
-  probability   Int               @default(0)
-  expectedClose DateTime?
-  status        OpportunityStatus @default(OPEN)
-  workspaceId   String
-  workspace     Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  pipelineId    String
-  pipeline      Pipeline          @relation(fields: [pipelineId], references: [id])
-  stageId       String
-  stage         Stage             @relation(fields: [stageId], references: [id])
-  contactId     String?
-  contact       Contact?          @relation(fields: [contactId], references: [id])
-  ownerId       String?
-  owner         User?             @relation(fields: [ownerId], references: [id])
-  aiInsights    String?
-  notes         Note[]
-  activities    Activity[]
-  tasks         Task[]
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
+  id              String            @id @default(uuid())
+  name            String
+  value           Decimal           @default(0.00) @db.Decimal(12, 2)
+  probability     Int               @default(0)
+  expectedClose   DateTime?
+  status          OpportunityStatus @default(OPEN)
+  workspaceId     String
+  workspace       Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  pipelineId      String
+  pipeline        Pipeline          @relation(fields: [pipelineId], references: [id])
+  stageId         String
+  stage           Stage             @relation(fields: [stageId], references: [id])
+  contactId       String?
+  contact         Contact?          @relation(fields: [contactId], references: [id])
+  ownerId         String?
+  owner           User?             @relation(fields: [ownerId], references: [id])
+  aiInsights      String?
+  source          String? // acquisition source for THIS business relationship
+  industryContext String? // temp qualification context when Company unknown
+  clientAccount   ClientAccount?    @relation("AcquisitionOpportunity")
+  notes           Note[]
+  activities      Activity[]
+  tasks           Task[]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+}
+
+// --- Marketing Business Unit: Offer / ClientAccount (Phase 2 Lead-to-Client Core) ---
+
+model Offer {
+  id                     String              @id @default(uuid())
+  businessUnitId         String
+  businessUnit           BusinessUnit        @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  key                    String
+  version                Int                 @default(1)
+  name                   String
+  price                  Decimal             @db.Decimal(12, 2)
+  setupFee               Decimal?            @db.Decimal(12, 2)
+  includedServices       String[]
+  excludedServices       String[]
+  onboardingRequirements String[]
+  supportBoundaries      String
+  reportingCadence       String
+  cancellationTerms      String
+  expectedLaunchTime     String
+  lifecycleState         OfferLifecycleState @default(DRAFT)
+  isPubliclyAvailable    Boolean             @default(false)
+  snapshots              OfferSnapshot[]
+  clientAccounts         ClientAccount[]
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+
+  @@unique([businessUnitId, key, version])
+  @@index([businessUnitId, lifecycleState])
+}
+
+model OfferSnapshot {
+  id                     String         @id @default(uuid())
+  offerId                String
+  offer                  Offer          @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  offerVersion           Int
+  key                    String
+  name                   String
+  price                  Decimal        @db.Decimal(12, 2)
+  setupFee               Decimal?       @db.Decimal(12, 2)
+  includedServices       String[]
+  excludedServices       String[]
+  onboardingRequirements String[]
+  supportBoundaries      String
+  reportingCadence       String
+  cancellationTerms      String
+  expectedLaunchTime     String
+  clientAccount          ClientAccount?
+  createdAt              DateTime       @default(now())
+}
+
+model ClientAccount {
+  id                       String                        @id @default(uuid())
+  businessUnitId           String
+  businessUnit             BusinessUnit                  @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  companyId                String?
+  company                  Company?                      @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  primaryContactId         String
+  primaryContact           Contact                       @relation(fields: [primaryContactId], references: [id], onDelete: Restrict)
+  acquisitionOpportunityId String                        @unique
+  acquisitionOpportunity   Opportunity                   @relation("AcquisitionOpportunity", fields: [acquisitionOpportunityId], references: [id], onDelete: Restrict)
+  offerId                  String
+  offer                    Offer                         @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  offerSnapshotId          String                        @unique
+  offerSnapshot            OfferSnapshot                 @relation(fields: [offerSnapshotId], references: [id], onDelete: Restrict)
+  serviceStatus            MarketingServiceStatus        @default(PENDING_ONBOARDING)
+  onboardingState          MarketingOnboardingState      @default(NOT_STARTED)
+  renewalDate              DateTime?
+  commercialChanges        ClientCommercialStateChange[]
+  idempotencyKeys          ConversionIdempotencyKey[]
+  createdAt                DateTime                      @default(now())
+  updatedAt                DateTime                      @updatedAt
+
+  @@unique([businessUnitId, companyId])
+  @@unique([businessUnitId, primaryContactId])
+  @@index([businessUnitId, serviceStatus])
+}
+
+model ClientCommercialStateChange {
+  id              String        @id @default(uuid())
+  clientAccountId String
+  clientAccount   ClientAccount @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
+  field           String // "CONTRACT" | "PAYMENT"
+  newValue        String // e.g. "SIGNED_MANUAL", "DEPOSIT_PAID_MANUAL"
+  recordedById    String
+  recordedBy      User          @relation(fields: [recordedById], references: [id])
+  source          String        @default("MANUAL")
+  createdAt       DateTime      @default(now())
+
+  @@index([clientAccountId, field, createdAt])
+}
+
+model ConversionIdempotencyKey {
+  key             String        @id
+  clientAccountId String
+  clientAccount   ClientAccount @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
+  createdAt       DateTime      @default(now())
 }
 
 model Task {
