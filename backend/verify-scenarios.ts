@@ -24,7 +24,15 @@ const agentService = new AgentService(
 async function runScenarios() {
   console.log('🏁 Starting Release 0.1 Governing Scenarios test run...');
 
-  // Reset database for a clean run
+  // Reset database for a clean run.
+  // Offer/ClientAccount use Restrict FKs back to BusinessUnit/Contact/Company
+  // (Phase 2 Task 1-2 design) -- clear them first, in dependency order, or
+  // the blanket organization.deleteMany() below cannot cascade through them.
+  await prisma.clientCommercialStateChange.deleteMany();
+  await prisma.conversionIdempotencyKey.deleteMany();
+  await prisma.clientAccount.deleteMany();
+  await prisma.offerSnapshot.deleteMany();
+  await prisma.offer.deleteMany();
   await prisma.activity.deleteMany();
   await prisma.note.deleteMany();
   await prisma.task.deleteMany();

@@ -13,7 +13,16 @@ import {
   SensitivityClassification,
   SourceType,
   SubjectType,
+  Prisma,
 } from '@prisma/client';
+
+/**
+ * Either the top-level PrismaService or a caller's own transaction client.
+ * Passing `tx` lets Task 7's atomic Lead->Client conversion create the
+ * conversion-fact engram in the SAME transaction as the rest of the
+ * conversion, instead of opening a second, independently-committable one.
+ */
+type PrismaClientLike = PrismaService | Prisma.TransactionClient;
 
 interface CreateEngramInput {
   subjectType: SubjectType;
@@ -42,6 +51,7 @@ export class EngramService {
     actorId: string,
     correlationId: string,
     input: CreateEngramInput,
+    tx?: Prisma.TransactionClient,
   ) {
     const profile = await this.profiles.getOrCreateProfile(
       businessUnitId,
@@ -49,8 +59,8 @@ export class EngramService {
       input.subjectRefId,
     );
 
-    const engram = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.engram.create({
+    const runCreate = async (client: PrismaClientLike) => {
+      const created = await client.engram.create({
         data: {
           profileId: profile.id,
           organizationId,
@@ -67,37 +77,44 @@ export class EngramService {
       });
 
       for (const src of input.sources) {
-        const source = await tx.engramSource.create({
+        const source = await client.engramSource.create({
           data: {
             type: src.type,
             referenceId: src.referenceId,
             actorId: src.actorId,
           },
         });
-        await tx.engramEvidence.create({
+        await client.engramEvidence.create({
           data: { engramId: created.id, sourceId: source.id },
         });
       }
 
-      return tx.engram.findUniqueOrThrow({
+      return client.engram.findUniqueOrThrow({
         where: { id: created.id },
         include: { evidence: { include: { source: true } } },
       });
-    });
+    };
 
-    await this.audit.record({
-      organizationId,
-      businessUnitId,
-      workspaceId,
-      profileId: profile.id,
-      engramId: engram.id,
-      actorId,
-      action: 'ENGRAM_CREATE',
-      purpose: 'MEMORY_CAPTURE',
-      outcome: 'SUCCESS',
-      correlationId,
-      metadata: { sourceCount: input.sources.length },
-    });
+    const engram = tx
+      ? await runCreate(tx)
+      : await this.prisma.$transaction((t) => runCreate(t));
+
+    await this.audit.record(
+      {
+        organizationId,
+        businessUnitId,
+        workspaceId,
+        profileId: profile.id,
+        engramId: engram.id,
+        actorId,
+        action: 'ENGRAM_CREATE',
+        purpose: 'MEMORY_CAPTURE',
+        outcome: 'SUCCESS',
+        correlationId,
+        metadata: { sourceCount: input.sources.length },
+      },
+      tx,
+    );
 
     return engram;
   }

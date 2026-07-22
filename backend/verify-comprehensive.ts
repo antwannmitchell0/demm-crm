@@ -68,7 +68,15 @@ async function main() {
     assert(false, 'JWT_SECRET configuration failed');
   }
 
-  // Reset database tables
+  // Reset database tables.
+  // Offer/ClientAccount use Restrict FKs back to BusinessUnit/Contact/Company
+  // (Phase 2 Task 1-2 design) -- clear them first, in dependency order, or
+  // the blanket organization.deleteMany() below cannot cascade through them.
+  await prisma.clientCommercialStateChange.deleteMany();
+  await prisma.conversionIdempotencyKey.deleteMany();
+  await prisma.clientAccount.deleteMany();
+  await prisma.offerSnapshot.deleteMany();
+  await prisma.offer.deleteMany();
   await prisma.refreshToken.deleteMany();
   await prisma.activity.deleteMany();
   await prisma.note.deleteMany();

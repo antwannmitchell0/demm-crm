@@ -16,7 +16,7 @@ interface GenerateBriefInput {
   engramIds: string[];
 }
 
-type BriefVisibility = 'INTERNAL_AGENT' | 'CUSTOMER_VISIBLE';
+type BriefVisibility = 'INTERNAL_AGENT' | 'INTERNAL_HUMAN' | 'CUSTOMER_VISIBLE';
 
 @Injectable()
 export class RelationshipBriefService {
@@ -102,9 +102,14 @@ export class RelationshipBriefService {
     });
   }
 
-  /** Internal view returns full provenance/metadata; customer view returns
-   * only the brief text — sensitivity classification, generator, version,
-   * and evidence chain never leave the internal boundary. */
+  /** Internal-agent view returns full provenance/metadata (generator, version,
+   * raw evidence chain). Internal-human view is for non-DOM26-R staff (e.g.
+   * Marketing operators reading a client's relationship summary): it drops
+   * generator/version/evidence but keeps the relationship stage, since a
+   * human reader needs context a raw evidence chain wouldn't give them
+   * anyway. Customer view returns only the brief text — sensitivity
+   * classification, generator, version, and evidence chain never leave the
+   * internal boundary. */
   async getFormatted(
     businessUnitId: string,
     id: string,
@@ -112,7 +117,7 @@ export class RelationshipBriefService {
   ) {
     const brief = await this.prisma.relationshipBrief.findFirst({
       where: { id, profile: { businessUnitId } },
-      include: { evidence: true },
+      include: { evidence: true, profile: true },
     });
     if (!brief)
       throw new NotFoundException('Brief not found in this Business Unit');
@@ -124,6 +129,16 @@ export class RelationshipBriefService {
         );
       }
       return { briefText: brief.briefText, generatedAt: brief.generatedAt };
+    }
+
+    if (visibility === 'INTERNAL_HUMAN') {
+      return {
+        id: brief.id,
+        briefText: brief.briefText,
+        generatedAt: brief.generatedAt,
+        expiresAt: brief.expiresAt,
+        relationshipStage: brief.profile.pulse,
+      };
     }
 
     return brief;

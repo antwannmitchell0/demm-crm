@@ -50,7 +50,8 @@ export class RelationshipBriefController {
   async get(
     @CurrentBusinessUnitId() businessUnitId: string,
     @Param('id') id: string,
-    @Query('view') view?: 'INTERNAL_AGENT' | 'CUSTOMER_VISIBLE',
+    @Query('view')
+    view?: 'INTERNAL_AGENT' | 'INTERNAL_HUMAN' | 'CUSTOMER_VISIBLE',
   ) {
     return this.briefService.getFormatted(
       businessUnitId,

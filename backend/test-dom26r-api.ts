@@ -257,6 +257,17 @@ async function runApiTests() {
   const internalView = await internalViewRes.json();
   check('INTERNAL_AGENT view exposes generator/version metadata', internalView.generator === 'test-suite');
 
+  const internalHumanViewRes = await fetch(`${base}/dom26r/relationship-briefs/${brief.id}?view=INTERNAL_HUMAN`, { headers: headersFor(wsMktg.id) });
+  const internalHumanView = await internalHumanViewRes.json();
+  check(
+    'INTERNAL_HUMAN view keeps briefText + relationship stage, strips generator/version/evidence',
+    internalHumanView.briefText === 'Bob is an engaged founder-tier client.' &&
+      internalHumanView.relationshipStage !== undefined &&
+      internalHumanView.generator === undefined &&
+      internalHumanView.version === undefined &&
+      internalHumanView.evidence === undefined,
+  );
+
   const customerViewRes = await fetch(`${base}/dom26r/relationship-briefs/${brief.id}?view=CUSTOMER_VISIBLE`, { headers: headersFor(wsMktg.id) });
   const customerView = await customerViewRes.json();
   check(

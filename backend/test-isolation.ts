@@ -11,7 +11,17 @@ const prisma = new PrismaClient({ adapter });
 async function main() {
   console.log('🧪 Starting Tenant Isolation verification tests...');
 
-  // Clear existing databases for clean test run
+  // Clear existing databases for clean test run.
+  // Marketing's Offer/ClientAccount chain uses Restrict (not Cascade) FKs
+  // back to BusinessUnit/Contact/Company/Opportunity by design (Phase 2
+  // Task 1-2) -- a blanket organization.deleteMany() cannot cascade through
+  // them, so they must be cleared first, in dependency order, before the
+  // rest of this reset can proceed.
+  await prisma.clientCommercialStateChange.deleteMany();
+  await prisma.conversionIdempotencyKey.deleteMany();
+  await prisma.clientAccount.deleteMany();
+  await prisma.offerSnapshot.deleteMany();
+  await prisma.offer.deleteMany();
   await prisma.activity.deleteMany();
   await prisma.note.deleteMany();
   await prisma.opportunity.deleteMany();

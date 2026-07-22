@@ -14,7 +14,15 @@ import {
   SourceType,
   SubjectType,
   CandidateState,
+  Prisma,
 } from '@prisma/client';
+
+/**
+ * Either the top-level PrismaService or a caller's own transaction client.
+ * Passing `tx` lets a caller (e.g. Task 7's conversion flow) create a
+ * candidate in the SAME transaction as the rest of its work.
+ */
+type PrismaClientLike = PrismaService | Prisma.TransactionClient;
 
 interface CreateCandidateInput {
   subjectType: SubjectType;
@@ -45,6 +53,7 @@ export class MemoryCandidateService {
     actorId: string,
     correlationId: string,
     input: CreateCandidateInput,
+    tx?: Prisma.TransactionClient,
   ) {
     const profile = await this.profiles.getOrCreateProfile(
       businessUnitId,
@@ -52,8 +61,8 @@ export class MemoryCandidateService {
       input.subjectRefId,
     );
 
-    const candidate = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.memoryCandidate.create({
+    const runCreate = async (client: PrismaClientLike) => {
+      const created = await client.memoryCandidate.create({
         data: {
           profileId: profile.id,
           organizationId,
@@ -71,37 +80,44 @@ export class MemoryCandidateService {
       });
 
       for (const src of input.sources) {
-        const source = await tx.engramSource.create({
+        const source = await client.engramSource.create({
           data: {
             type: src.type,
             referenceId: src.referenceId,
             actorId: src.actorId,
           },
         });
-        await tx.candidateEvidence.create({
+        await client.candidateEvidence.create({
           data: { candidateId: created.id, sourceId: source.id },
         });
       }
 
-      return tx.memoryCandidate.findUniqueOrThrow({
+      return client.memoryCandidate.findUniqueOrThrow({
         where: { id: created.id },
         include: { evidence: { include: { source: true } } },
       });
-    });
+    };
 
-    await this.audit.record({
-      organizationId,
-      businessUnitId,
-      workspaceId,
-      profileId: profile.id,
-      candidateId: candidate.id,
-      actorId,
-      action: 'CANDIDATE_CREATE',
-      purpose: 'MEMORY_PROPOSAL',
-      outcome: 'SUCCESS',
-      correlationId,
-      metadata: { sourceCount: input.sources.length },
-    });
+    const candidate = tx
+      ? await runCreate(tx)
+      : await this.prisma.$transaction((t) => runCreate(t));
+
+    await this.audit.record(
+      {
+        organizationId,
+        businessUnitId,
+        workspaceId,
+        profileId: profile.id,
+        candidateId: candidate.id,
+        actorId,
+        action: 'CANDIDATE_CREATE',
+        purpose: 'MEMORY_PROPOSAL',
+        outcome: 'SUCCESS',
+        correlationId,
+        metadata: { sourceCount: input.sources.length },
+      },
+      tx,
+    );
 
     return candidate;
   }
