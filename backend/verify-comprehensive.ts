@@ -151,15 +151,23 @@ async function main() {
   const preservedContact = await prisma.contact.findUnique({ where: { id: contactA.id } });
   assert(preservedContact?.firstName === 'Sarah' && preservedContact?.workspaceId === wsA.id, 'Original tenant record preserved intact after blocked attack.');
 
+  // selectWorkspace() now requires a preAuthToken (proof of a real password
+  // check via login()) rather than a trusted userId -- see auth.service.ts.
+  // This test creates users directly via Prisma with placeholder password
+  // hashes, so we mint the same short-lived token login() would issue,
+  // rather than trying to bcrypt-authenticate a fake hash.
+  const mintPreAuthToken = (userId: string) =>
+    jwtService.sign({ sub: userId, purpose: 'workspace-selection' }, { expiresIn: '5m' });
+
   // 3. Multi-Workspace User Isolation
   console.log('\n--- Part 3: Multi-Workspace User Isolation ---');
-  const tokenMultiWsA = await authService.selectWorkspace(userC.id, wsA.id);
-  const tokenMultiWsB = await authService.selectWorkspace(userC.id, wsB.id);
+  const tokenMultiWsA = await authService.selectWorkspace(mintPreAuthToken(userC.id), wsA.id);
+  const tokenMultiWsB = await authService.selectWorkspace(mintPreAuthToken(userC.id), wsB.id);
   assert(tokenMultiWsA.user.workspaceId === wsA.id && tokenMultiWsB.user.workspaceId === wsB.id, 'Multi-workspace user correctly issued distinct workspace-scoped tokens.');
 
   // 4. Refresh Session Lifecycle Tests
   console.log('\n--- Part 4: Refresh Session Lifecycle & Token Security ---');
-  const session1 = await authService.selectWorkspace(userA.id, wsA.id);
+  const session1 = await authService.selectWorkspace(mintPreAuthToken(userA.id), wsA.id);
   
   // Verify token storage is hashed SHA-256 and NOT plaintext
   const storedRefreshToken = await prisma.refreshToken.findFirst({ where: { userId: userA.id } });
@@ -187,8 +195,8 @@ async function main() {
   }
 
   // Logout All Devices
-  const sessionDev1 = await authService.selectWorkspace(userA.id, wsA.id);
-  const sessionDev2 = await authService.selectWorkspace(userA.id, wsA.id);
+  const sessionDev1 = await authService.selectWorkspace(mintPreAuthToken(userA.id), wsA.id);
+  const sessionDev2 = await authService.selectWorkspace(mintPreAuthToken(userA.id), wsA.id);
   await authService.logoutAll(userA.id);
   
   const activeTokensCount = await prisma.refreshToken.count({ where: { userId: userA.id, revoked: false } });

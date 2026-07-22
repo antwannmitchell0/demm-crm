@@ -69,9 +69,29 @@ async function request(endpoint: string, options: RequestInit = {}) {
 export const api = {
   // Auth
   login: async (email: string, passwordPlain: string) => {
-    const res = await request('auth/login', {
+    // Login is two steps: verify credentials (returns a short-lived
+    // preAuthToken + the accessible workspace list, but no real access
+    // token yet), then select a workspace (requires the preAuthToken,
+    // returns the actual access/refresh tokens). This matches the backend
+    // contract in auth.service.ts -- login() never issues a usable token
+    // by itself.
+    const loginRes = await request('auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, passwordPlain }),
+    });
+
+    if (!loginRes.workspaces || loginRes.workspaces.length === 0) {
+      throw new Error('No accessible workspace for this account.');
+    }
+    // TODO: surface a workspace picker for multi-workspace accounts.
+    // Defaulting to the first entry for now, matching the current
+    // single-workspace-per-account signup flow (see register()).
+    const workspaceId = loginRes.workspaces[0].workspaceId;
+
+    const res = await request('auth/select-workspace', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${loginRes.preAuthToken}` },
+      body: JSON.stringify({ workspaceId }),
     });
     setAuthToken(res.access_token);
     setActiveUser(res.user);

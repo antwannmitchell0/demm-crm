@@ -39,10 +39,6 @@ export class LoginDto {
 export class SelectWorkspaceDto {
   @IsString()
   @IsNotEmpty()
-  userId: string;
-
-  @IsString()
-  @IsNotEmpty()
   workspaceId: string;
 }
 

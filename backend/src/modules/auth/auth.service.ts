@@ -110,8 +110,21 @@ export class AuthService {
       role: m.role,
     }));
 
+    // Short-lived, single-purpose token proving the caller just presented
+    // a correct password for THIS user. selectWorkspace() requires it and
+    // derives userId from it -- it never trusts a userId supplied in the
+    // request body. Without this, select-workspace was a full account
+    // takeover: anyone who learned any user's id (e.g. from a register()
+    // response) could mint that user's real access + refresh tokens with
+    // no credentials at all.
+    const preAuthToken = this.jwtService.sign(
+      { sub: user.id, purpose: 'workspace-selection' },
+      { expiresIn: '5m' },
+    );
+
     return {
       message: 'Login successful. Please select a workspace context.',
+      preAuthToken,
       user: {
         id: user.id,
         email: user.email,
@@ -122,8 +135,30 @@ export class AuthService {
     };
   }
 
-  // 2. Select workspace & generate Access (15m) + Refresh (7d) tokens
-  async selectWorkspace(userId: string, workspaceId: string) {
+  // 2. Select workspace & generate Access (15m) + Refresh (7d) tokens.
+  // `preAuthToken` must be the token minted by login() above -- it is the
+  // only source of truth for who the caller is here, never a client-
+  // supplied userId.
+  async selectWorkspace(preAuthToken: string, workspaceId: string) {
+    let preAuthPayload: { sub: string; purpose: string };
+    try {
+      preAuthPayload = this.jwtService.verify(preAuthToken);
+    } catch {
+      throw new UnauthorizedException('Invalid or expired pre-auth token');
+    }
+    if (preAuthPayload.purpose !== 'workspace-selection') {
+      throw new UnauthorizedException('Invalid pre-auth token');
+    }
+
+    return this.issueTokensForMembership(preAuthPayload.sub, workspaceId);
+  }
+
+  // Issues real access/refresh tokens for an ALREADY-VERIFIED (userId,
+  // workspaceId) pair -- callers must have independently proven the caller
+  // is that user (selectWorkspace via preAuthToken; refreshToken via a
+  // possessed, hashed, unexpired refresh token). Never call this with a
+  // client-supplied userId that hasn't been through one of those checks.
+  private async issueTokensForMembership(userId: string, workspaceId: string) {
     const membership = await this.prisma.membership.findFirst({
       where: { userId, workspaceId },
       include: { user: true },
@@ -135,14 +170,16 @@ export class AuthService {
       );
     }
 
-    const payload = {
+    const accessTokenPayload = {
       sub: membership.userId,
       email: membership.user.email,
       workspaceId: membership.workspaceId,
       role: membership.role,
     };
 
-    const accessToken = this.jwtService.sign(payload, { expiresIn: '15m' });
+    const accessToken = this.jwtService.sign(accessTokenPayload, {
+      expiresIn: '15m',
+    });
     const rawRefreshToken = crypto.randomBytes(40).toString('hex');
     const hashedToken = this.hashToken(rawRefreshToken);
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
@@ -195,7 +232,9 @@ export class AuthService {
       );
     }
 
-    return this.selectWorkspace(stored.userId, stored.workspaceId);
+    // Possession of a valid, unexpired, unrevoked refresh token already IS
+    // proof of identity -- no pre-auth token needed here.
+    return this.issueTokensForMembership(stored.userId, stored.workspaceId);
   }
 
   // 4. Logout single session
