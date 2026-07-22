@@ -375,6 +375,7 @@ model RelationshipProfile {
   updatedAt      DateTime             @updatedAt
 
   @@unique([subjectId, businessUnitId])
+  @@index([businessUnitId])
 }
 
 model PulseChangeHistory {
@@ -415,6 +416,18 @@ model Engram {
   updatedAt           DateTime                  @updatedAt
   lastConfirmedAt     DateTime?
   expiresAt           DateTime?
+
+  // engram.service.ts findAll(): every list query filters by businessUnitId
+  // (+ optional profileId) and excludes state=DELETED -- this is the
+  // primary DOM26-R read path.
+  @@index([businessUnitId, state])
+  @@index([profileId, state])
+  // "active Engrams by ... class[ification] and expiration" -- not yet a
+  // coded query, but truthClassification and expiresAt are explicit
+  // doctrine filter dimensions on this model (TruthClassification enum,
+  // EXPIRED state) and this is cheap to have ready before real volume.
+  @@index([businessUnitId, truthClassification])
+  @@index([businessUnitId, expiresAt])
 }
 
 model EngramSource {
@@ -436,6 +449,10 @@ model EngramEvidence {
   createdAt DateTime     @default(now())
 
   @@unique([engramId, sourceId])
+  // "source-reference and provenance lookup" -- the unique index above
+  // leads with engramId, so "which engrams cite source X" (the reverse
+  // provenance direction) has no index without this.
+  @@index([sourceId])
 }
 
 model EngramGraphEdge {
@@ -472,6 +489,12 @@ model MemoryCandidate {
   approvals      MemoryApproval[]
   evidence       CandidateEvidence[]
   createdAt      DateTime                  @default(now())
+
+  // memory-candidate.service.ts findAll()/findByIdScoped(): filters via the
+  // profile relation (no direct businessUnitId column here) plus an
+  // optional status filter -- "pending Memory Candidates" is the named
+  // query this directly serves.
+  @@index([profileId, status])
 }
 
 model CandidateEvidence {
@@ -483,6 +506,8 @@ model CandidateEvidence {
   createdAt   DateTime        @default(now())
 
   @@unique([candidateId, sourceId])
+  // Same reverse-provenance justification as EngramEvidence.sourceId above.
+  @@index([sourceId])
 }
 
 model MemoryApproval {
@@ -535,6 +560,19 @@ model MemoryAuditEvent {
   correlationId  String
   metadata       Json?
   createdAt      DateTime @default(now())
+
+  // "audit events by target and creation time" -- append-only log, queried
+  // by whichever target id an investigation starts from (engram/candidate/
+  // profile), and by correlationId to trace one request's full audit
+  // trail. Also directly supports business-unit-scoped time-range
+  // investigation (the kind this session ran manually against staging
+  // Cloud Run logs -- this is what makes the same query fast against this
+  // table once DOM26-R data exists).
+  @@index([engramId, createdAt])
+  @@index([candidateId, createdAt])
+  @@index([profileId, createdAt])
+  @@index([businessUnitId, createdAt])
+  @@index([correlationId])
 }
 
 model ConsentDirective {
@@ -556,6 +594,15 @@ model ConsentDirective {
   supersedingDirectiveId String?
   status                 ConsentStatus       @default(GRANTED)
   createdAt              DateTime            @default(now())
+
+  // consent-directive.service.ts isSharingAllowed(): subjectId +
+  // originatingBusinessId + status, filtered further by expirationDate.
+  // findAll() ORs across both originatingBusinessId and destinationBusinessId.
+  // "Consent Directive status, destination, and expiration" is the named
+  // requirement this set covers.
+  @@index([subjectId, originatingBusinessId, status])
+  @@index([destinationBusinessId])
+  @@index([expirationDate])
 }
 
 model RelationshipSignal {
@@ -572,6 +619,11 @@ model RelationshipSignal {
   expiresAt  DateTime?
   resolvedAt DateTime?
   createdAt  DateTime            @default(now())
+
+  // "Relationship Signals by profile and state" -- no service reads this
+  // model yet (deferred, out of Phase 1B scope per commit 60700d0), but
+  // the query shape is named explicitly and the schema already exists.
+  @@index([profileId, state])
 }
 
 model SignalEvidence {
