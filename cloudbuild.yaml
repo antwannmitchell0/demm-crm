@@ -21,7 +21,7 @@ substitutions:
   _GIT_COMMIT_SHA: 'UNKNOWN_COMMIT'
   _NEXT_PUBLIC_API_URL: 'https://demm-crm-backend-staging-431876670120.us-east1.run.app'
   _REGION: 'us-east1'
-  _REPO: 'us-east1-docker.pkg.dev/$PROJECT_ID/demm-crm-staging-repo'
+  _REPO: 'us-east1-docker.pkg.dev/gen-lang-client-0096028843/demm-crm-staging-repo'
 
 steps:
   # --- Backend ---
