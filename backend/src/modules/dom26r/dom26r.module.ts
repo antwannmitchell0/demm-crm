@@ -30,6 +30,8 @@ import { RelationshipBriefController } from './relationship-brief.controller';
     RelationshipBriefService,
   ],
   exports: [
+    Dom26rAuditService,
+    RelationshipProfileService,
     EngramService,
     MemoryCandidateService,
     ConsentDirectiveService,

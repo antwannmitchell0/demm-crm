@@ -166,10 +166,18 @@ export class ClientAccountService {
           );
         }
 
+        // Validate BOTH the explicitly-supplied dto.companyId AND the
+        // fallback contact.companyId against the caller's workspace --
+        // nothing in the schema guarantees a Contact's companyId already
+        // points to a Company in the same workspace (LeadService always
+        // creates them together, but that's a convention, not a
+        // constraint), so trusting the fallback unvalidated would let a
+        // pre-existing data inconsistency silently attach a foreign
+        // Company to this ClientAccount and this client's DOM26-R profile.
         const companyId = dto.companyId ?? contact.companyId ?? null;
-        if (dto.companyId) {
+        if (companyId) {
           const company = await tx.company.findFirst({
-            where: { id: dto.companyId, workspaceId },
+            where: { id: companyId, workspaceId },
           });
           if (!company) {
             throw new ForbiddenException(
@@ -364,20 +372,32 @@ export class ClientAccountService {
       });
     } catch (err) {
       if (
-        idempotencyKey &&
         err instanceof Prisma.PrismaClientKnownRequestError &&
         err.code === 'P2002'
       ) {
-        // Lost a race on the SAME idempotency key: the winner's row is
-        // already committed, so return its ClientAccount instead of
-        // surfacing an opaque 500 for what is actually a successful
-        // duplicate-submit case.
-        const winningKey =
-          await this.prisma.conversionIdempotencyKey.findUnique({
-            where: { key: idempotencyKey },
-            include: { clientAccount: true },
-          });
-        if (winningKey) return winningKey.clientAccount;
+        if (idempotencyKey) {
+          // Lost a race on the SAME idempotency key: the winner's row is
+          // already committed, so return its ClientAccount instead of
+          // surfacing an opaque 500 for what is actually a successful
+          // duplicate-submit case.
+          const winningKey =
+            await this.prisma.conversionIdempotencyKey.findUnique({
+              where: { key: idempotencyKey },
+              include: { clientAccount: true },
+            });
+          if (winningKey) return winningKey.clientAccount;
+        }
+        // No idempotency key (or the key lookup somehow came up empty):
+        // this is a genuine race on ClientAccount's own BU-scoped
+        // uniqueness -- two concurrent conversions for the same
+        // Contact/Company both passed the advisory step-4 check before
+        // either committed. The loser's whole transaction has already
+        // rolled back at this point (Postgres aborts the full transaction
+        // on any statement error), so there's no partial data to clean up
+        // -- just report it as the conflict it is instead of a 500.
+        throw new ConflictException(
+          'This Contact or Company has already been converted to a Client in this Business Unit',
+        );
       }
       throw err;
     }
