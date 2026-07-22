@@ -1,4 +1,15 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+// The backend (see backend/src/main.ts) has no app.setGlobalPrefix('api') --
+// every controller is unprefixed EXCEPT AuthController, which declares
+// @Controller('api/auth') itself (backend/src/modules/auth/auth.controller.ts).
+// That inconsistency is load-bearing: test-auth-security.ts,
+// test-workspace-controller-security.ts, and the staging verification
+// scripts all hit /api/auth/* explicitly, so it can't be "fixed" by
+// changing the backend without breaking an already-passing, security-
+// critical test suite. The local-dev fallback below must match the
+// backend's real (inconsistent) shape, or every request 404s when
+// NEXT_PUBLIC_API_URL isn't explicitly set -- auth calls below are
+// prefixed with 'api/' individually to match.
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 export interface User {
   id: string;
@@ -75,7 +86,7 @@ export const api = {
     // returns the actual access/refresh tokens). This matches the backend
     // contract in auth.service.ts -- login() never issues a usable token
     // by itself.
-    const loginRes = await request('auth/login', {
+    const loginRes = await request('api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, passwordPlain }),
     });
@@ -88,7 +99,7 @@ export const api = {
     // single-workspace-per-account signup flow (see register()).
     const workspaceId = loginRes.workspaces[0].workspaceId;
 
-    const res = await request('auth/select-workspace', {
+    const res = await request('api/auth/select-workspace', {
       method: 'POST',
       headers: { Authorization: `Bearer ${loginRes.preAuthToken}` },
       body: JSON.stringify({ workspaceId }),
@@ -106,14 +117,14 @@ export const api = {
     workspaceName: string;
     subdomain: string;
   }) => {
-    return request('auth/register', {
+    return request('api/auth/register', {
       method: 'POST',
       body: JSON.stringify(data),
     });
   },
 
   getMe: async () => {
-    return request('auth/me');
+    return request('api/auth/me');
   },
 
   // Dashboard
@@ -193,5 +204,59 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ toolName, arguments: args }),
     });
+  },
+
+  // Marketing: Offers
+  getOffers: async () => {
+    return request('marketing/offers');
+  },
+
+  createOffer: async (data: any) => {
+    return request('marketing/offers', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  updateOffer: async (id: string, data: any) => {
+    return request(`marketing/offers/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  setOfferLifecycle: async (id: string, state: 'DRAFT' | 'ACTIVE' | 'RETIRED') => {
+    return request(`marketing/offers/${id}/lifecycle`, {
+      method: 'POST',
+      body: JSON.stringify({ state }),
+    });
+  },
+
+  // Marketing: Leads
+  getLeads: async () => {
+    return request('marketing/leads');
+  },
+
+  createLead: async (data: any) => {
+    return request('marketing/leads', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  convertLead: async (contactId: string, data: any, idempotencyKey: string) => {
+    return request(`marketing/leads/${contactId}/convert`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(data),
+    });
+  },
+
+  getClientDetail: async (clientAccountId: string) => {
+    return request(`marketing/clients/${clientAccountId}`);
+  },
+
+  getMarketingBrief: async (briefId: string) => {
+    return request(`dom26r/relationship-briefs/${briefId}?view=INTERNAL_HUMAN`);
   },
 };

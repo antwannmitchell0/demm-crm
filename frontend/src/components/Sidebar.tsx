@@ -3,14 +3,16 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { 
-  LayoutDashboard, 
-  Users, 
-  GitFork, 
-  Terminal, 
+import {
+  LayoutDashboard,
+  Users,
+  GitFork,
+  Terminal,
   LogOut,
   User as UserIcon,
-  Sparkles
+  Sparkles,
+  Tag,
+  UserPlus
 } from 'lucide-react';
 import { removeAuthToken, removeActiveUser, getActiveUser } from '../lib/api';
 
@@ -29,6 +31,8 @@ export default function Sidebar() {
     { name: 'Executive Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Contacts', href: '/contacts', icon: Users },
     { name: 'Pipelines', href: '/pipelines', icon: GitFork },
+    { name: 'Leads', href: '/marketing/leads', icon: UserPlus },
+    { name: 'Offers & Settings', href: '/marketing/offers', icon: Tag },
     { name: 'Agent Console', href: '/agent', icon: Terminal },
   ];
 
