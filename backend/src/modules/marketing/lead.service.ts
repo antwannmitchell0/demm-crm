@@ -17,12 +17,19 @@ export function normalizeEmail(email: string): string {
 }
 
 /**
- * Strips everything but digits from a phone number so formatting
- * differences ("(555) 123-4567" vs "555-123-4567" vs "5551234567") don't
- * defeat duplicate detection.
+ * Normalizes a phone number so formatting differences don't defeat
+ * duplicate detection. Strips all non-digits, then -- NANP/US-focused --
+ * drops a leading country-code `1` from an 11-digit result so the same US
+ * number matches whether it was entered with or without `+1`
+ * ("+1 (555) 123-4567" and "555-123-4567" both -> "5551234567"). Deliberately
+ * does not attempt to canonicalize other international formats.
  */
 export function normalizePhone(phone: string): string {
-  return phone.replace(/\D/g, '');
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length === 11 && digits.startsWith('1')) {
+    return digits.slice(1);
+  }
+  return digits;
 }
 
 @Injectable()
@@ -172,11 +179,7 @@ export class LeadService {
    * `duplicateWarning` on the response, but creation proceeds regardless
    * (warn + allow, never block).
    */
-  async createLead(
-    workspaceId: string,
-    businessUnitId: string,
-    dto: CreateLeadDto,
-  ) {
+  async createLead(workspaceId: string, dto: CreateLeadDto) {
     const duplicate = await this.findDuplicateContact(
       workspaceId,
       dto.emails,

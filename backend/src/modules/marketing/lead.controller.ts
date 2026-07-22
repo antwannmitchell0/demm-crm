@@ -23,9 +23,8 @@ export class LeadController {
   @Post()
   async create(
     @CurrentWorkspaceId() workspaceId: string,
-    @CurrentBusinessUnitId() businessUnitId: string,
     @Body() dto: CreateLeadDto,
   ) {
-    return this.leadService.createLead(workspaceId, businessUnitId, dto);
+    return this.leadService.createLead(workspaceId, dto);
   }
 }
