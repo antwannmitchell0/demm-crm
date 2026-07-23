@@ -6,6 +6,8 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { StripeEnvironmentGuard } from './src/modules/marketing/stripe-environment.guard';
+import { createStripeClient } from './src/modules/marketing/stripe-config';
+import Stripe from 'stripe';
 
 const connectionString =
   process.env.DATABASE_URL ||
@@ -279,6 +281,74 @@ async function runApiTests() {
   await prisma.businessUnit.delete({ where: { id: bu2.id } });
   await prisma.organization.delete({ where: { id: org2.id } });
   console.log('✅ Cleanup complete.');
+
+  // --- Webhook signature verification (own app instance with raw-body middleware) ---
+  const express = await import('express');
+  const webhookApp = await NestFactory.create(AppModule, { logger: false });
+  webhookApp.use('/webhooks/stripe', express.raw({ type: 'application/json' }));
+  webhookApp.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));
+  await webhookApp.listen(0);
+  const webhookServer = webhookApp.getHttpServer();
+  const webhookPort = (webhookServer.address() as any).port;
+  const webhookBase = `http://127.0.0.1:${webhookPort}`;
+
+  // Missing-secret fail-closed test
+  const savedSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  delete process.env.STRIPE_WEBHOOK_SECRET;
+  const noSecretRes = await fetch(`${webhookBase}/webhooks/stripe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'stripe-signature': 'fake' },
+    body: JSON.stringify({ fake: 'payload' }),
+  });
+  check('Missing STRIPE_WEBHOOK_SECRET fails closed with 400', noSecretRes.status === 400);
+  process.env.STRIPE_WEBHOOK_SECRET = savedSecret;
+
+  // Bad signature test
+  const badSigRes = await fetch(`${webhookBase}/webhooks/stripe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'stripe-signature': 't=1,v1=deadbeef' },
+    body: JSON.stringify({ id: 'evt_fake', type: 'invoice.paid' }),
+  });
+  check('Bad Stripe-Signature fails closed with 400', badSigRes.status === 400);
+
+  // Real, correctly-signed synthetic event (local HMAC only -- no real
+  // Stripe network call, works fine with the local placeholder secret)
+  const stripeSdk = createStripeClient();
+  const webhookTestSuffix = Date.now();
+  const fakeEventPayload = JSON.stringify({
+    id: `evt_test_${webhookTestSuffix}`,
+    object: 'event',
+    api_version: '2025-08-27.basil',
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    type: 'checkout.session.completed',
+    data: { object: { id: 'cs_test_fake', metadata: { clientAccountId: 'placeholder-not-real' }, subscription: 'sub_test_fake' } },
+  });
+  const testHeader = (Stripe as any).webhooks.generateTestHeaderString({
+    payload: fakeEventPayload,
+    secret: process.env.STRIPE_WEBHOOK_SECRET!,
+  });
+  const validRes = await fetch(`${webhookBase}/webhooks/stripe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'stripe-signature': testHeader },
+    body: fakeEventPayload,
+  });
+  check('Correctly-signed event is accepted with 200', validRes.status === 200);
+
+  const eventRow = await prisma.stripeWebhookEvent.findUnique({ where: { stripeEventId: `evt_test_${webhookTestSuffix}` } });
+  check('StripeWebhookEvent row reaches PROCESSED', eventRow?.processingState === 'PROCESSED');
+
+  // Duplicate delivery (sequential -- true concurrency tested in Task 12)
+  const dupRes = await fetch(`${webhookBase}/webhooks/stripe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'stripe-signature': testHeader },
+    body: fakeEventPayload,
+  });
+  check('Duplicate delivery of an already-PROCESSED event returns 200 and is skipped', dupRes.status === 200);
+
+  // Teardown: delete the StripeWebhookEvent row this test created
+  await prisma.stripeWebhookEvent.deleteMany({ where: { stripeEventId: `evt_test_${webhookTestSuffix}` } });
+  await webhookApp.close();
 
   console.log('=====================================');
   console.log(`📊 STRIPE BILLING API SUITE: ${pass} passed, ${fail} failed.`);

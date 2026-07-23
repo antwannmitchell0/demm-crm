@@ -20,6 +20,9 @@ import { DashboardService } from './dashboard.service';
 import { DashboardController } from './dashboard.controller';
 import { ReportingService } from './reporting.service';
 import { ReportingController } from './reporting.controller';
+import { StripeWebhookController } from './stripe-webhook.controller';
+import { StripeWebhookDedupService } from './stripe-webhook-dedup.service';
+import { StripeWebhookHandlerService } from './stripe-webhook-handler.service';
 
 @Module({
   imports: [Dom26rModule],
@@ -32,6 +35,7 @@ import { ReportingController } from './reporting.controller';
     ClientHealthController,
     DashboardController,
     ReportingController,
+    StripeWebhookController,
   ],
   providers: [
     PrismaService,
@@ -46,6 +50,8 @@ import { ReportingController } from './reporting.controller';
     KpiService,
     DashboardService,
     ReportingService,
+    StripeWebhookDedupService,
+    StripeWebhookHandlerService,
   ],
   exports: [
     OfferService,

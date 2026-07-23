@@ -3,6 +3,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { validateEnvironmentConfig } from './common/utils/config.validator';
 import helmet from 'helmet';
+import * as express from 'express';
 
 async function bootstrap() {
   // Validate critical configuration (JWT_SECRET strength & presence)
@@ -12,6 +13,11 @@ async function bootstrap() {
 
   // Security Headers (Helmet)
   app.use(helmet());
+
+  // Raw body ONLY for the Stripe webhook route -- signature verification
+  // needs the exact bytes Stripe sent, before any JSON parsing. Every
+  // other route keeps Nest's default JSON body parser untouched.
+  app.use('/webhooks/stripe', express.raw({ type: 'application/json' }));
 
   // Global Validation Pipe
   app.useGlobalPipes(
