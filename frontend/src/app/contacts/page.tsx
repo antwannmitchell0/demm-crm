@@ -477,6 +477,17 @@ function ContactsPageInner() {
                         <p className="text-[10px] text-slate-500">
                           ${Number(clientDetail.offerSnapshot?.price).toLocaleString()} · onboarding {clientDetail.onboardingState}
                         </p>
+                        {clientDetail.onboarding && (
+                          <p className="text-[10px] text-slate-500">
+                            Onboarding progress: {clientDetail.onboarding.progressPercentage}%
+                          </p>
+                        )}
+                        <button
+                          onClick={() => router.push(`/marketing/clients/${clientDetail.id}`)}
+                          className="text-[10px] font-bold text-cyan-400 hover:text-cyan-300 flex items-center gap-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400 rounded"
+                        >
+                          View Client Account <ChevronRight className="w-3 h-3" />
+                        </button>
                         <div className="text-[10px] text-slate-500 space-y-0.5">
                           <p>
                             Contract:{' '}

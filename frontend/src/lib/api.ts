@@ -259,4 +259,72 @@ export const api = {
   getMarketingBrief: async (briefId: string) => {
     return request(`dom26r/relationship-briefs/${briefId}?view=INTERNAL_HUMAN`);
   },
+
+  // Marketing: Onboarding
+  getOnboardingPlan: async (clientAccountId: string) => {
+    return request(`marketing/clients/${clientAccountId}/onboarding`);
+  },
+
+  updateChecklistItem: async (
+    clientAccountId: string,
+    itemId: string,
+    data: {
+      status?: string;
+      evidence?: string;
+      clientSubmission?: Record<string, unknown>;
+      blockerReason?: string;
+    },
+  ) => {
+    return request(
+      `marketing/clients/${clientAccountId}/onboarding/items/${itemId}`,
+      { method: 'PATCH', body: JSON.stringify(data) },
+    );
+  },
+
+  generateOnboardingPlan: async (clientAccountId: string) => {
+    return request(`marketing/clients/${clientAccountId}/onboarding/generate`, {
+      method: 'POST',
+    });
+  },
+
+  activateClient: async (
+    clientAccountId: string,
+    data: { override?: { reason: string } } = {},
+  ) => {
+    return request(`marketing/clients/${clientAccountId}/onboarding/activate`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  // Marketing: Service Delivery
+  getDeliverables: async (clientAccountId: string) => {
+    return request(`marketing/clients/${clientAccountId}/deliverables`);
+  },
+
+  updateDeliverable: async (
+    clientAccountId: string,
+    deliverableId: string,
+    data: {
+      status?: string;
+      evidence?: string;
+      blockerReason?: string;
+      clientApprovedAt?: string;
+    },
+  ) => {
+    return request(
+      `marketing/clients/${clientAccountId}/deliverables/${deliverableId}`,
+      { method: 'PATCH', body: JSON.stringify(data) },
+    );
+  },
+
+  createOutsideScopeDeliverable: async (
+    clientAccountId: string,
+    data: { name: string; description?: string; cadence: string; cadenceDetail?: string },
+  ) => {
+    return request(`marketing/clients/${clientAccountId}/deliverables`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
 };
