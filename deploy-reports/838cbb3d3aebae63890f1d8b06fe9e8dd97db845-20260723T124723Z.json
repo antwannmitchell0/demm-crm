@@ -1,0 +1,11 @@
+{
+  "repository": "demm-crm",
+  "branch": "worktree-phase-2-lead-to-client-core",
+  "commit": "838cbb3d3aebae63890f1d8b06fe9e8dd97db845",
+  "cloudBuildId": "104062-1b2c85e2d00c48f797900de39540a",
+  "backendRevision": "demm-crm-backend-staging-00011-kck",
+  "frontendRevision": "demm-crm-frontend-staging-00005-2db",
+  "migrations": ["20260721051848_release_0_1_1_security_and_enums","20260721184919_phase_1a_business_unit_foundation","20260722062737_fix_consent_directive_subject_restrict","20260722141426_dom26r_essential_indexes","20260722165835_phase_2_marketing_lead_to_client","20260722170740_fix_offer_business_unit_restrict","20260723053752_offer_optional_operational_fields","20260723064102_onboarding_service_delivery","20260723113536_client_health_and_revenue_amount"],
+  "deployedAtUtc": "2026-07-23T12:47:23Z",
+  "deployedBy": "antwannmitchell0@gmail.com"
+}
