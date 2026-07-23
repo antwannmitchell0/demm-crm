@@ -176,11 +176,15 @@ export class StripeWebhookHandlerService {
           stripeSubscriptionId,
           amountPaid: invoice.amount_paid / 100,
           currency: invoice.currency,
-          // `.tax` was removed from the Stripe SDK's Invoice type (replaced
-          // by `total_taxes`); cast as any to stay tolerant of both the
-          // legacy field (still present on real webhook payloads from
-          // older API versions) and this SDK version's stricter typing.
-          taxAmount: (invoice as any).tax ? (invoice as any).tax / 100 : null,
+          // `.tax` was removed from the Stripe SDK's Invoice type in favor
+          // of `total_taxes`, a structured array of per-tax-rate line items
+          // (each with its own `amount` in cents) rather than one summed
+          // number. Sum them here to get the equivalent total. `null` when
+          // there are no taxes on the invoice (the common case for these
+          // founder-tier subscriptions, which have no Stripe Tax config).
+          taxAmount: invoice.total_taxes?.length
+            ? invoice.total_taxes.reduce((sum, t) => sum + t.amount, 0) / 100
+            : null,
           billingPeriodStart: invoice.period_start ? new Date(invoice.period_start * 1000) : null,
           billingPeriodEnd: invoice.period_end ? new Date(invoice.period_end * 1000) : null,
           paidAt: new Date(),
