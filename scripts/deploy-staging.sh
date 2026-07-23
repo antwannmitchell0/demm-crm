@@ -127,6 +127,15 @@ make_build_dir() {
   BUILD_DIR="$(mktemp -d -t demm-crm-deploy-XXXXXX)"
   log "Archiving commit $COMMIT_SHA into $BUILD_DIR (working tree is never used as build input)."
   git -C "$REPO_ROOT" archive "$COMMIT_SHA" | tar -x -C "$BUILD_DIR"
+
+  # git archive only includes tracked files, so node_modules is (correctly)
+  # absent. The actual Docker build re-installs everything fresh from the
+  # archive's package-lock.json inside the container -- this symlink is
+  # ONLY so the local `prisma migrate status/deploy` tooling call below has
+  # a CLI to run; it never touches the image that gets built and deployed.
+  if [ -d "$REPO_ROOT/backend/node_modules" ]; then
+    ln -s "$REPO_ROOT/backend/node_modules" "$BUILD_DIR/backend/node_modules"
+  fi
 }
 
 # ---------------------------------------------------------------------------
