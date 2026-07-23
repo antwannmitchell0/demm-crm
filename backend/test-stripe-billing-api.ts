@@ -1334,6 +1334,20 @@ async function runApiTests() {
     dashboardResKpi2.revenueTrajectory.collectedRevenue90d.classification === 'MIXED_SOURCES',
   );
 
+  // --- Client Health COMMERCIAL factor from PAST_DUE subscription (Task 14) ---
+  await prisma.billingSubscription.updateMany({
+    where: { stripeSubscriptionId: subForKpi },
+    data: { status: 'PAST_DUE' },
+  });
+  const healthRecalcResKpi = await fetch(`${webhookBase}/marketing/clients/${clientAccountIdKpi}/health/recalculate`, {
+    method: 'POST',
+    headers: authHeadersKpi,
+  }).then((r) => r.json());
+  const hasCommercialFactorKpi = healthRecalcResKpi.factors?.some(
+    (f: any) => f.riskOwner === 'COMMERCIAL' && f.evidence?.includes('PAST_DUE'),
+  );
+  check('Client Health surfaces a COMMERCIAL factor when the subscription is PAST_DUE', hasCommercialFactorKpi);
+
   // Teardown.
   await prisma.billingSubscription.deleteMany({ where: { clientAccountId: clientAccountIdKpi } });
   await prisma.clientCommercialStateChange.deleteMany({ where: { clientAccountId: clientAccountIdKpi } });

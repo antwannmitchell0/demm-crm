@@ -116,6 +116,25 @@ export class ClientHealthService {
       });
     }
 
+    // --- Stripe subscription payment status.
+    const latestSubscription = await this.prisma.billingSubscription.findFirst(
+      {
+        where: { clientAccountId },
+        orderBy: { createdAt: 'desc' },
+      },
+    );
+    if (
+      latestSubscription?.status === 'PAST_DUE' ||
+      latestSubscription?.status === 'UNPAID'
+    ) {
+      factors.push({
+        code: 'STRIPE_PAYMENT_FAILED',
+        description: `Stripe subscription payment failed / ${latestSubscription.status.toLowerCase()}`,
+        riskOwner: 'COMMERCIAL',
+        evidence: `stripeSubscriptionStatus=${latestSubscription.status}`,
+      });
+    }
+
     // --- Onboarding checklist evidence.
     const items = clientAccount.onboardingPlan?.items ?? [];
     if (!clientAccount.onboardingPlan) {
