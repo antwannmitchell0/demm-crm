@@ -70,10 +70,46 @@ enum MarketingServiceStatus {
   CHURNED
 }
 
-enum MarketingOnboardingState {
+enum OnboardingPlanState {
   NOT_STARTED
   IN_PROGRESS
+  WAITING_ON_CLIENT
+  BLOCKED
+  READY_FOR_LAUNCH
   COMPLETE
+  CANCELLED
+}
+
+enum ChecklistItemStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  WAITING_ON_CLIENT
+  BLOCKED
+  SUBMITTED
+  COMPLETE
+  WAIVED
+  CANCELLED
+}
+
+enum ChecklistResponsibility {
+  DEMM
+  CLIENT
+}
+
+enum ServiceDeliverableCadence {
+  ONE_TIME
+  RECURRING
+}
+
+enum ServiceDeliverableStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  BLOCKED
+  WAITING_ON_CLIENT
+  DELIVERED
+  ACCEPTED
+  REJECTED
+  CANCELLED
 }
 
 model Organization {
@@ -714,6 +750,10 @@ model User {
   bookings               Booking[]
   memoryApprovals        MemoryApproval[]
   commercialStateChanges ClientCommercialStateChange[]
+  onboardingPlansOwned    OnboardingPlan[]          @relation("OnboardingPlanOwner")
+  checklistItemsOwned     OnboardingChecklistItem[] @relation("ChecklistItemOwner")
+  checklistItemsApproved  OnboardingChecklistItem[] @relation("ChecklistItemApprover")
+  deliverablesOwned       ServiceDeliverable[]      @relation("ServiceDeliverableOwner")
 }
 
 model RefreshToken {
@@ -872,6 +912,8 @@ model OfferSnapshot {
   cancellationTerms      String?
   expectedLaunchTime     String?
   clientAccount          ClientAccount?
+  onboardingPlans        OnboardingPlan[]
+  serviceDeliverables    ServiceDeliverable[]
   createdAt              DateTime       @default(now())
 }
 
@@ -890,10 +932,12 @@ model ClientAccount {
   offerSnapshotId          String                        @unique
   offerSnapshot            OfferSnapshot                 @relation(fields: [offerSnapshotId], references: [id], onDelete: Restrict)
   serviceStatus            MarketingServiceStatus        @default(PENDING_ONBOARDING)
-  onboardingState          MarketingOnboardingState      @default(NOT_STARTED)
+  onboardingState          OnboardingPlanState           @default(NOT_STARTED)
   renewalDate              DateTime?
   commercialChanges        ClientCommercialStateChange[]
   idempotencyKeys          ConversionIdempotencyKey[]
+  onboardingPlan           OnboardingPlan?
+  serviceDeliverables      ServiceDeliverable[]
   createdAt                DateTime                      @default(now())
   updatedAt                DateTime                      @updatedAt
 
@@ -921,6 +965,121 @@ model ConversionIdempotencyKey {
   clientAccountId String
   clientAccount   ClientAccount @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
   createdAt       DateTime      @default(now())
+}
+
+// --- Marketing Business Unit: Onboarding / Service Delivery (Phase 2 Sub-project 2) ---
+
+model OnboardingPlan {
+  id               String              @id @default(uuid())
+  clientAccountId  String              @unique
+  clientAccount    ClientAccount       @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
+  offerSnapshotId  String
+  offerSnapshot    OfferSnapshot       @relation(fields: [offerSnapshotId], references: [id], onDelete: Restrict)
+  planVersion      Int                 @default(1)
+  ownerId          String?
+  owner            User?               @relation("OnboardingPlanOwner", fields: [ownerId], references: [id])
+  targetLaunchDate DateTime?
+  actualLaunchDate DateTime?
+  state            OnboardingPlanState @default(NOT_STARTED)
+  items            OnboardingChecklistItem[]
+  overrides        LaunchGateOverride[]
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+}
+
+model OnboardingChecklistItem {
+  id                String                    @id @default(uuid())
+  planId            String
+  plan              OnboardingPlan            @relation(fields: [planId], references: [id], onDelete: Cascade)
+  title             String
+  description       String?
+  sourceCapability  String?
+  required          Boolean                   @default(true)
+  responsibility    ChecklistResponsibility
+  assignedOwnerId   String?
+  assignedOwner     User?                     @relation("ChecklistItemOwner", fields: [assignedOwnerId], references: [id])
+  dueDate           DateTime?
+  dependsOnItemId   String?
+  dependsOnItem     OnboardingChecklistItem?  @relation("ItemDependency", fields: [dependsOnItemId], references: [id])
+  dependentItems    OnboardingChecklistItem[] @relation("ItemDependency")
+  status            ChecklistItemStatus       @default(NOT_STARTED)
+  evidence          String?
+  clientSubmission  Json?
+  blockerReason     String?
+  completedAt       DateTime?
+  approvedById      String?
+  approvedBy        User?                     @relation("ChecklistItemApprover", fields: [approvedById], references: [id])
+  approvedAt        DateTime?
+  history           OnboardingChecklistItemHistory[]
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+
+  @@index([planId, status])
+}
+
+model OnboardingChecklistItemHistory {
+  id         String                  @id @default(uuid())
+  itemId     String
+  item       OnboardingChecklistItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  oldStatus  ChecklistItemStatus
+  newStatus  ChecklistItemStatus
+  reason     String?
+  actorId    String?
+  createdAt  DateTime                @default(now())
+
+  @@index([itemId, createdAt])
+}
+
+model LaunchGateOverride {
+  id             String         @id @default(uuid())
+  planId         String
+  plan           OnboardingPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  reason         String
+  actorId        String
+  affectedGates  String[]
+  createdAt      DateTime       @default(now())
+
+  @@index([planId, createdAt])
+}
+
+model ServiceDeliverable {
+  id                     String                      @id @default(uuid())
+  clientAccountId        String
+  clientAccount          ClientAccount               @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
+  offerSnapshotId        String
+  offerSnapshot          OfferSnapshot               @relation(fields: [offerSnapshotId], references: [id], onDelete: Restrict)
+  sourceCapability       String
+  name                   String
+  description            String?
+  cadence                ServiceDeliverableCadence
+  cadenceDetail          String?
+  ownerId                String?
+  owner                  User?                       @relation("ServiceDeliverableOwner", fields: [ownerId], references: [id])
+  dueDate                DateTime?
+  status                 ServiceDeliverableStatus    @default(NOT_STARTED)
+  evidence               String?
+  clientApprovalRequired Boolean                     @default(false)
+  clientApprovedAt       DateTime?
+  blockerReason          String?
+  outsideScope           Boolean                     @default(false)
+  history                ServiceDeliverableHistory[]
+  createdAt              DateTime                    @default(now())
+  updatedAt              DateTime                    @updatedAt
+
+  @@index([clientAccountId, status])
+}
+
+model ServiceDeliverableHistory {
+  id            String                   @id @default(uuid())
+  deliverableId String
+  deliverable   ServiceDeliverable       @relation(fields: [deliverableId], references: [id], onDelete: Cascade)
+  oldStatus     ServiceDeliverableStatus
+  newStatus     ServiceDeliverableStatus
+  reason        String?
+  actorId       String?
+  createdAt     DateTime                 @default(now())
+
+  @@index([deliverableId, createdAt])
 }
 
 model Task {
