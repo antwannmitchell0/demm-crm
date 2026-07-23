@@ -39,7 +39,13 @@ export class ServiceDeliverableController {
     @Param('deliverableId') deliverableId: string,
     @Body() dto: UpdateDeliverableDto,
   ) {
-    return this.deliverables.update(businessUnitId, user.id, id, deliverableId, dto);
+    return this.deliverables.update(
+      businessUnitId,
+      user.id,
+      id,
+      deliverableId,
+      dto,
+    );
   }
 
   @Post('marketing/clients/:id/deliverables')

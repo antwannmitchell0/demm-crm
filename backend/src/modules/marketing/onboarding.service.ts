@@ -130,7 +130,8 @@ export class OnboardingService {
     const subjectType = clientAccount.companyId
       ? SubjectType.COMPANY
       : SubjectType.CONTACT;
-    const subjectRefId = clientAccount.companyId ?? clientAccount.primaryContactId;
+    const subjectRefId =
+      clientAccount.companyId ?? clientAccount.primaryContactId;
     await this.marketingRelationship.recordOnboardingMilestone(
       tx,
       organizationId,

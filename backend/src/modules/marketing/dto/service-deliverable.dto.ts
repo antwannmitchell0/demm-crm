@@ -5,7 +5,10 @@ import {
   IsNotEmpty,
   IsDateString,
 } from 'class-validator';
-import { ServiceDeliverableStatus, ServiceDeliverableCadence } from '@prisma/client';
+import {
+  ServiceDeliverableStatus,
+  ServiceDeliverableCadence,
+} from '@prisma/client';
 
 export class UpdateDeliverableDto {
   @IsOptional()

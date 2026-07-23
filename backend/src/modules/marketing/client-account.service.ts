@@ -120,7 +120,13 @@ export class ClientAccountService {
       .findAll(businessUnitId, id)
       .catch(() => []);
 
-    return { ...clientAccount, currentCommercialState, brief, onboarding, deliverables };
+    return {
+      ...clientAccount,
+      currentCommercialState,
+      brief,
+      onboarding,
+      deliverables,
+    };
   }
 
   /**

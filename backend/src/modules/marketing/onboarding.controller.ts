@@ -17,7 +17,10 @@ import { CurrentBusinessUnitId } from '../../common/decorators/current-business-
 import { CurrentOrganizationId } from '../../common/decorators/current-organization.decorator';
 import { CurrentCorrelationId } from '../../common/decorators/current-correlation-id.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { UpdateChecklistItemDto, ActivateClientDto } from './dto/onboarding.dto';
+import {
+  UpdateChecklistItemDto,
+  ActivateClientDto,
+} from './dto/onboarding.dto';
 import { Role } from '@prisma/client';
 
 /**
