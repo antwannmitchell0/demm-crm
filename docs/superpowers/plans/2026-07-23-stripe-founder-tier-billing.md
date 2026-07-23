@@ -400,6 +400,17 @@ DATABASE_URL="postgresql://antwannmitchellsr@localhost:5432/demm_crm" npx prisma
 npx prisma generate
 ```
 
+- [ ] **Step 11b (correction, added after Task 2 was first attempted): populate the two new required `OfferSnapshot` fields at their one existing creation site, BEFORE running the regression suite in Step 12**
+
+Step 12 will fail to compile otherwise: `trialEligible`/`trialDays` are `NOT NULL` on `OfferSnapshot` per this task's own design (immutable copy, not nullable — see the IMPORTANT NAMING NOTE in Step 2), but nothing populates them until Task 6, which creates a window where the codebase doesn't compile. This step closes that window with the minimal, mechanical, zero-judgment fix — copying two fields the exact same way every other field in the same object literal is already copied. It does **not** do Task 6's actual work (the `StripePriceMapping` lookup / `stripePriceMappingId` binding, which stays nullable and stays deferred to Task 6 — that part requires environment/livemode awareness this task has no reason to add).
+
+In `backend/src/modules/marketing/client-account.service.ts`, find the `tx.offerSnapshot.create({ data: { ... } })` call inside `convert()` (around line 242–260) and add exactly these two lines to the existing `data: { ... }` object, alongside the other fields already being copied 1:1 from `offer`:
+```ts
+            trialEligible: offer.trialEligible,
+            trialDays: offer.trialDays,
+```
+Do not touch anything else in `convert()` — no new queries, no new steps, no change to guards or ordering. This is strictly narrower than Task 6's full scope.
+
 - [ ] **Step 12: Run the full existing regression suite to confirm nothing broke from the nullability change**
 
 ```bash
@@ -411,7 +422,7 @@ Expected: all existing checks still PASS (the `recordedById` change is loosening
 - [ ] **Step 13: Commit**
 
 ```bash
-git add backend/prisma/schema.prisma backend/prisma/migrations/
+git add backend/prisma/schema.prisma backend/prisma/migrations/ backend/src/modules/marketing/client-account.service.ts
 git commit -m "feat(billing): schema for Stripe price mapping, subscriptions, checkout sessions, payment records"
 ```
 
