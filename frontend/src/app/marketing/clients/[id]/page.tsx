@@ -107,7 +107,7 @@ function ChecklistItemRow({
         </div>
         <StatusBadge status={item.status} />
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
@@ -181,7 +181,7 @@ function DeliverableRow({
         </div>
         <StatusBadge status={deliverable.status} />
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
@@ -389,7 +389,7 @@ export default function ClientDetailPage() {
 
         {tab === 'overview' && (
           <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-2xl">
                 <h4 className="text-[9px] font-mono font-bold tracking-wider text-slate-500 uppercase mb-2">
                   Commercial State
@@ -522,7 +522,7 @@ export default function ClientDetailPage() {
               )}
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <h4 className="text-[9px] font-mono font-bold tracking-wider text-slate-500 uppercase mb-2">
                   DEMM Owes
