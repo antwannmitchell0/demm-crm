@@ -1348,6 +1348,138 @@ async function runApiTests() {
   );
   check('Client Health surfaces a COMMERCIAL factor when the subscription is PAST_DUE', hasCommercialFactorKpi);
 
+  // --- DOM26-R RelationshipSignal lifecycle (Task 15) ---
+  // Task 14's raw prisma.billingSubscription.updateMany above bypassed
+  // signal emission entirely (it's a direct DB write, not a webhook) --
+  // reset to ACTIVE and drive the rest of this section through real
+  // webhook deliveries so every signal transition is genuinely exercised.
+  await prisma.billingSubscription.updateMany({
+    where: { stripeSubscriptionId: subForKpi },
+    data: { status: 'ACTIVE' },
+  });
+
+  const profileForSignalsKpi = await prisma.relationshipSubject.findFirst({
+    where: { contactId: contactKpi.id },
+  }).then((subject) =>
+    subject
+      ? prisma.relationshipProfile.findFirst({ where: { subjectId: subject.id, businessUnitId: buKpi.id } })
+      : null,
+  );
+  const profileIdSignalsKpi = profileForSignalsKpi!.id;
+
+  const signalsAfterEarlierPayment = await prisma.relationshipSignal.findMany({ where: { profileId: profileIdSignalsKpi } });
+  check(
+    'PAYMENT_SUCCESS signal was created (and self-resolved) from the earlier invoice.paid delivery',
+    signalsAfterEarlierPayment.some((s) => s.type === 'PAYMENT_SUCCESS' && s.state === 'RESOLVED'),
+  );
+
+  function synthesizeKpiSubscriptionEvent(eventType: string, id: string, overrides: Record<string, any> = {}) {
+    return JSON.stringify({
+      id,
+      object: 'event',
+      api_version: '2025-08-27.basil',
+      created: Math.floor(Date.now() / 1000),
+      livemode: false,
+      type: eventType,
+      data: {
+        object: {
+          id: subForKpi,
+          object: 'subscription',
+          customer: custForKpi,
+          status: 'active',
+          metadata: { clientAccountId: clientAccountIdKpi },
+          items: { data: [{ current_period_start: Math.floor(Date.now() / 1000), current_period_end: Math.floor(Date.now() / 1000) + 2592000 }] },
+          cancel_at_period_end: false,
+          canceled_at: null,
+          trial_start: null,
+          trial_end: null,
+          ...overrides,
+        },
+      },
+    });
+  }
+
+  // 1. invoice.payment_failed -> PAYMENT_FAILURE signal (ACTIVE).
+  await deliverWebhook(JSON.stringify({
+    id: `evt_kpi_payfail_${kpiSuffix}`,
+    object: 'event',
+    api_version: '2025-08-27.basil',
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    type: 'invoice.payment_failed',
+    data: { object: { id: `in_kpi_fail_${kpiSuffix}`, object: 'invoice', customer: custForKpi, subscription: subForKpi } },
+  }));
+  await new Promise((r) => setTimeout(r, 300));
+  const signalsAfterFailure = await prisma.relationshipSignal.findMany({ where: { profileId: profileIdSignalsKpi } });
+  check(
+    'invoice.payment_failed creates an ACTIVE PAYMENT_FAILURE signal',
+    signalsAfterFailure.some((s) => s.type === 'PAYMENT_FAILURE' && s.state === 'ACTIVE'),
+  );
+
+  // 2. invoice.paid while a PAYMENT_FAILURE is active -> PAYMENT_RECOVERY
+  // (self-resolved) + PAYMENT_FAILURE/PAST_DUE resolved, not another
+  // plain PAYMENT_SUCCESS.
+  await deliverWebhook(JSON.stringify({
+    id: `evt_kpi_recover_${kpiSuffix}`,
+    object: 'event',
+    api_version: '2025-08-27.basil',
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    type: 'invoice.paid',
+    data: {
+      object: {
+        id: `in_kpi_recover_${kpiSuffix}`,
+        object: 'invoice',
+        customer: custForKpi,
+        subscription: subForKpi,
+        amount_paid: 9900,
+        currency: 'usd',
+        payment_intent: `pi_kpi_recover_${kpiSuffix}`,
+      },
+    },
+  }));
+  await new Promise((r) => setTimeout(r, 300));
+  const signalsAfterRecovery = await prisma.relationshipSignal.findMany({ where: { profileId: profileIdSignalsKpi } });
+  check(
+    'Recovery invoice.paid creates a RESOLVED PAYMENT_RECOVERY signal',
+    signalsAfterRecovery.some((s) => s.type === 'PAYMENT_RECOVERY' && s.state === 'RESOLVED'),
+  );
+  const failureSignalAfterRecovery = signalsAfterRecovery.find((s) => s.type === 'PAYMENT_FAILURE');
+  check(
+    'The earlier PAYMENT_FAILURE signal is resolved by the recovery',
+    failureSignalAfterRecovery?.state === 'RESOLVED',
+  );
+
+  // 3. customer.subscription.updated with cancel_at_period_end: true ->
+  // CANCELLATION_SCHEDULED (ACTIVE).
+  await deliverWebhook(synthesizeKpiSubscriptionEvent('customer.subscription.updated', `evt_kpi_cancelsched_${kpiSuffix}`, { cancel_at_period_end: true }));
+  await new Promise((r) => setTimeout(r, 300));
+  const signalsAfterCancelScheduled = await prisma.relationshipSignal.findMany({ where: { profileId: profileIdSignalsKpi } });
+  check(
+    'cancel_at_period_end: true creates an ACTIVE CANCELLATION_SCHEDULED signal',
+    signalsAfterCancelScheduled.some((s) => s.type === 'CANCELLATION_SCHEDULED' && s.state === 'ACTIVE'),
+  );
+
+  // 4. Un-scheduling (cancel_at_period_end back to false) resolves it.
+  await deliverWebhook(synthesizeKpiSubscriptionEvent('customer.subscription.updated', `evt_kpi_cancelunsched_${kpiSuffix}`, { cancel_at_period_end: false }));
+  await new Promise((r) => setTimeout(r, 300));
+  const signalsAfterUnscheduled = await prisma.relationshipSignal.findMany({ where: { profileId: profileIdSignalsKpi } });
+  const cancelScheduledAfterUnschedule = signalsAfterUnscheduled.find((s) => s.type === 'CANCELLATION_SCHEDULED');
+  check(
+    'Un-scheduling cancellation resolves the CANCELLATION_SCHEDULED signal',
+    cancelScheduledAfterUnschedule?.state === 'RESOLVED',
+  );
+
+  // 5. customer.subscription.deleted -> CANCELLATION_COMPLETED, stays
+  // ACTIVE (needs human follow-up, never auto-resolved).
+  await deliverWebhook(synthesizeKpiSubscriptionEvent('customer.subscription.deleted', `evt_kpi_canceled_${kpiSuffix}`, { status: 'canceled' }));
+  await new Promise((r) => setTimeout(r, 300));
+  const signalsAfterDeleted = await prisma.relationshipSignal.findMany({ where: { profileId: profileIdSignalsKpi } });
+  check(
+    'customer.subscription.deleted creates a CANCELLATION_COMPLETED signal that remains ACTIVE',
+    signalsAfterDeleted.some((s) => s.type === 'CANCELLATION_COMPLETED' && s.state === 'ACTIVE'),
+  );
+
   // Teardown.
   await prisma.billingSubscription.deleteMany({ where: { clientAccountId: clientAccountIdKpi } });
   await prisma.clientCommercialStateChange.deleteMany({ where: { clientAccountId: clientAccountIdKpi } });

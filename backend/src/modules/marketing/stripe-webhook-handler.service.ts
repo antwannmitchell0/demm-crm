@@ -3,6 +3,7 @@ import Stripe from 'stripe';
 import { PrismaService } from '../../prisma.service';
 import { createStripeClient } from './stripe-config';
 import { BillingSubscriptionStatus } from '@prisma/client';
+import { BillingRelationshipSignalService } from './billing-relationship-signal.service';
 
 const STRIPE_TO_BILLING_STATUS: Record<string, BillingSubscriptionStatus> = {
   incomplete: BillingSubscriptionStatus.INCOMPLETE,
@@ -19,7 +20,10 @@ const STRIPE_TO_BILLING_STATUS: Record<string, BillingSubscriptionStatus> = {
 export class StripeWebhookHandlerService {
   private readonly logger = new Logger(StripeWebhookHandlerService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private billingSignals: BillingRelationshipSignalService,
+  ) {}
 
   async handleEvent(event: Stripe.Event): Promise<void> {
     switch (event.type) {
@@ -131,15 +135,63 @@ export class StripeWebhookHandlerService {
 
   private async onSubscriptionUpsert(event: Stripe.Event): Promise<void> {
     const subscription = event.data.object as Stripe.Subscription;
+
+    // Capture prior state BEFORE upserting -- signal transitions (entering
+    // PAST_DUE, cancellation being scheduled/unscheduled) are detected by
+    // comparing against what was true before this event, not the absolute
+    // new state alone.
+    const priorRow = await this.prisma.billingSubscription.findUnique({
+      where: { stripeSubscriptionId: subscription.id },
+    });
+
     await this.upsertBillingSubscription(subscription);
+
+    const clientAccountId =
+      subscription.metadata?.clientAccountId ?? priorRow?.clientAccountId;
+    if (!clientAccountId) return;
+
+    if (subscription.status === 'past_due' && priorRow?.status !== 'PAST_DUE') {
+      await this.billingSignals.createSignal(
+        clientAccountId,
+        'PAST_DUE',
+        `Stripe subscription ${subscription.id} is now past due.`,
+      );
+    }
+
+    if (subscription.cancel_at_period_end && !priorRow?.cancelAtPeriodEnd) {
+      await this.billingSignals.createSignal(
+        clientAccountId,
+        'CANCELLATION_SCHEDULED',
+        `Stripe subscription ${subscription.id} is scheduled to cancel at period end.`,
+      );
+    } else if (!subscription.cancel_at_period_end && priorRow?.cancelAtPeriodEnd) {
+      await this.billingSignals.resolveSignals(clientAccountId, [
+        'CANCELLATION_SCHEDULED',
+      ]);
+    }
   }
 
   private async onSubscriptionDeleted(event: Stripe.Event): Promise<void> {
     const subscription = event.data.object as Stripe.Subscription;
+    const priorRow = await this.prisma.billingSubscription.findUnique({
+      where: { stripeSubscriptionId: subscription.id },
+    });
     await this.prisma.billingSubscription.updateMany({
       where: { stripeSubscriptionId: subscription.id },
       data: { status: BillingSubscriptionStatus.CANCELED, canceledAt: new Date() },
     });
+
+    const clientAccountId =
+      subscription.metadata?.clientAccountId ?? priorRow?.clientAccountId;
+    if (clientAccountId) {
+      // Deliberately NOT auto-resolved -- a completed cancellation needs
+      // human follow-up, not a silent closure.
+      await this.billingSignals.createSignal(
+        clientAccountId,
+        'CANCELLATION_COMPLETED',
+        `Stripe subscription ${subscription.id} has been canceled.`,
+      );
+    }
   }
 
   private async resolveClientAccountIdBySubscription(stripeSubscriptionId: string | null): Promise<string | null> {
@@ -201,6 +253,34 @@ export class StripeWebhookHandlerService {
           source: 'STRIPE_WEBHOOK',
         },
       });
+
+      const wasFailing = await this.billingSignals.hasActiveSignal(
+        clientAccountId,
+        ['PAYMENT_FAILURE', 'PAST_DUE'],
+      );
+      if (wasFailing) {
+        await this.billingSignals.createSignal(
+          clientAccountId,
+          'PAYMENT_RECOVERY',
+          `Payment recovered for invoice ${invoice.id}.`,
+        );
+        await this.billingSignals.resolveSignals(clientAccountId, [
+          'PAYMENT_FAILURE',
+          'PAST_DUE',
+        ]);
+      } else {
+        await this.billingSignals.createSignal(
+          clientAccountId,
+          'PAYMENT_SUCCESS',
+          `Payment succeeded for invoice ${invoice.id}.`,
+        );
+      }
+      // A successful payment proves billing setup worked -- close out any
+      // still-open checkout-in-progress or setup-failure signal.
+      await this.billingSignals.resolveSignals(clientAccountId, [
+        'CHECKOUT_PENDING',
+        'BILLING_SETUP_FAILED',
+      ]);
     }
 
     if (billingSubscription) {
@@ -219,6 +299,17 @@ export class StripeWebhookHandlerService {
       where: { stripeSubscriptionId },
       data: { status: BillingSubscriptionStatus.PAST_DUE },
     });
+
+    const clientAccountId = await this.resolveClientAccountIdBySubscription(
+      stripeSubscriptionId,
+    );
+    if (clientAccountId) {
+      await this.billingSignals.createSignal(
+        clientAccountId,
+        'PAYMENT_FAILURE',
+        `Payment failed for invoice ${invoice.id}.`,
+      );
+    }
   }
 
   private async onChargeRefunded(event: Stripe.Event): Promise<void> {

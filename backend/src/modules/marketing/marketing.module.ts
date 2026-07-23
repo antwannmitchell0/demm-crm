@@ -23,6 +23,7 @@ import { ReportingController } from './reporting.controller';
 import { StripeWebhookController } from './stripe-webhook.controller';
 import { StripeWebhookDedupService } from './stripe-webhook-dedup.service';
 import { StripeWebhookHandlerService } from './stripe-webhook-handler.service';
+import { BillingRelationshipSignalService } from './billing-relationship-signal.service';
 
 @Module({
   imports: [Dom26rModule],
@@ -52,6 +53,7 @@ import { StripeWebhookHandlerService } from './stripe-webhook-handler.service';
     ReportingService,
     StripeWebhookDedupService,
     StripeWebhookHandlerService,
+    BillingRelationshipSignalService,
   ],
   exports: [
     OfferService,
