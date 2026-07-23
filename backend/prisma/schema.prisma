@@ -750,10 +750,10 @@ model User {
   bookings               Booking[]
   memoryApprovals        MemoryApproval[]
   commercialStateChanges ClientCommercialStateChange[]
-  onboardingPlansOwned    OnboardingPlan[]          @relation("OnboardingPlanOwner")
-  checklistItemsOwned     OnboardingChecklistItem[] @relation("ChecklistItemOwner")
-  checklistItemsApproved  OnboardingChecklistItem[] @relation("ChecklistItemApprover")
-  deliverablesOwned       ServiceDeliverable[]      @relation("ServiceDeliverableOwner")
+  onboardingPlansOwned   OnboardingPlan[]              @relation("OnboardingPlanOwner")
+  checklistItemsOwned    OnboardingChecklistItem[]     @relation("ChecklistItemOwner")
+  checklistItemsApproved OnboardingChecklistItem[]     @relation("ChecklistItemApprover")
+  deliverablesOwned      ServiceDeliverable[]          @relation("ServiceDeliverableOwner")
 }
 
 model RefreshToken {
@@ -864,17 +864,19 @@ model Opportunity {
 // --- Marketing Business Unit: Offer / ClientAccount (Phase 2 Lead-to-Client Core) ---
 
 model Offer {
-  id                     String              @id @default(uuid())
+  id                     String               @id @default(uuid())
   businessUnitId         String
-  businessUnit           BusinessUnit        @relation(fields: [businessUnitId], references: [id], onDelete: Restrict)
+  businessUnit           BusinessUnit         @relation(fields: [businessUnitId], references: [id], onDelete: Restrict)
   key                    String
-  version                Int                 @default(1)
+  version                Int                  @default(1)
   name                   String
-  price                  Decimal             @db.Decimal(12, 2)
-  setupFee               Decimal?            @db.Decimal(12, 2)
+  price                  Decimal              @db.Decimal(12, 2)
+  setupFee               Decimal?             @db.Decimal(12, 2)
   includedServices       String[]
   excludedServices       String[]
   onboardingRequirements String[]
+  trialEligible          Boolean              @default(false)
+  trialDays              Int                  @default(0)
   // Nullable by design (2026-07-23 Commercial Truth Lock): unlike
   // includedServices/price, these four have no confirmed answer for most
   // tiers yet. A required NOT NULL column would force fabricating customer
@@ -884,29 +886,34 @@ model Offer {
   reportingCadence       String?
   cancellationTerms      String?
   expectedLaunchTime     String?
-  lifecycleState         OfferLifecycleState @default(DRAFT)
-  isPubliclyAvailable    Boolean             @default(false)
+  lifecycleState         OfferLifecycleState  @default(DRAFT)
+  isPubliclyAvailable    Boolean              @default(false)
   snapshots              OfferSnapshot[]
   clientAccounts         ClientAccount[]
-  createdAt              DateTime            @default(now())
-  updatedAt              DateTime            @updatedAt
+  stripePriceMappings    StripePriceMapping[]
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
 
   @@unique([businessUnitId, key, version])
   @@index([businessUnitId, lifecycleState])
 }
 
 model OfferSnapshot {
-  id                     String         @id @default(uuid())
+  id                     String                   @id @default(uuid())
   offerId                String
-  offer                  Offer          @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  offer                  Offer                    @relation(fields: [offerId], references: [id], onDelete: Restrict)
   offerVersion           Int
   key                    String
   name                   String
-  price                  Decimal        @db.Decimal(12, 2)
-  setupFee               Decimal?       @db.Decimal(12, 2)
+  price                  Decimal                  @db.Decimal(12, 2)
+  setupFee               Decimal?                 @db.Decimal(12, 2)
   includedServices       String[]
   excludedServices       String[]
   onboardingRequirements String[]
+  trialEligible          Boolean
+  trialDays              Int
+  stripePriceMappingId   String?
+  stripePriceMapping     StripePriceMapping?      @relation(fields: [stripePriceMappingId], references: [id], onDelete: Restrict)
   supportBoundaries      String?
   reportingCadence       String?
   cancellationTerms      String?
@@ -914,7 +921,8 @@ model OfferSnapshot {
   clientAccount          ClientAccount?
   onboardingPlans        OnboardingPlan[]
   serviceDeliverables    ServiceDeliverable[]
-  createdAt              DateTime       @default(now())
+  checkoutSessions       BillingCheckoutSession[]
+  createdAt              DateTime                 @default(now())
 }
 
 model ClientAccount {
@@ -934,11 +942,15 @@ model ClientAccount {
   serviceStatus            MarketingServiceStatus        @default(PENDING_ONBOARDING)
   onboardingState          OnboardingPlanState           @default(NOT_STARTED)
   renewalDate              DateTime?
+  stripeCustomerId         String?
   commercialChanges        ClientCommercialStateChange[]
   idempotencyKeys          ConversionIdempotencyKey[]
   onboardingPlan           OnboardingPlan?
   serviceDeliverables      ServiceDeliverable[]
   health                   ClientHealth?
+  billingSubscriptions     BillingSubscription[]
+  billingCheckoutSessions  BillingCheckoutSession[]
+  billingPaymentRecords    BillingPaymentRecord[]
   createdAt                DateTime                      @default(now())
   updatedAt                DateTime                      @updatedAt
 
@@ -960,9 +972,9 @@ model ClientCommercialStateChange {
   // full OfferSnapshot price, which would misrepresent partial/deposit
   // payments as full payments).
   amount          Decimal?      @db.Decimal(12, 2)
-  recordedById    String
-  recordedBy      User          @relation(fields: [recordedById], references: [id])
-  source          String        @default("MANUAL")
+  recordedById    String?
+  recordedBy      User?         @relation(fields: [recordedById], references: [id])
+  source          String        @default("MANUAL") // "MANUAL" | "STRIPE_WEBHOOK"
   createdAt       DateTime      @default(now())
 
   @@index([clientAccountId, field, createdAt])
@@ -975,77 +987,181 @@ model ConversionIdempotencyKey {
   createdAt       DateTime      @default(now())
 }
 
+model StripePriceMapping {
+  id              String                @id @default(uuid())
+  offerId         String
+  offer           Offer                 @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  offerVersion    Int
+  amount          Decimal               @db.Decimal(12, 2)
+  currency        String                @default("usd")
+  billingInterval String                @default("month")
+  environment     String
+  livemode        Boolean
+  stripeProductId String
+  stripePriceId   String
+  createdAt       DateTime              @default(now())
+  offerSnapshots  OfferSnapshot[]
+  subscriptions   BillingSubscription[]
+
+  @@unique([offerId, offerVersion, environment, livemode])
+  @@index([environment, livemode])
+}
+
+model BillingSubscription {
+  id                   String                    @id @default(uuid())
+  clientAccountId      String
+  clientAccount        ClientAccount             @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
+  stripePriceMappingId String
+  stripePriceMapping   StripePriceMapping        @relation(fields: [stripePriceMappingId], references: [id], onDelete: Restrict)
+  stripeSubscriptionId String                    @unique
+  stripeCustomerId     String
+  status               BillingSubscriptionStatus
+  trialStart           DateTime?
+  trialEnd             DateTime?
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean                   @default(false)
+  canceledAt           DateTime?
+  createdAt            DateTime                  @default(now())
+  syncedAt             DateTime                  @updatedAt
+  payments             BillingPaymentRecord[]
+
+  @@index([clientAccountId, createdAt])
+  @@index([stripeCustomerId])
+}
+
+model BillingCheckoutSession {
+  id                      String                @id @default(uuid())
+  clientAccountId         String
+  clientAccount           ClientAccount         @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
+  offerSnapshotId         String
+  offerSnapshot           OfferSnapshot         @relation(fields: [offerSnapshotId], references: [id], onDelete: Restrict)
+  stripeCheckoutSessionId String?
+  status                  BillingCheckoutStatus @default(PENDING)
+  idempotencyKey          String                @unique
+  attemptNumber           Int                   @default(1)
+  checkoutUrl             String?
+  createdAt               DateTime              @default(now())
+  expiresAt               DateTime?
+  failedAt                DateTime?
+  lastError               String?
+
+  @@index([clientAccountId, createdAt])
+}
+
+model BillingPaymentRecord {
+  id                    String               @id @default(uuid())
+  clientAccountId       String
+  clientAccount         ClientAccount        @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
+  billingSubscriptionId String?
+  billingSubscription   BillingSubscription? @relation(fields: [billingSubscriptionId], references: [id], onDelete: SetNull)
+  stripeInvoiceId       String?              @unique
+  stripePaymentIntentId String?
+  stripeCustomerId      String
+  stripeSubscriptionId  String?
+  amountPaid            Decimal              @db.Decimal(12, 2)
+  currency              String
+  taxAmount             Decimal?             @db.Decimal(12, 2)
+  creditAmount          Decimal?             @db.Decimal(12, 2)
+  billingPeriodStart    DateTime?
+  billingPeriodEnd      DateTime?
+  paidAt                DateTime
+  refundedAmount        Decimal              @default(0) @db.Decimal(12, 2)
+  reversalState         PaymentReversalState @default(NONE)
+  createdAt             DateTime             @default(now())
+
+  @@index([clientAccountId, paidAt])
+}
+
+model StripeWebhookEvent {
+  id              String                 @id @default(uuid())
+  stripeEventId   String                 @unique
+  eventType       String
+  processingState WebhookProcessingState @default(RECEIVED)
+  attemptCount    Int                    @default(0)
+  receivedAt      DateTime               @default(now())
+  processedAt     DateTime?
+  lastError       String?
+  eventCreatedAt  DateTime
+  apiVersion      String
+  livemode        Boolean
+  payloadHash     String
+  correlationId   String?
+
+  @@index([processingState, receivedAt])
+}
+
 // --- Marketing Business Unit: Onboarding / Service Delivery (Phase 2 Sub-project 2) ---
 
 model OnboardingPlan {
-  id               String              @id @default(uuid())
-  clientAccountId  String              @unique
-  clientAccount    ClientAccount       @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
+  id               String                    @id @default(uuid())
+  clientAccountId  String                    @unique
+  clientAccount    ClientAccount             @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
   offerSnapshotId  String
-  offerSnapshot    OfferSnapshot       @relation(fields: [offerSnapshotId], references: [id], onDelete: Restrict)
-  planVersion      Int                 @default(1)
+  offerSnapshot    OfferSnapshot             @relation(fields: [offerSnapshotId], references: [id], onDelete: Restrict)
+  planVersion      Int                       @default(1)
   ownerId          String?
-  owner            User?               @relation("OnboardingPlanOwner", fields: [ownerId], references: [id])
+  owner            User?                     @relation("OnboardingPlanOwner", fields: [ownerId], references: [id])
   targetLaunchDate DateTime?
   actualLaunchDate DateTime?
-  state            OnboardingPlanState @default(NOT_STARTED)
+  state            OnboardingPlanState       @default(NOT_STARTED)
   items            OnboardingChecklistItem[]
   overrides        LaunchGateOverride[]
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @updatedAt
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
 }
 
 model OnboardingChecklistItem {
-  id                String                    @id @default(uuid())
-  planId            String
-  plan              OnboardingPlan            @relation(fields: [planId], references: [id], onDelete: Cascade)
-  title             String
-  description       String?
-  sourceCapability  String?
-  required          Boolean                   @default(true)
-  responsibility    ChecklistResponsibility
-  assignedOwnerId   String?
-  assignedOwner     User?                     @relation("ChecklistItemOwner", fields: [assignedOwnerId], references: [id])
-  dueDate           DateTime?
-  dependsOnItemId   String?
-  dependsOnItem     OnboardingChecklistItem?  @relation("ItemDependency", fields: [dependsOnItemId], references: [id])
-  dependentItems    OnboardingChecklistItem[] @relation("ItemDependency")
-  status            ChecklistItemStatus       @default(NOT_STARTED)
-  evidence          String?
-  clientSubmission  Json?
-  blockerReason     String?
-  completedAt       DateTime?
-  approvedById      String?
-  approvedBy        User?                     @relation("ChecklistItemApprover", fields: [approvedById], references: [id])
-  approvedAt        DateTime?
-  history           OnboardingChecklistItemHistory[]
-  createdAt         DateTime                  @default(now())
-  updatedAt         DateTime                  @updatedAt
+  id               String                           @id @default(uuid())
+  planId           String
+  plan             OnboardingPlan                   @relation(fields: [planId], references: [id], onDelete: Cascade)
+  title            String
+  description      String?
+  sourceCapability String?
+  required         Boolean                          @default(true)
+  responsibility   ChecklistResponsibility
+  assignedOwnerId  String?
+  assignedOwner    User?                            @relation("ChecklistItemOwner", fields: [assignedOwnerId], references: [id])
+  dueDate          DateTime?
+  dependsOnItemId  String?
+  dependsOnItem    OnboardingChecklistItem?         @relation("ItemDependency", fields: [dependsOnItemId], references: [id])
+  dependentItems   OnboardingChecklistItem[]        @relation("ItemDependency")
+  status           ChecklistItemStatus              @default(NOT_STARTED)
+  evidence         String?
+  clientSubmission Json?
+  blockerReason    String?
+  completedAt      DateTime?
+  approvedById     String?
+  approvedBy       User?                            @relation("ChecklistItemApprover", fields: [approvedById], references: [id])
+  approvedAt       DateTime?
+  history          OnboardingChecklistItemHistory[]
+  createdAt        DateTime                         @default(now())
+  updatedAt        DateTime                         @updatedAt
 
   @@index([planId, status])
 }
 
 model OnboardingChecklistItemHistory {
-  id         String                  @id @default(uuid())
-  itemId     String
-  item       OnboardingChecklistItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  oldStatus  ChecklistItemStatus
-  newStatus  ChecklistItemStatus
-  reason     String?
-  actorId    String?
-  createdAt  DateTime                @default(now())
+  id        String                  @id @default(uuid())
+  itemId    String
+  item      OnboardingChecklistItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  oldStatus ChecklistItemStatus
+  newStatus ChecklistItemStatus
+  reason    String?
+  actorId   String?
+  createdAt DateTime                @default(now())
 
   @@index([itemId, createdAt])
 }
 
 model LaunchGateOverride {
-  id             String         @id @default(uuid())
-  planId         String
-  plan           OnboardingPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
-  reason         String
-  actorId        String
-  affectedGates  String[]
-  createdAt      DateTime       @default(now())
+  id            String         @id @default(uuid())
+  planId        String
+  plan          OnboardingPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  reason        String
+  actorId       String
+  affectedGates String[]
+  createdAt     DateTime       @default(now())
 
   @@index([planId, createdAt])
 }
@@ -1107,6 +1223,38 @@ enum ClientHealthState {
   PAUSED
   CHURNED
   UNKNOWN
+}
+
+enum BillingSubscriptionStatus {
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+  PAUSED
+}
+
+enum BillingCheckoutStatus {
+  PENDING
+  CREATED
+  COMPLETED
+  EXPIRED
+  FAILED
+}
+
+enum WebhookProcessingState {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+enum PaymentReversalState {
+  NONE
+  PARTIAL_REFUND
+  FULL_REFUND
 }
 
 model ClientHealth {

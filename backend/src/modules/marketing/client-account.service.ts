@@ -258,6 +258,8 @@ export class ClientAccountService {
             reportingCadence: offer.reportingCadence,
             cancellationTerms: offer.cancellationTerms,
             expectedLaunchTime: offer.expectedLaunchTime,
+            trialEligible: offer.trialEligible,
+            trialDays: offer.trialDays,
           },
         });
 
