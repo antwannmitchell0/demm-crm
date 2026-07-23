@@ -183,19 +183,26 @@ The regeneration endpoint (§4) is the retry path referenced above.
 
 ---
 
-## 6. Trial rules from the immutable OfferSnapshot (amendment §10)
+## 6. Trial rules from the immutable OfferSnapshot (amendment §10, corrected)
 
-**No new field is added anywhere for this.** Trial length is derived purely from data the `OfferSnapshot` already immutably carries — its `key` (`'SURVIVOR'` / `'GROWTH'` / `'EMPIRE'`, copied at snapshot time exactly as today) — via a small static lookup in code, evaluated at Checkout-Session-creation time (not stored, not cached, always re-derived from the immutable snapshot so it can never drift):
+**Correction from v2:** a static application-code lookup table (`{SURVIVOR: 7, GROWTH: 0, EMPIRE: 0}`) is rejected. Trial policy is commercial data — what a client was actually promised — and must live in the same immutable, queryable, auditable place every other commercial promise in this system lives (price, included services, cancellation terms), not in a code constant that could change across a deploy with no data trail and no relationship to what a specific client's snapshot says.
 
-```ts
-const TRIAL_DAYS_BY_OFFER_KEY: Record<string, number> = {
-  SURVIVOR: 7,
-  GROWTH: 0,
-  EMPIRE: 0,
-};
+### `Offer` — one new field
+```prisma
+trialDays Int @default(0)
 ```
+Current trial policy per tier/version, editable exactly like `price` — a future Offer version can change it, same as any other commercial term.
 
-If `OfferSnapshot.key` isn't one of these three (future tier), trial defaults to `0` and the lookup logs a warning — fails safe (no trial) rather than guessing. `StripeCheckoutService` passes `subscription_data.trial_period_days` on the Checkout Session accordingly. No additional trial behavior (grace periods, extensions, tier-specific proration) is implemented — locked to exactly the two-tier rule stated in the amendment.
+### `OfferSnapshot` — one new field
+```prisma
+trialDays Int
+```
+Copied from `Offer.trialDays` at snapshot-creation time inside `convert()`, via the same mechanism already copying `price`, `setupFee`, `includedServices`, etc. onto the snapshot — one more field in the same `create({ data: {...} })` call, not new transaction logic. Once set, it is never updated; a later change to `Offer.trialDays` affects only Offers converted after that change, exactly like a price change.
+
+`StripeCheckoutService` reads `subscription_data.trial_period_days` directly from `OfferSnapshot.trialDays` — the actual, immutable, per-client record of what was promised — never from a lookup keyed on tier name. Two clients on the same tier converted before/after a trial-policy change will correctly retain whatever their own snapshot says, exactly like two clients on the same tier converted before/after a price change already do today.
+
+### Seed data update
+The 3 existing founder-tier `Offer` rows (`SURVIVOR`/`GROWTH`/`EMPIRE`) get `trialDays` set via the seed script: `SURVIVOR: 7`, `GROWTH: 0`, `EMPIRE: 0` — the locked direction from the original amendment, now expressed as real data instead of code. No additional trial behavior (grace periods, extensions, proration) is implemented — locked to exactly this rule.
 
 ---
 
@@ -389,7 +396,7 @@ New HTTP-level test file `backend/test-stripe-billing-api.ts` (established patte
 
 1. **Environment/livemode isolation** — a staging-configured `StripePriceMapping` cannot be used to create a checkout when `STRIPE_SECRET_KEY` is a live key (and vice versa); `StripeEnvironmentGuard` refusal is asserted directly.
 2. **OfferSnapshot price immutability** — create a `ClientAccount` against `StripePriceMapping` v1, then create a new `StripePriceMapping` v2 (simulating a price change), assert the existing `ClientAccount`'s `OfferSnapshot.stripePriceMappingId` still points at v1 and its checkout still uses v1's price.
-3. **Trial rules** — SURVIVOR snapshot produces a Checkout Session with `trial_period_days: 7`; GROWTH and EMPIRE produce `0`/absent.
+3. **Trial rules** — a SURVIVOR-tier `OfferSnapshot.trialDays: 7` produces a Checkout Session with `trial_period_days: 7`; GROWTH/EMPIRE (`trialDays: 0`) produce `0`/absent. A second assertion: changing `Offer.trialDays` after a snapshot exists does not change that snapshot's `trialDays` or its checkout behavior — same immutability test as price.
 4. **Stripe POST idempotency** — the retry-after-Stripe-succeeds-but-persistence-fails scenario from §7, asserting no duplicate Stripe object and a successful eventual local write.
 5. **Checkout persistence and regeneration** — a `BillingCheckoutSession` row exists before the Stripe call completes; regeneration creates `attemptNumber: 2` with a new idempotency key; `GET .../billing/checkout` returns the latest non-expired attempt.
 6. **Out-of-order webhook delivery** — deliver `invoice.paid` before `checkout.session.completed` for the same subscription; assert the handler retrieves the subscription from Stripe directly and correctly resolves/creates the `ClientAccount` link.
