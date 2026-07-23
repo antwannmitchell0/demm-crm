@@ -539,10 +539,17 @@ async function runApiTests() {
     eventType: string,
     status: string,
     clientAccountId: string,
+    // Every delivery -- even repeat statuses in the walk below (e.g. the
+    // second 'active' after PAST_DUE) -- must carry a genuinely distinct
+    // Stripe event id. The dedup layer keys strictly on event.id, so an
+    // id derived from status alone would make the second 'active'
+    // delivery collide with the first and get silently skipped as
+    // SKIPPED_ALREADY_PROCESSED, never reaching the handler.
+    index: number | string,
     overrides: Record<string, any> = {},
   ) {
     return JSON.stringify({
-      id: `evt_walk_${status}_${subForWalkSuffix}`,
+      id: `evt_walk_${index}_${status}_${subForWalkSuffix}`,
       object: 'event',
       api_version: '2025-08-27.basil',
       created: Math.floor(Date.now() / 1000),
@@ -575,22 +582,43 @@ async function runApiTests() {
     });
   }
 
+  // Note: 'active' deliberately appears twice (PAST_DUE -> ACTIVE
+  // recovery is a real Stripe lifecycle transition worth proving, not
+  // just terminal CANCELED). Each iteration gets its own event id via
+  // `index`, so the two 'active' deliveries are genuinely distinct
+  // events and both reach the handler.
   const walkStatuses = ['incomplete', 'trialing', 'active', 'past_due', 'active', 'canceled'];
+  const expectedBillingStatus: Record<string, string> = {
+    incomplete: 'INCOMPLETE',
+    trialing: 'TRIALING',
+    active: 'ACTIVE',
+    past_due: 'PAST_DUE',
+    canceled: 'CANCELED',
+  };
   const walkDeliveryResults: number[] = [];
-  for (const status of walkStatuses) {
-    // Each status uses a distinct Stripe event id (evt_walk_<status>_<suffix>)
-    // so the dedup layer treats every step of the walk as a new event
-    // rather than a duplicate of the previous status.
+  for (const [idx, status] of walkStatuses.entries()) {
     const walkRes = await deliverWebhook(
-      synthesizeSubscriptionEvent('customer.subscription.updated', status, clientAccountIdWalk),
+      synthesizeSubscriptionEvent('customer.subscription.updated', status, clientAccountIdWalk, idx),
     );
     walkDeliveryResults.push(walkRes.status);
+    // Confirm THIS delivery's status landed before moving to the next
+    // step. This is what actually proves each of the 6 deliveries reached
+    // the handler individually -- in particular, it catches the case
+    // where the second 'active' delivery (index 4, right after
+    // 'past_due') gets silently deduped and never invokes the handler:
+    // if that happened, the status here would still read PAST_DUE instead
+    // of ACTIVE.
+    await new Promise((r) => setTimeout(r, 200));
+    const stepSub = await prisma.billingSubscription.findUnique({ where: { stripeSubscriptionId: subForWalk } });
+    check(
+      `Status walk step ${idx} ('${status}') is reflected in BillingSubscription immediately after its delivery`,
+      stepSub?.status === expectedBillingStatus[status],
+    );
   }
   check(
     'All subscription-status-walk webhook deliveries return 200',
     walkDeliveryResults.every((s) => s === 200),
   );
-  await new Promise((r) => setTimeout(r, 300));
   const finalSub = await prisma.billingSubscription.findUnique({ where: { stripeSubscriptionId: subForWalk } });
   check(
     'Subscription status walk ends at CANCELED after INCOMPLETE→TRIALING→ACTIVE→PAST_DUE→ACTIVE→CANCELED',
@@ -600,6 +628,13 @@ async function runApiTests() {
     'Subscription status walk resolved via metadata.clientAccountId (no stripe.subscriptions.retrieve() call needed)',
     finalSub?.clientAccountId === clientAccountIdWalk,
   );
+  const walkEventRowCount = await prisma.stripeWebhookEvent.count({
+    where: { stripeEventId: { in: walkStatuses.map((s, idx) => `evt_walk_${idx}_${s}_${subForWalkSuffix}`) } },
+  });
+  check(
+    'All 6 status-walk deliveries created 6 DISTINCT StripeWebhookEvent rows (none deduped against each other)',
+    walkEventRowCount === 6,
+  );
 
   // Also prove customer.subscription.deleted independently sets CANCELED
   // + canceledAt even when delivered as its own event type (not just via
@@ -608,7 +643,7 @@ async function runApiTests() {
     where: { stripeSubscriptionId: subForWalk },
     data: { status: 'ACTIVE', canceledAt: null },
   });
-  const deletedPayload = synthesizeSubscriptionEvent('customer.subscription.deleted', 'canceled', clientAccountIdWalk, {
+  const deletedPayload = synthesizeSubscriptionEvent('customer.subscription.deleted', 'canceled', clientAccountIdWalk, 'deleted', {
     canceled_at: Math.floor(Date.now() / 1000),
   });
   const deletedRes = await deliverWebhook(
@@ -627,7 +662,7 @@ async function runApiTests() {
     where: {
       stripeEventId: {
         in: [
-          ...walkStatuses.map((s) => `evt_walk_${s}_${subForWalkSuffix}`),
+          ...walkStatuses.map((s, idx) => `evt_walk_${idx}_${s}_${subForWalkSuffix}`),
           `evt_walk_deleted_${subForWalkSuffix}`,
         ],
       },
