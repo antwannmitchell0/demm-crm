@@ -1,126 +1,411 @@
-# Stripe Founder-Tier Billing — Design Spec
+# Stripe Founder-Tier Billing — Design Spec (v2, amended)
 
 **Phase:** DEMM Platform Release 1.0, Phase 2 (DEMM Marketing Operating Slice), Sub-project 4
 **Follows:** Sub-project 3 (Marketing Executive Dashboard, Explainable Client Health, Reporting) — deployed and verified on staging, commit `838cbb3`.
-**Status:** Approved by Antwann in brainstorming session, 2026-07-23.
+**Status:** v1 approved in direction 2026-07-23; amended per Antwann's 13-point spec amendment the same day. This version supersedes v1 in full.
 
 ---
 
 ## Goal
 
-Replace the manual "Record Payment" honor system for founder-tier revenue with a real, recurring Stripe Subscription: checkout is generated automatically right after lead-to-client conversion, and all subsequent billing events (successful charge, failed charge, cancellation) arrive as Stripe webhooks and update the system automatically. This upgrades `collectedRevenue90d` and `mrr` on the Marketing Dashboard from `MANUALLY_RECORDED`/`ESTIMATED` to `ACTUAL_VERIFIED` for Stripe-covered clients, and feeds payment failures into Client Health as a `COMMERCIAL`-owned risk factor — without touching the Commercial Truth Lock, the `convert()` transaction, or the OfferSnapshot architecture.
+Replace the manual "Record Payment" honor system for founder-tier revenue with a real, recurring Stripe Subscription: checkout is generated automatically right after lead-to-client conversion, and all subsequent billing events (successful charge, failed charge, cancellation) arrive as Stripe webhooks and update the system automatically — with full audit history, retry-safety, environment isolation, and no silent failure. This upgrades `collectedRevenue90d` and `mrr` on the Marketing Dashboard toward `ACTUAL_VERIFIED`, and feeds payment failures into both Client Health and DOM26-R as controlled signals — without touching the Commercial Truth Lock, the `convert()` transaction, or the OfferSnapshot architecture's *mechanism* (one new snapshotted field is added using the exact same copy-at-creation pattern every other snapshotted field already uses — see §6).
 
 ## Hard constraints (carried over from prior sub-projects)
 
 - Do not reopen or redesign: Commercial Truth Lock, Lead → Client conversion transaction, OfferSnapshot architecture, Client onboarding, Service delivery, DOM26-R foundation.
-- All new logic must be additive: new tables, new fields (nullable, non-breaking), new services, one new controller, one new webhook endpoint. `ClientAccountService.convert()` and its transaction body are not modified.
-- No production deployment without separate explicit authorization. Stripe integration ships to staging in **test mode** only until Antwann explicitly authorizes live-mode keys and a production deploy.
+- All new logic must be additive. `ClientAccountService.convert()` and its transaction body are not modified in mechanism — the one field added to what it snapshots is copied the same way every existing field is copied.
+- No live-mode charge and no production deployment without separate explicit authorization. Everything in this spec ships to staging in Stripe **test mode** only. §13 lists what must additionally be true before live-mode is authorized.
 
-## Decisions locked during brainstorming
+---
 
-1. **Billing model:** real recurring Stripe Subscription (not one-time/manual-invoice-per-cycle). Matches the existing "/mo" pricing and MRR KPI semantics already live on the dashboard.
-2. **Trigger point:** checkout is auto-generated immediately after `convert()` returns (in the controller, not inside the conversion transaction) — not a separate manual "Send Checkout Link" action.
-3. **Stripe account:** Antwann has an existing Stripe account. Test-mode keys will be provisioned into GCP Secret Manager before implementation begins; live-mode activation is a separate, later, explicitly-authorized step.
-4. **Stripe Products/Prices:** created and owned by this integration (not pre-existing in Stripe) — a seed/sync step creates one Stripe Product + recurring monthly Price per founder-tier `Offer`, keyed by `Offer.key`, and stores the resulting IDs back on the `Offer` row. The `Offer` table remains the single source of truth; Stripe's catalog is derived from it, not the reverse.
+## 1. Environment-aware Stripe catalog (amendment §1, §2)
 
-## 1. Data model
+Checkout must never be built from Offer's currently-editable price. It must be built from an explicit, environment-scoped, immutable mapping between an exact `(Offer, version)` and an exact Stripe Price — and the purchased snapshot must carry a permanent reference to which mapping it used.
 
-### `Offer` — new nullable fields
-- `stripeProductId String?`
-- `stripePriceId String?`
+### `StripePriceMapping` (new model)
 
-Populated by a one-time seed/sync script per environment (local, staging, later production), not by application runtime code. If a founder-tier Offer has no `stripePriceId` yet, checkout generation for that tier fails loudly (not silently) with a clear "Offer not yet Stripe-provisioned" error — this is a deliberate fail-closed choice so a misconfigured environment can never silently skip billing.
+```prisma
+model StripePriceMapping {
+  id               String   @id @default(uuid())
+  offerId          String
+  offer            Offer    @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  offerVersion     Int
+  amount           Decimal  @db.Decimal(12, 2)
+  currency         String   @default("usd")
+  billingInterval  String   @default("month")
+  environment      String   // "local" | "staging" | "production"
+  livemode         Boolean
+  stripeProductId  String
+  stripePriceId    String
+  createdAt        DateTime @default(now())
+  offerSnapshots   OfferSnapshot[]
 
-### `ClientAccount` — new nullable fields
-- `stripeCustomerId String?`
-- `stripeSubscriptionId String?`
-- `stripeSubscriptionStatus StripeSubscriptionStatus?` — new enum: `INCOMPLETE | ACTIVE | PAST_DUE | CANCELED | UNPAID`, mirroring Stripe's own subscription status values.
+  @@unique([offerId, offerVersion, environment, livemode])
+  @@index([environment, livemode])
+}
+```
 
-All three are nullable because clients created before this sub-project, or clients handled outside Stripe entirely, will never have them populated — the manual "Record Payment" path continues to work exactly as it does today for those cases.
+- One row per `(offer, version, environment, livemode)`. Re-running provisioning for an offer/version that already has a mapping in that environment is a no-op (idempotent by the unique constraint).
+- `livemode` is stored explicitly, separate from `environment`, because "staging" could theoretically run against live Stripe keys by mistake — storing both lets the refusal check in §1.1 catch that specific misconfiguration, not just infer it from environment name.
 
-### `ClientCommercialStateChange` — reuse existing `source` field, loosen `recordedById`
-`source String @default("MANUAL")` already exists on this model (added in Sub-project 3 for the same manual-payment-recording work). No new field is needed — Stripe-driven rows simply write `source: 'STRIPE_WEBHOOK'` instead of `'MANUAL'`. This is the field the KPI layer reads to decide whether a given payment record can be classified `ACTUAL_VERIFIED` (source `'STRIPE_WEBHOOK'`) or must remain `MANUALLY_RECORDED` (source `'MANUAL'`, the existing default — every historical row keeps its current, correct classification with no backfill needed).
+### 1.1 Environment/livemode mismatch refusal
 
-`recordedById String` is currently **required** (references `User`), which breaks for a webhook-created row — Stripe events have no human actor. Loosen it to `recordedById String?` (nullable relation). This is additive/backward-compatible: every existing row already has a value and is unaffected; only new Stripe-sourced rows will have `recordedById: null`. Nullable is preferred over inventing a synthetic "system user" — a null actor honestly communicates "no human recorded this," rather than a fake identity implying someone did.
+Every place that creates a Checkout Session or reads a price mapping first calls `StripeEnvironmentGuard.assertConsistent()`:
+1. Reads `STRIPE_SECRET_KEY` and checks its prefix (`sk_test_` vs `sk_live_`) to determine actual livemode.
+2. Reads the app's own `NODE_ENV`/deployment environment (already available via the existing `environment` field returned by `/version`, per Step 0's deployment pipeline).
+3. Refuses (throws, fails the request with a clear error, does **not** silently fall through) if:
+   - The configured `STRIPE_SECRET_KEY`'s livemode does not match the `StripePriceMapping.livemode` being requested, or
+   - `environment: "production"` is paired with a test-mode key (safe direction — allowed only as an explicit, separate future step, never a default), or
+   - `environment` is `local`/`staging` and the key is live-mode (this must never happen and is the higher-risk direction).
 
-### New table: `StripeWebhookEvent`
-- `id String @id @default(uuid())`
-- `stripeEventId String @unique`
-- `eventType String`
-- `processedAt DateTime @default(now())`
+This guard runs on every checkout attempt and every provisioning call — it is cheap and is the single choke point that makes "wrong Stripe environment" structurally hard to ship.
 
-Idempotency ledger for inbound webhooks — same discipline as the existing `ConversionIdempotencyKey` table. A webhook whose `stripeEventId` is already present is acknowledged with `200 OK` and otherwise ignored (Stripe retries on any non-2xx, so this table is what makes retries safe).
+### `Offer` — no new fields
 
-## 2. Backend services
+Per the amendment, `Offer` itself gets **no** `stripeProductId`/`stripePriceId` fields (this reverses v1 §1). `Offer` stays exactly as it is today; `StripePriceMapping` is the only place Stripe catalog identity lives.
 
-### `StripeProvisioningService` (new, `backend/src/modules/marketing/stripe-provisioning.service.ts`)
-One method, `syncOfferPrices()`: for each `Offer` with `lifecycleState: ACTIVE` and no `stripePriceId`, creates a Stripe Product (name = Offer.name) and a recurring monthly Price (amount = Offer.price, currency = usd), writes both IDs back onto the `Offer` row. Idempotent — re-running it is a no-op for Offers that already have a `stripePriceId`. Exposed as a one-off admin action (script + optional protected controller route, `SUPERADMIN`-gated) rather than something that runs automatically, since it mutates the Stripe catalog.
+---
 
-### `StripeCheckoutService` (new, `backend/src/modules/marketing/stripe-checkout.service.ts`)
-`createSubscriptionCheckout(clientAccountId: string): Promise<{ checkoutUrl: string }>`:
-1. Loads the `ClientAccount` with its `offer` (via `offerSnapshot.offerId` → `Offer`, read-only lookup — does not touch OfferSnapshot).
-2. Fails loudly if `Offer.stripePriceId` is null ("Offer not yet Stripe-provisioned").
-3. Creates a Stripe Customer if `ClientAccount.stripeCustomerId` is null (stores the resulting ID), reusing the existing one otherwise (safe to call more than once — e.g. operator re-generates a link after the first one expired).
-4. Creates a Stripe Checkout Session, `mode: 'subscription'`, `line_items: [{ price: offer.stripePriceId, quantity: 1 }]`, `customer: stripeCustomerId`, `metadata: { clientAccountId }` (this metadata is what lets the webhook handler resolve the target `ClientAccount` without trusting anything else in the payload), `success_url`/`cancel_url` pointing back at the Client Account page.
-5. Returns the session's hosted `url`.
+## 2. OfferSnapshot binding (amendment §1)
 
-Called from `ClientAccountController`, immediately after `convert()` resolves and after the existing Client Health recalculation call — same additive pattern already used for that call, wrapped in the same non-fatal `.catch` (a Stripe outage must never fail or roll back an otherwise-successful conversion).
+### `OfferSnapshot` — one new field
 
-### `StripeWebhookService` (new, `backend/src/modules/marketing/stripe-webhook.service.ts`)
-`handleEvent(event: Stripe.Event): Promise<void>`, dispatched by type:
-- `checkout.session.completed` → resolve `ClientAccount` via `event.data.object.metadata.clientAccountId`; set `stripeSubscriptionId` from `event.data.object.subscription`.
-- `invoice.paid` → resolve `ClientAccount` via `stripeSubscriptionId` (from `event.data.object.subscription`); write `ClientCommercialStateChange(field: 'PAYMENT', newValue: 'PAID', amount: event.data.object.amount_paid / 100, source: 'STRIPE_WEBHOOK', recordedById: null)`; set `stripeSubscriptionStatus: ACTIVE`; call `ClientHealthService.calculate(...)` (fire-and-forget, matching the existing side-effect pattern).
-- `invoice.payment_failed` → resolve `ClientAccount` via `stripeSubscriptionId`; set `stripeSubscriptionStatus: PAST_DUE`; call `ClientHealthService.calculate(...)`.
-- `customer.subscription.deleted` → resolve `ClientAccount` via `stripeSubscriptionId`; set `stripeSubscriptionStatus: CANCELED`; call `ClientHealthService.calculate(...)`.
-- Any other event type: acknowledged, no-op.
+```prisma
+model OfferSnapshot {
+  // ...existing fields, unchanged...
+  stripePriceMappingId String?
+  stripePriceMapping    StripePriceMapping? @relation(fields: [stripePriceMappingId], references: [id], onDelete: Restrict)
+}
+```
 
-Every branch first checks `StripeWebhookEvent` for the incoming `event.id`; if present, returns immediately without reprocessing.
+- Nullable: snapshots created before this sub-project (or in an environment where the offer hasn't been Stripe-provisioned yet) simply have no Stripe billing attached — they continue to work exactly as they do today via manual commercial-state recording.
+- Populated at snapshot-creation time inside `convert()` using the **exact same mechanism** already used to copy `price`, `name`, `includedServices`, etc. from `Offer` onto the new `OfferSnapshot` row: a lookup of `StripePriceMapping` by `(offerId, offerVersion, environment, livemode)` (all of which `convert()` already has available at that point) is added as one more field in the same `create({ data: {...} })` call. This is additive data, not new transaction logic, new side effects, new external calls, or new failure modes inside the transaction — `convert()` remains a pure-DB operation with the same guarantees it has today. If no mapping exists yet for that `(offer, version)` in the current environment, `stripePriceMappingId` is simply left `null` and conversion proceeds exactly as it does today (no Stripe billing available for that client until the offer is provisioned).
+- Once set, `stripePriceMappingId` is never updated. A later Offer price/version change creates a *new* `StripePriceMapping` row (new `offerVersion`) — it never mutates the row an existing snapshot already points to. This is what guarantees a later price change can never alter what an already-converted, unbilled `ClientAccount` was promised.
 
-### `ClientHealthService` — one new factor source
-Reads `ClientAccount.stripeSubscriptionStatus`. If `PAST_DUE` or `UNPAID`, emits a factor: `{ riskOwner: 'COMMERCIAL', description: 'Stripe subscription payment failed / past due', evidence: 'stripeSubscriptionStatus=PAST_DUE' }`. This is the only change to `client-health.service.ts` — additive to the existing factor-computation list, no change to its public signature.
+---
 
-### `KpiService` — classification logic
-Where `collectedRevenue90d` and `mrr` currently classify as `MANUALLY_RECORDED`, they now check whether every `ClientCommercialStateChange` row contributing to the figure has `source: STRIPE_WEBHOOK`. If all contributing rows are Stripe-verified, classify `ACTUAL_VERIFIED`. If the set is mixed (some manual, some Stripe) or all manual, classification stays `MANUALLY_RECORDED` — never silently upgrades a partially-manual figure to look fully verified.
+## 3. Billing subscription history (amendment §3)
 
-## 3. Webhook endpoint
+### `BillingSubscription` (new model)
 
-`POST /webhooks/stripe` (new controller, `backend/src/modules/marketing/stripe-webhook.controller.ts`):
-- Not behind `JwtAuthGuard`/`WorkspaceGuard` (Stripe cannot present our JWT or workspace header).
-- Verifies `Stripe-Signature` against `STRIPE_WEBHOOK_SECRET` using `stripe.webhooks.constructEvent(rawBody, signature, secret)` — requires the raw request body, so this one route is registered with Nest's raw-body option (`express.raw({ type: 'application/json' })`) scoped only to this path; every other route keeps the existing JSON body parser untouched.
-- On signature verification failure: `400`, nothing processed, nothing logged beyond the rejection.
-- On success: delegates to `StripeWebhookService.handleEvent(event)`, returns `200`.
+```prisma
+enum BillingSubscriptionStatus {
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+  PAUSED
+}
 
-## 4. Frontend
+model BillingSubscription {
+  id                  String                    @id @default(uuid())
+  clientAccountId     String
+  clientAccount       ClientAccount             @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
+  stripePriceMappingId String
+  stripePriceMapping   StripePriceMapping        @relation(fields: [stripePriceMappingId], references: [id], onDelete: Restrict)
+  stripeSubscriptionId String                    @unique
+  stripeCustomerId     String
+  status               BillingSubscriptionStatus
+  trialStart           DateTime?
+  trialEnd             DateTime?
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean                   @default(false)
+  canceledAt           DateTime?
+  createdAt            DateTime                  @default(now())
+  syncedAt             DateTime                  @updatedAt
+  payments             BillingPaymentRecord[]
 
-### Client Account Overview tab — new "Billing" card
-Mirrors the existing "Commercial State" and "Launch" cards structurally. Shows:
-- No subscription yet: the generated checkout URL (from the conversion response, held in page state) with a copy-to-clipboard button.
-- Subscription exists: a status badge (`ACTIVE`/`PAST_DUE`/`CANCELED`/`INCOMPLETE`/`UNPAID`, same `STATE_TONE`-style color mapping as Client Health) plus the last-known amount from the most recent Stripe-sourced `ClientCommercialStateChange`.
+  @@index([clientAccountId, createdAt])
+  @@index([stripeCustomerId])
+}
+```
 
-No changes to the Marketing Dashboard or Reports frontend code — both already render whatever classification the backend returns.
+- Many rows per `ClientAccount` by design — a resubscribe after cancellation creates a new row rather than overwriting history.
+- "Current" subscription for a client = the row with the latest `createdAt` (or, more precisely, whichever row's `stripeSubscriptionId` matches the most recent `checkout.session.completed`/`customer.subscription.*` event) — computed at read time, never cached redundantly elsewhere.
+- `ClientAccount` gets exactly one new field: `stripeCustomerId String?` (a Customer is 1:1 with a ClientAccount even across multiple subscription attempts, so this one is safe to store directly rather than derive). No `stripeSubscriptionId`/`stripeSubscriptionStatus` fields go on `ClientAccount` — that state lives only in `BillingSubscription`, reversing that part of v1.
 
-## 5. Security
+---
 
-- `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` → GCP Secret Manager, same pattern as `DATABASE_URL`. Antwann provisions the actual values via `gcloud secrets create`/`versions add` when implementation reaches that step; values are never pasted into chat or committed.
-- Webhook signature verification is mandatory and non-optional — there is no code path that processes a Stripe event without a verified signature.
-- The webhook payload's `metadata.clientAccountId` (set by us at Checkout-Session-creation time) and `stripeSubscriptionId`/`stripeCustomerId` (assigned by Stripe, never client-editable) are the only identifiers trusted to resolve which `ClientAccount` a webhook event applies to.
-- Test mode only for this sub-project. Live-mode key provisioning and the first live charge require a separate, explicit, later authorization from Antwann — this spec does not authorize live billing.
+## 4. Checkout attempt persistence (amendment §4)
 
-## 6. Testing
+### `BillingCheckoutSession` (new model)
 
-New HTTP-level test file, `backend/test-stripe-billing-api.ts`, following the established pattern (boots the real Nest app):
-- `StripeProvisioningService.syncOfferPrices()` against Stripe test mode: asserts all 3 founder-tier Offers end up with non-null `stripePriceId`/`stripeProductId`, and that re-running is a no-op (no duplicate Stripe objects).
-- `StripeCheckoutService.createSubscriptionCheckout()`: asserts a well-formed Stripe-hosted checkout URL is returned, and that `ClientAccount.stripeCustomerId` is populated.
-- Webhook idempotency: POST the same synthetic, correctly-signed `invoice.paid` event twice; asserts only one `ClientCommercialStateChange` row is created.
-- Webhook → KPI classification: after a synthetic `invoice.paid` event, asserts `collectedRevenue90d.classification === 'ACTUAL_VERIFIED'` on the dashboard for that client's contribution.
-- Webhook → Client Health: after a synthetic `invoice.payment_failed` event, asserts a `COMMERCIAL`-owned factor appears on that client's Client Health.
-- Signature rejection: POST an unsigned/badly-signed payload, asserts `400` and no state change.
-- Full existing regression suite re-run afterward (all prior sub-project suites), same discipline as every prior sub-project.
+```prisma
+enum BillingCheckoutStatus {
+  PENDING
+  CREATED
+  COMPLETED
+  EXPIRED
+  FAILED
+}
 
-Synthetic events are built and signed using Stripe's own SDK test helpers (`stripe.webhooks.generateTestHeaderString` or equivalent) against the real `STRIPE_WEBHOOK_SECRET` — not hand-rolled fixtures — so the test exercises the actual signature-verification code path.
+model BillingCheckoutSession {
+  id                     String                 @id @default(uuid())
+  clientAccountId        String
+  clientAccount          ClientAccount          @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
+  offerSnapshotId        String
+  offerSnapshot          OfferSnapshot          @relation(fields: [offerSnapshotId], references: [id], onDelete: Restrict)
+  stripeCheckoutSessionId String?
+  status                 BillingCheckoutStatus  @default(PENDING)
+  idempotencyKey         String                 @unique
+  attemptNumber          Int                    @default(1)
+  checkoutUrl            String?
+  createdAt              DateTime               @default(now())
+  expiresAt              DateTime?
+  failedAt               DateTime?
+  lastError              String?
+
+  @@index([clientAccountId, createdAt])
+}
+```
+
+- Row is created with `status: PENDING` **before** the Stripe API call is made, so a checkout attempt is durably recorded even if the Stripe call itself never completes (network failure, timeout). Updated to `CREATED` with `stripeCheckoutSessionId`/`checkoutUrl` on success, or `FAILED` with `lastError` on failure.
+- `checkoutUrl` is persisted server-side — the frontend reads it from `GET /marketing/clients/:id/billing/checkout` (latest non-expired, non-failed row for that client), not only from the one-time conversion response. This satisfies "do not depend on frontend page state as the only location of the checkout URL."
+- **Regeneration action:** `POST /marketing/clients/:id/billing/checkout/regenerate` (role-gated `SUPERADMIN/ORG_OWNER/ORG_ADMIN/WORKSPACE_ADMIN`, matching the existing Client Health override gate) creates a new row with `attemptNumber` incremented from the prior attempt and a fresh idempotency key, then calls Stripe. This is how an operator recovers from an expired or failed checkout link without needing developer intervention.
+
+---
+
+## 5. Checkout failure visibility (amendment §5)
+
+Lead conversion (`convert()`) is untouched and always succeeds or fails purely on today's Commercial Truth Lock rules — Stripe availability is never part of that transaction.
+
+The checkout-generation step that runs immediately after `convert()` returns (same call site as v1 — the controller, wrapped in a non-fatal boundary) now does all of the following on failure, instead of just logging and swallowing:
+1. Writes the `BillingCheckoutSession` row with `status: FAILED`, `lastError` populated (visible via §4's `GET .../billing/checkout` endpoint — "visible billing-setup status").
+2. Creates a `Task` for the converting operator: "Billing setup failed for `<client name>` — Stripe checkout could not be generated. Retry from the Client Account page." (reuses the existing `Task` model and creation pattern already used for the onboarding-kickoff task in Sub-project 1 — no new model needed here).
+3. Writes a `RelationshipSignal` (see §12) of `type: 'BILLING_SETUP_FAILED'`, `severity: HIGH`, `state: ACTIVE` — resolved automatically when a later checkout attempt succeeds.
+4. Writes an audit event via the existing `MemoryAuditEvent` pattern (same table Sub-project 3 already writes to for Client Health actions) recording the failure with a correlation ID.
+
+The regeneration endpoint (§4) is the retry path referenced above.
+
+---
+
+## 6. Trial rules from the immutable OfferSnapshot (amendment §10)
+
+**No new field is added anywhere for this.** Trial length is derived purely from data the `OfferSnapshot` already immutably carries — its `key` (`'SURVIVOR'` / `'GROWTH'` / `'EMPIRE'`, copied at snapshot time exactly as today) — via a small static lookup in code, evaluated at Checkout-Session-creation time (not stored, not cached, always re-derived from the immutable snapshot so it can never drift):
+
+```ts
+const TRIAL_DAYS_BY_OFFER_KEY: Record<string, number> = {
+  SURVIVOR: 7,
+  GROWTH: 0,
+  EMPIRE: 0,
+};
+```
+
+If `OfferSnapshot.key` isn't one of these three (future tier), trial defaults to `0` and the lookup logs a warning — fails safe (no trial) rather than guessing. `StripeCheckoutService` passes `subscription_data.trial_period_days` on the Checkout Session accordingly. No additional trial behavior (grace periods, extensions, tier-specific proration) is implemented — locked to exactly the two-tier rule stated in the amendment.
+
+---
+
+## 7. Stripe idempotency keys (amendment §6)
+
+Every Stripe-mutating call uses a deterministic idempotency key passed as Stripe's own `idempotencyKey` request option (not just our internal dedup table — this is Stripe-side idempotency, belt-and-suspenders with our own persistence):
+
+| Call | Idempotency key |
+|---|---|
+| Product creation | `product-create:{offerId}:{offerVersion}:{environment}` |
+| Price creation | `price-create:{offerId}:{offerVersion}:{environment}` |
+| Customer creation | `customer-create:{clientAccountId}` |
+| Checkout Session creation | the `BillingCheckoutSession.idempotencyKey` generated at row-creation time (§4), e.g. `checkout:{clientAccountId}:{attemptNumber}` |
+
+**Retry-where-Stripe-succeeds-but-persistence-fails test (explicitly required):** simulate the Stripe API call succeeding and returning a real object, then force the subsequent local DB write to throw. Retry the same operation with the same idempotency key and assert: (a) Stripe does not create a second object (verified via Stripe's idempotency replay, which returns the original object), and (b) the local retry successfully persists using the object Stripe returns on replay — i.e., the local write is safe to retry to completion even after a partial failure, because Stripe's response is deterministic for a repeated idempotency key.
+
+---
+
+## 8. Retry-safe webhook processing (amendment §7, §8)
+
+### `StripeWebhookEvent` — expanded
+
+```prisma
+enum WebhookProcessingState {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+model StripeWebhookEvent {
+  id              String                 @id @default(uuid())
+  stripeEventId   String                 @unique
+  eventType       String
+  processingState WebhookProcessingState @default(RECEIVED)
+  attemptCount    Int                    @default(0)
+  receivedAt      DateTime               @default(now())
+  processedAt     DateTime?
+  lastError       String?
+  eventCreatedAt  DateTime
+  apiVersion      String
+  livemode        Boolean
+  payloadHash     String
+  correlationId   String?
+
+  @@index([processingState, receivedAt])
+}
+```
+
+### 8.1 Concurrency-safe dedup
+
+On receipt: attempt `INSERT INTO StripeWebhookEvent (...) VALUES (...) ON CONFLICT (stripeEventId) DO NOTHING`, inside a transaction.
+- **No conflict** (new event): row is `RECEIVED`, immediately transitioned to `PROCESSING` (`attemptCount: 1`) inside the same transaction before releasing, then business-effect handlers run.
+- **Conflict** (event ID already exists — either a genuine retry, or a concurrent duplicate delivery racing the first): re-fetch the existing row.
+  - `PROCESSED` → acknowledge `200`, do nothing. ("Only PROCESSED events are ignored.")
+  - `FAILED` → this is a legitimate retry; transition to `PROCESSING`, increment `attemptCount`, re-run handlers. ("FAILED events remain retryable.")
+  - `PROCESSING` → another request is currently mid-flight for this exact event (the concurrent-duplicate case). Acquire a Postgres advisory lock keyed on a hash of `stripeEventId` before proceeding, so only one process actually executes business effects at a time for a given event; the second racer blocks briefly, then re-checks state (now `PROCESSED` or `FAILED`) and follows the branch above. This is what produces "one set of business effects" under concurrent duplicate delivery.
+- All business-effect writes inside a handler are themselves naturally idempotent regardless (upsert `BillingSubscription` by `stripeSubscriptionId`, upsert `BillingPaymentRecord` by `stripeInvoiceId`) as defense in depth beyond the event-level lock.
+
+### 8.2 Event ordering (§8)
+
+`checkout.session.completed` is not assumed to arrive before `customer.subscription.created`/`invoice.paid` — Stripe does not guarantee delivery order. Every handler resolves its target `ClientAccount` independently:
+- Checkout Session is created with `metadata: { clientAccountId }` **and** `subscription_data: { metadata: { clientAccountId } }` (both, per the amendment) — so a `customer.subscription.*` or `invoice.*` event that references a subscription which itself carries that metadata can resolve the `ClientAccount` even if the `checkout.session.completed` event hasn't been processed yet.
+- If a handler receives a `stripeSubscriptionId` it hasn't seen before (no matching `BillingSubscription` row yet) — rather than failing, it calls `stripe.subscriptions.retrieve(id, { expand: ['metadata'] })` to fetch the full object (including metadata) directly from Stripe and upserts a `BillingSubscription` row from that retrieved state before applying the event. ("Retrieve Stripe objects when webhook data is insufficient.")
+
+### 8.3 Handled event types
+
+`checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, `charge.refunded`, `charge.dispute.created` (the "required refund/reversal events"). Any other event type is acknowledged and no-op'd, still recorded in `StripeWebhookEvent` as `PROCESSED` (so replays don't reprocess it either).
+
+---
+
+## 9. Pinned Stripe API version (amendment §9)
+
+- SDK initialized with an explicit `apiVersion` (e.g. `'2026-06-01'` — exact value confirmed against Stripe's current dashboard-recommended version at implementation time, not guessed here).
+- The webhook endpoint's signature verification (`stripe.webhooks.constructEvent`) uses the same pinned SDK instance.
+- The pinned version string is exported from one constant (`backend/src/modules/marketing/stripe-config.ts`) and imported everywhere Stripe is touched — SDK init, tests, and is written into `StripeWebhookEvent.apiVersion` per-event (recording what Stripe actually sent, which should match the pin — a mismatch is itself worth surfacing, e.g. via a startup log warning if Stripe's account-level webhook version drifts from our pin).
+- Documented in this spec and in `docs/superpowers/specs/` going forward as the single place the pin is declared; the deployment report (existing `deploy-reports/*.json` from Step 0) is not modified for this, since the API version isn't a per-deploy fact — it's a per-SDK-version fact.
+
+---
+
+## 10. Rich payment records + KPI rules (amendment §11)
+
+### `BillingPaymentRecord` (new model — the rich Stripe-fidelity ledger)
+
+```prisma
+enum PaymentReversalState {
+  NONE
+  PARTIAL_REFUND
+  FULL_REFUND
+}
+
+model BillingPaymentRecord {
+  id                     String                @id @default(uuid())
+  clientAccountId        String
+  clientAccount          ClientAccount         @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
+  billingSubscriptionId  String?
+  billingSubscription    BillingSubscription?  @relation(fields: [billingSubscriptionId], references: [id], onDelete: SetNull)
+  stripeInvoiceId        String?               @unique
+  stripePaymentIntentId  String?
+  stripeCustomerId       String
+  stripeSubscriptionId   String?
+  amountPaid             Decimal               @db.Decimal(12, 2)
+  currency               String
+  taxAmount              Decimal?              @db.Decimal(12, 2)
+  creditAmount           Decimal?              @db.Decimal(12, 2)
+  billingPeriodStart     DateTime?
+  billingPeriodEnd       DateTime?
+  paidAt                 DateTime
+  refundedAmount         Decimal               @default(0) @db.Decimal(12, 2)
+  reversalState          PaymentReversalState  @default(NONE)
+  createdAt              DateTime              @default(now())
+
+  @@index([clientAccountId, paidAt])
+}
+```
+
+This is deliberately a **second, richer, sibling record** to the existing `ClientCommercialStateChange` row — not a replacement. On `invoice.paid`, the webhook handler writes both:
+1. A `BillingPaymentRecord` (full Stripe fidelity, above).
+2. A `ClientCommercialStateChange(field: 'PAYMENT', newValue: 'PAID', amount, source: 'STRIPE_WEBHOOK', recordedById: null)` — **exactly the same write shape Sub-project 3 already established**, so the existing dashboard/report KPI code that already reads `ClientCommercialStateChange` needs zero changes to pick up Stripe-sourced revenue. `BillingPaymentRecord` exists for audit fidelity, refund tracking, and future reporting depth; `ClientCommercialStateChange` stays the one feed the KPI layer already trusts.
+
+On `charge.refunded`: updates the matching `BillingPaymentRecord.refundedAmount`/`reversalState`, and writes a **new** `ClientCommercialStateChange(field: 'PAYMENT', newValue: 'REFUNDED', amount: -refundedAmount, source: 'STRIPE_WEBHOOK')` — a negative-amount row, so revenue sums naturally net out without needing special-case subtraction logic anywhere in the KPI layer.
+
+### KPI classification — `MIXED_SOURCES` (amendment §11)
+
+`KpiClassification` gains one new value: `'MIXED_SOURCES'`. `KpiService`'s revenue classification logic (already checks whether every contributing `ClientCommercialStateChange` row shares one `source`) now has three outcomes instead of two:
+- All contributing rows `source: 'STRIPE_WEBHOOK'` → `ACTUAL_VERIFIED`.
+- All contributing rows `source: 'MANUAL'` → `MANUALLY_RECORDED` (unchanged from Sub-project 3).
+- A mix of both → `MIXED_SOURCES` (new — never silently collapses to either pure label).
+
+### Double-counting prevention (amendment §11)
+
+`ClientAccountService.recordCommercialStateChange` (the existing method, not `convert()`) gets one new guard: if `field === 'PAYMENT'` and the target `ClientAccount` has any `BillingSubscription` row with `status` in `(ACTIVE, TRIALING, PAST_DUE, INCOMPLETE)`, the manual entry is **rejected** with a clear error directing the operator to Stripe as the authoritative source for that client — unless the caller explicitly passes `allowManualAlongsideStripe: true` (for a genuine edge case like an out-of-band wire transfer alongside an active Stripe subscription), in which case it's allowed but the resulting figure is what produces the `MIXED_SOURCES` classification above rather than silently presenting as fully verified.
+
+The blocked-status list is deliberately narrow: `CANCELED`, `UNPAID`, `INCOMPLETE_EXPIRED`, and `PAUSED` are **not** included, because those states mean Stripe is no longer the active billing path for that client — a canceled Stripe subscription followed by an out-of-band payment (wire, check) is exactly the normal case the manual path should still cover without needing an override flag.
+
+### MRR calculation
+
+`mrr` is computed from the `amount` on the `StripePriceMapping` referenced by each client's current **`ACTIVE`** `BillingSubscription` (summed across clients), not from invoice history — this is what "MRR from active recurring subscription price" means: MRR reflects committed run-rate, not trailing collections, which is the standard MRR definition and matches what "Collected (90d)" already covers on the trailing-actuals side.
+
+---
+
+## 11. DOM26-R commercial signals (amendment §12)
+
+Uses the existing `RelationshipSignal` model (already defined in schema, not yet wired to any service per its own schema comment — this sub-project is what activates it), scoped to the `RelationshipProfile` for the client's primary contact (same profile the existing Relationship Brief already uses).
+
+| Trigger | `type` | `severity` | Resolution |
+|---|---|---|---|
+| `BillingCheckoutSession` created | `CHECKOUT_PENDING` | LOW | Auto-resolved when that session's status becomes `COMPLETED` or a new attempt supersedes it |
+| Checkout attempt fails (§5) | `BILLING_SETUP_FAILED` | HIGH | Auto-resolved on next successful checkout generation |
+| `invoice.paid` | `PAYMENT_SUCCESS` | LOW | Self-resolves immediately (informational, not a standing risk) |
+| `invoice.payment_failed` | `PAYMENT_FAILURE` | MEDIUM | Auto-resolved by a later `invoice.paid` for the same subscription (payment recovery) |
+| Subscription enters `PAST_DUE` | `PAST_DUE` | HIGH | Auto-resolved when status returns to `ACTIVE` |
+| `cancel_at_period_end` set | `CANCELLATION_SCHEDULED` | MEDIUM | Auto-resolved if un-scheduled, or transitions to the next row on actual cancellation |
+| `customer.subscription.deleted` | `CANCELLATION_COMPLETED` | HIGH | Stays `ACTIVE` (unresolved) — genuinely needs human follow-up, not auto-closed |
+| A `PAST_DUE`/`PAYMENT_FAILURE` signal's subscription returns to `ACTIVE` | `PAYMENT_RECOVERY` | LOW | Self-resolves; also resolves the `PAST_DUE`/`PAYMENT_FAILURE` row it followed |
+
+**No card data is ever stored** in `summary` or anywhere in DOM26-R — signals reference amounts, dates, and status strings only, never a PAN, card brand+last4 beyond what's needed for an operator to recognize the account (last4 alone is acceptable per PCI SAQ-A scope since Stripe Checkout is what handles the card; DEMM CRM never receives or stores full card data at any point in this design).
+
+**No monthly memory spam:** routine `PAYMENT_SUCCESS` signals are the only high-frequency event type here (monthly, by definition, once a subscription is steady-state) — they're deliberately `LOW` severity and **self-resolve immediately** rather than accumulating as standing `ACTIVE` signals, so a healthy client doesn't build up an ever-growing list of "signals" over a year of normal billing. Only genuinely actionable states (`PAST_DUE`, `BILLING_SETUP_FAILED`, `CANCELLATION_COMPLETED`) remain `ACTIVE` and visible. This mirrors the same "routine mutation creates no permanent record, meaningful transition does" principle Client Health already established in Sub-project 3.
+
+Relationship Briefs are updated by the same `recordHealthChangeCandidate`-style call already used by Client Health (creates a `MemoryCandidate`, not a raw engram) — only for the `HIGH`-severity transitions (`BILLING_SETUP_FAILED`, `PAST_DUE`, `CANCELLATION_COMPLETED`), not every signal, keeping brief-update frequency proportional to actual relationship risk.
+
+---
+
+## 12. Webhook endpoint
+
+Unchanged in shape from v1: `POST /webhooks/stripe`, not behind `JwtAuthGuard`/`WorkspaceGuard`, raw-body-scoped to this one route, verifies `Stripe-Signature` against `STRIPE_WEBHOOK_SECRET`. On signature failure: `400`, nothing processed (this is itself a fail-closed missing/wrong-secret behavior — see §14 tests). Now additionally computes `payloadHash` (sha256 of the raw body) and pulls `event.api_version`/`event.livemode`/`event.created` into the `StripeWebhookEvent` row per §8/§9 before dispatching to handlers.
+
+---
+
+## 13. Live-mode launch blockers (amendment §13)
+
+The following are **explicitly deferred** from this sub-project's staging/test-mode scope, and each one is a **hard blocker** on live-mode production authorization — none of them may be skipped when the time comes to go live, and this spec does not authorize that transition:
+
+1. Stripe Customer Portal (or equivalent) for client-initiated payment-method updates.
+2. Operator-facing cancellation management UI (beyond the webhook-driven status sync already built here).
+3. A defined retry/dunning recovery path for `PAST_DUE` subscriptions (Stripe's own Smart Retries can be configured, but the DEMM-side operator workflow around it is not designed here).
+4. Invoice history UI for clients/operators.
+5. Refund reconciliation workflow (the data model in §10 records refunds; there's no UI/process for *deciding* to issue one).
+6. A tax decision (Stripe Tax vs. manual vs. none) — not decided in this spec.
+7. Final, legally-reviewed cancellation terms per tier (the current `Offer.cancellationTerms` field is still `null`/undecided for most tiers per the Commercial Truth Lock's own known limitations).
+8. A documented webhook replay/recovery procedure for extended Stripe or DEMM downtime.
+9. Live secret rotation procedure and incident-response plan for a compromised live key.
+10. A completed one-cent (or otherwise approved low-risk) live verification transaction, run and confirmed by Antwann before any real client is charged.
+
+---
+
+## 14. Testing
+
+New HTTP-level test file `backend/test-stripe-billing-api.ts` (established pattern — boots the real Nest app), plus a webhook-specific fixture helper for signing synthetic Stripe events with the real `STRIPE_WEBHOOK_SECRET`. Required coverage:
+
+1. **Environment/livemode isolation** — a staging-configured `StripePriceMapping` cannot be used to create a checkout when `STRIPE_SECRET_KEY` is a live key (and vice versa); `StripeEnvironmentGuard` refusal is asserted directly.
+2. **OfferSnapshot price immutability** — create a `ClientAccount` against `StripePriceMapping` v1, then create a new `StripePriceMapping` v2 (simulating a price change), assert the existing `ClientAccount`'s `OfferSnapshot.stripePriceMappingId` still points at v1 and its checkout still uses v1's price.
+3. **Trial rules** — SURVIVOR snapshot produces a Checkout Session with `trial_period_days: 7`; GROWTH and EMPIRE produce `0`/absent.
+4. **Stripe POST idempotency** — the retry-after-Stripe-succeeds-but-persistence-fails scenario from §7, asserting no duplicate Stripe object and a successful eventual local write.
+5. **Checkout persistence and regeneration** — a `BillingCheckoutSession` row exists before the Stripe call completes; regeneration creates `attemptNumber: 2` with a new idempotency key; `GET .../billing/checkout` returns the latest non-expired attempt.
+6. **Out-of-order webhook delivery** — deliver `invoice.paid` before `checkout.session.completed` for the same subscription; assert the handler retrieves the subscription from Stripe directly and correctly resolves/creates the `ClientAccount` link.
+7. **Failed-event retry** — force a handler to throw mid-processing (leaving `StripeWebhookEvent.processingState: FAILED`), redeliver the same event, assert it reprocesses and reaches `PROCESSED`.
+8. **Concurrent duplicate webhooks** — fire the same signed event payload twice in parallel, assert exactly one set of business effects (one `BillingPaymentRecord`, one `ClientCommercialStateChange`) and both requests return `200`.
+9. **Complete subscription status synchronization** — walk a subscription through `INCOMPLETE → TRIALING → ACTIVE → PAST_DUE → ACTIVE → CANCELED` via synthetic events, asserting `BillingSubscription.status` and the associated `RelationshipSignal`s at each step.
+10. **Manual/Stripe double-count prevention** — attempt a manual `PAYMENT` entry on a client with an `ACTIVE` `BillingSubscription`, assert rejection (and assert the `allowManualAlongsideStripe: true` override produces a `MIXED_SOURCES`-classified figure).
+11. **Refunds** — synthetic `charge.refunded` event updates `BillingPaymentRecord.reversalState`/`refundedAmount` and writes the offsetting negative `ClientCommercialStateChange`; dashboard `collectedRevenue90d` reflects the net figure.
+12. **MRR vs. collected-revenue calculations** — assert MRR is computed from active `StripePriceMapping.amount`, not from trailing invoice sums, using a scenario where they'd otherwise diverge (e.g. mid-period upgrade).
+13. **DOM26-R signal creation and resolution** — each row of the §11 table gets a test: signal created on trigger, auto-resolved (or deliberately left `ACTIVE`) exactly as specified.
+14. **Missing-secret fail-closed behavior** — with `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` unset, assert checkout generation fails loudly (not silently skipped) and the webhook endpoint rejects all payloads with `400` rather than accepting unverified events.
+
+Full existing regression suite (all prior sub-project suites) re-run afterward, same discipline as every prior sub-project.
 
 ## Known limitations (stated up front, not discovered later)
 
-- No transactional email is wired up yet — the checkout link is generated for an operator to copy/send manually, not auto-emailed to the client. Email delivery is out of scope for this sub-project.
-- Founder-tier price changes after a client is already subscribed are not handled by this sub-project (no proration/upgrade-downgrade flow) — out of scope, flagged for a future slice if it becomes a real need.
-- This sub-project ships to staging in Stripe test mode only. Live-mode activation is a distinct, later, separately-authorized step.
+- No transactional email is wired up yet — checkout links are surfaced to the operator via `GET .../billing/checkout`, not auto-emailed. Out of scope for this sub-project.
+- Founder-tier upgrade/downgrade with proration is not handled — out of scope, flagged for a future slice.
+- This sub-project ships to staging in Stripe test mode only. See §13 for everything that must be true before live-mode is authorized — none of it is built here.
