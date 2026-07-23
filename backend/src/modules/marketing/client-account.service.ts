@@ -20,6 +20,7 @@ import { RelationshipBriefService } from '../dom26r/relationship-brief.service';
 import { ConvertLeadDto } from './dto/convert-lead.dto';
 import { OnboardingService } from './onboarding.service';
 import { ServiceDeliverableService } from './service-deliverable.service';
+import { currentEnvironment, isLiveKey } from './stripe-config';
 
 @Injectable()
 export class ClientAccountService {
@@ -243,6 +244,17 @@ export class ClientAccountService {
         // Step 6 (executed before 5 -- ClientAccount.offerSnapshotId is a
         // required, non-nullable FK, so the snapshot must exist first):
         // write the immutable OfferSnapshot, freezing exactly what's sold.
+        const stripePriceMapping = await tx.stripePriceMapping.findUnique({
+          where: {
+            offerId_offerVersion_environment_livemode: {
+              offerId: offer.id,
+              offerVersion: offer.version,
+              environment: currentEnvironment(),
+              livemode: isLiveKey(),
+            },
+          },
+        });
+
         const offerSnapshot = await tx.offerSnapshot.create({
           data: {
             offerId: offer.id,
@@ -260,6 +272,7 @@ export class ClientAccountService {
             expectedLaunchTime: offer.expectedLaunchTime,
             trialEligible: offer.trialEligible,
             trialDays: offer.trialDays,
+            stripePriceMappingId: stripePriceMapping?.id ?? null,
           },
         });
 
