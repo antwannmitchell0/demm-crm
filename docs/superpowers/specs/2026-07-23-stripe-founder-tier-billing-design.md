@@ -187,22 +187,27 @@ The regeneration endpoint (§4) is the retry path referenced above.
 
 **Correction from v2:** a static application-code lookup table (`{SURVIVOR: 7, GROWTH: 0, EMPIRE: 0}`) is rejected. Trial policy is commercial data — what a client was actually promised — and must live in the same immutable, queryable, auditable place every other commercial promise in this system lives (price, included services, cancellation terms), not in a code constant that could change across a deploy with no data trail and no relationship to what a specific client's snapshot says.
 
-### `Offer` — one new field
+### `Offer` — two new fields
 ```prisma
-trialDays Int @default(0)
+trialEligible Boolean @default(false)
+trialDays     Int     @default(0)
 ```
-Current trial policy per tier/version, editable exactly like `price` — a future Offer version can change it, same as any other commercial term.
+Current trial policy per tier/version, editable exactly like `price` — a future Offer version can change it, same as any other commercial term. Two fields rather than one so "no trial" is representable unambiguously (`trialEligible: false`) independent of the numeric value, rather than overloading `trialDays: 0` to mean both "explicitly no trial" and "not yet decided."
 
-### `OfferSnapshot` — one new field
+### `OfferSnapshot` — two new fields
 ```prisma
-trialDays Int
+trialEligible Boolean
+trialDays     Int
 ```
-Copied from `Offer.trialDays` at snapshot-creation time inside `convert()`, via the same mechanism already copying `price`, `setupFee`, `includedServices`, etc. onto the snapshot — one more field in the same `create({ data: {...} })` call, not new transaction logic. Once set, it is never updated; a later change to `Offer.trialDays` affects only Offers converted after that change, exactly like a price change.
+Copied from `Offer.trialEligible`/`Offer.trialDays` at snapshot-creation time inside `convert()`, via the same mechanism already copying `price`, `setupFee`, `includedServices`, etc. onto the snapshot — two more fields in the same `create({ data: {...} })` call, not new transaction logic. Once set, neither is ever updated; a later change to `Offer.trialEligible`/`trialDays` affects only Offers converted after that change, exactly like a price change.
 
-`StripeCheckoutService` reads `subscription_data.trial_period_days` directly from `OfferSnapshot.trialDays` — the actual, immutable, per-client record of what was promised — never from a lookup keyed on tier name. Two clients on the same tier converted before/after a trial-policy change will correctly retain whatever their own snapshot says, exactly like two clients on the same tier converted before/after a price change already do today.
+`StripeCheckoutService` reads `subscription_data.trial_period_days` directly from `OfferSnapshot.trialDays` (only when `trialEligible` is `true`) — the actual, immutable, per-client record of what was promised — never from a lookup keyed on tier name. Two clients on the same tier converted before/after a trial-policy change will correctly retain whatever their own snapshot says, exactly like two clients on the same tier converted before/after a price change already do today.
+
+### Trial payment-method requirement (confirmed with Antwann — no prior DOM26v3/gbrain decision existed for this product)
+Card **is** required upfront: the Checkout Session for a trial-eligible snapshot uses Stripe's default `payment_method_collection: 'always'` (card collected at Checkout, first automatic charge fires when the trial ends — no re-engagement flow needed). This was confirmed directly with Antwann on 2026-07-23 after checking DOM26v3/gbrain found no applicable prior decision for this product (SOFTER's "7-day trial no card" is a different product's decision; a "$1 Survivor trial" reference found in gbrain belongs to a separate GHL-based payment bridge, not this Stripe Checkout integration).
 
 ### Seed data update
-The 3 existing founder-tier `Offer` rows (`SURVIVOR`/`GROWTH`/`EMPIRE`) get `trialDays` set via the seed script: `SURVIVOR: 7`, `GROWTH: 0`, `EMPIRE: 0` — the locked direction from the original amendment, now expressed as real data instead of code. No additional trial behavior (grace periods, extensions, proration) is implemented — locked to exactly this rule.
+The 3 existing founder-tier `Offer` rows get set via the seed script: `SURVIVOR: { trialEligible: true, trialDays: 7 }`, `GROWTH: { trialEligible: false, trialDays: 0 }`, `EMPIRE: { trialEligible: false, trialDays: 0 }` — approved terms, now expressed as real data instead of code. No additional trial behavior (grace periods, extensions, proration, card-free trials) is implemented — locked to exactly this rule.
 
 ---
 
