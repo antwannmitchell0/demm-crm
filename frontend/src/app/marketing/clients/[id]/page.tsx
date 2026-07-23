@@ -224,6 +224,10 @@ export default function ClientDetailPage() {
     description: '',
     cadence: 'ONE_TIME',
   });
+  const [showPaymentForm, setShowPaymentForm] = useState(false);
+  const [paymentValue, setPaymentValue] = useState('');
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [recordingPayment, setRecordingPayment] = useState(false);
 
   const currentUser = getActiveUser();
   const canOverride = currentUser && OVERRIDE_ALLOWED_ROLES.includes(currentUser.role);
@@ -303,6 +307,27 @@ export default function ClientDetailPage() {
       await load();
     } catch (err: any) {
       setError(err.message || 'Failed to create outside-scope request.');
+    }
+  };
+
+  const handleRecordPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setRecordingPayment(true);
+    try {
+      await api.recordCommercialStateChange(clientId, {
+        field: 'PAYMENT',
+        newValue: paymentValue,
+        amount: paymentAmount ? Number(paymentAmount) : undefined,
+      });
+      setShowPaymentForm(false);
+      setPaymentValue('');
+      setPaymentAmount('');
+      await load();
+    } catch (err: any) {
+      setError(err.message || 'Failed to record payment.');
+    } finally {
+      setRecordingPayment(false);
     }
   };
 
@@ -403,6 +428,41 @@ export default function ClientDetailPage() {
                 <p className="text-xs text-slate-300">
                   Payment: {detail.currentCommercialState?.paymentState || 'Not recorded'}
                 </p>
+                {!showPaymentForm ? (
+                  <button
+                    onClick={() => setShowPaymentForm(true)}
+                    className="mt-2 text-[10px] font-bold text-cyan-400 hover:text-cyan-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400 rounded"
+                  >
+                    + Record Payment
+                  </button>
+                ) : (
+                  <form onSubmit={handleRecordPayment} className="mt-2 space-y-2">
+                    <input
+                      type="text"
+                      required
+                      placeholder="Payment state (e.g. FULL_PAID_MANUAL)"
+                      value={paymentValue}
+                      onChange={(e) => setPaymentValue(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-[10px] text-slate-300"
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      placeholder="Amount ($, optional)"
+                      value={paymentAmount}
+                      onChange={(e) => setPaymentAmount(e.target.value)}
+                      className="w-full px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-[10px] text-slate-300"
+                    />
+                    <button
+                      type="submit"
+                      disabled={recordingPayment}
+                      className="px-3 py-1.5 bg-indigo-600 rounded-lg text-[10px] font-bold text-white disabled:opacity-50"
+                    >
+                      {recordingPayment ? 'Saving...' : 'Save'}
+                    </button>
+                  </form>
+                )}
               </div>
               <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-2xl">
                 <h4 className="text-[9px] font-mono font-bold tracking-wider text-slate-500 uppercase mb-2">
