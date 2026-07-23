@@ -30,6 +30,14 @@ export class StripeWebhookHandlerService {
         return this.onSubscriptionUpsert(event);
       case 'customer.subscription.deleted':
         return this.onSubscriptionDeleted(event);
+      case 'invoice.paid':
+        return this.onInvoicePaid(event);
+      case 'invoice.payment_failed':
+        return this.onInvoicePaymentFailed(event);
+      case 'charge.refunded':
+        return this.onChargeRefunded(event);
+      case 'charge.dispute.created':
+        return this.onChargeDisputeCreated(event);
       default:
         this.logger.log(`No handler for event type ${event.type} -- acknowledged, no-op.`);
     }
@@ -132,5 +140,121 @@ export class StripeWebhookHandlerService {
       where: { stripeSubscriptionId: subscription.id },
       data: { status: BillingSubscriptionStatus.CANCELED, canceledAt: new Date() },
     });
+  }
+
+  private async resolveClientAccountIdBySubscription(stripeSubscriptionId: string | null): Promise<string | null> {
+    if (!stripeSubscriptionId) return null;
+    const sub = await this.prisma.billingSubscription.findUnique({ where: { stripeSubscriptionId } });
+    if (sub) return sub.clientAccountId;
+    return this.resolveClientAccountId(stripeSubscriptionId);
+  }
+
+  private async onInvoicePaid(event: Stripe.Event): Promise<void> {
+    const invoice = event.data.object as Stripe.Invoice;
+    const stripeSubscriptionId = (invoice as any).subscription as string | null;
+    const clientAccountId = await this.resolveClientAccountIdBySubscription(stripeSubscriptionId);
+    if (!clientAccountId) {
+      this.logger.error(`invoice.paid: cannot resolve clientAccountId for invoice ${invoice.id}`);
+      return;
+    }
+
+    const billingSubscription = stripeSubscriptionId
+      ? await this.prisma.billingSubscription.findUnique({ where: { stripeSubscriptionId } })
+      : null;
+
+    const existingRecord = invoice.id
+      ? await this.prisma.billingPaymentRecord.findUnique({ where: { stripeInvoiceId: invoice.id } })
+      : null;
+    if (!existingRecord) {
+      await this.prisma.billingPaymentRecord.create({
+        data: {
+          clientAccountId,
+          billingSubscriptionId: billingSubscription?.id ?? null,
+          stripeInvoiceId: invoice.id,
+          stripePaymentIntentId: (invoice as any).payment_intent as string | null,
+          stripeCustomerId: invoice.customer as string,
+          stripeSubscriptionId,
+          amountPaid: invoice.amount_paid / 100,
+          currency: invoice.currency,
+          // `.tax` was removed from the Stripe SDK's Invoice type (replaced
+          // by `total_taxes`); cast as any to stay tolerant of both the
+          // legacy field (still present on real webhook payloads from
+          // older API versions) and this SDK version's stricter typing.
+          taxAmount: (invoice as any).tax ? (invoice as any).tax / 100 : null,
+          billingPeriodStart: invoice.period_start ? new Date(invoice.period_start * 1000) : null,
+          billingPeriodEnd: invoice.period_end ? new Date(invoice.period_end * 1000) : null,
+          paidAt: new Date(),
+        },
+      });
+
+      await this.prisma.clientCommercialStateChange.create({
+        data: {
+          clientAccountId,
+          field: 'PAYMENT',
+          newValue: 'PAID',
+          amount: invoice.amount_paid / 100,
+          recordedById: null,
+          source: 'STRIPE_WEBHOOK',
+        },
+      });
+    }
+
+    if (billingSubscription) {
+      await this.prisma.billingSubscription.update({
+        where: { id: billingSubscription.id },
+        data: { status: BillingSubscriptionStatus.ACTIVE },
+      });
+    }
+  }
+
+  private async onInvoicePaymentFailed(event: Stripe.Event): Promise<void> {
+    const invoice = event.data.object as Stripe.Invoice;
+    const stripeSubscriptionId = (invoice as any).subscription as string | null;
+    if (!stripeSubscriptionId) return;
+    await this.prisma.billingSubscription.updateMany({
+      where: { stripeSubscriptionId },
+      data: { status: BillingSubscriptionStatus.PAST_DUE },
+    });
+  }
+
+  private async onChargeRefunded(event: Stripe.Event): Promise<void> {
+    const charge = event.data.object as Stripe.Charge;
+    const paymentIntentId = charge.payment_intent as string | null;
+    if (!paymentIntentId) return;
+
+    const record = await this.prisma.billingPaymentRecord.findFirst({
+      where: { stripePaymentIntentId: paymentIntentId },
+    });
+    if (!record) {
+      this.logger.error(`charge.refunded: no BillingPaymentRecord found for payment intent ${paymentIntentId}`);
+      return;
+    }
+
+    const refundedAmount = charge.amount_refunded / 100;
+    const isFullRefund = charge.amount_refunded >= charge.amount;
+
+    await this.prisma.billingPaymentRecord.update({
+      where: { id: record.id },
+      data: {
+        refundedAmount,
+        reversalState: isFullRefund ? 'FULL_REFUND' : 'PARTIAL_REFUND',
+      },
+    });
+
+    await this.prisma.clientCommercialStateChange.create({
+      data: {
+        clientAccountId: record.clientAccountId,
+        field: 'PAYMENT',
+        newValue: 'REFUNDED',
+        amount: -refundedAmount,
+        recordedById: null,
+        source: 'STRIPE_WEBHOOK',
+      },
+    });
+  }
+
+  private async onChargeDisputeCreated(event: Stripe.Event): Promise<void> {
+    const dispute = event.data.object as Stripe.Dispute;
+    this.logger.warn(`Dispute created for charge ${dispute.charge} -- amount ${dispute.amount / 100} ${dispute.currency}. Manual review required (no automated handling in this sub-project).`);
   }
 }

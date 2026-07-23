@@ -8,6 +8,7 @@ import { Pool } from 'pg';
 import { StripeEnvironmentGuard } from './src/modules/marketing/stripe-environment.guard';
 import { createStripeClient } from './src/modules/marketing/stripe-config';
 import { StripeWebhookHandlerService } from './src/modules/marketing/stripe-webhook-handler.service';
+import { StripeWebhookDedupService } from './src/modules/marketing/stripe-webhook-dedup.service';
 import Stripe from 'stripe';
 
 const connectionString =
@@ -756,6 +757,421 @@ async function runApiTests() {
   await prisma.workspace.delete({ where: { id: wsWalk.id } });
   await prisma.businessUnit.delete({ where: { id: buWalk.id } });
   await prisma.organization.delete({ where: { id: orgWalk.id } });
+
+  // --- Payment / refund webhook handlers (Task 12) ---
+  // The subForWalk/custForWalk/clientAccountIdWalk fixtures above are torn
+  // down by the time we get here, so this block seeds its OWN fresh
+  // ClientAccount + BillingSubscription, following the exact same
+  // establishing pattern used elsewhere in this file.
+  console.log('\n💳 Testing payment/refund webhook handlers...');
+
+  const paySuffix = Date.now() + '-pay';
+  const orgPay = await prisma.organization.create({ data: { name: `Pay Test Org ${paySuffix}` } });
+  const buPay = await prisma.businessUnit.create({
+    data: { organizationId: orgPay.id, key: 'MARKETING', name: 'DEMM Marketing' },
+  });
+  const wsPay = await prisma.workspace.create({
+    data: { organizationId: orgPay.id, businessUnitId: buPay.id, name: 'WS', subdomain: `pay-${paySuffix}` },
+  });
+  const passwordHashPay = await bcrypt.hash('PayTest123!', 10);
+  const userPay = await prisma.user.create({
+    data: { email: `pay-${paySuffix}@example.com`, passwordHash: passwordHashPay, firstName: 'P', lastName: 'T' },
+  });
+  await prisma.membership.create({
+    data: { userId: userPay.id, organizationId: orgPay.id, workspaceId: wsPay.id, role: 'ORG_ADMIN' },
+  });
+  const pipelinePay = await prisma.pipeline.create({ data: { name: 'P', workspaceId: wsPay.id } });
+  const stagePay = await prisma.stage.create({ data: { name: 'New', order: 1, pipelineId: pipelinePay.id } });
+
+  const offerPay = await prisma.offer.create({
+    data: {
+      businessUnitId: buPay.id,
+      key: `pay-survivor-${paySuffix}`,
+      version: 1,
+      name: 'Pay Survivor',
+      price: 99,
+      trialEligible: true,
+      trialDays: 7,
+      includedServices: [],
+      excludedServices: [],
+      onboardingRequirements: [],
+      lifecycleState: 'ACTIVE',
+    },
+  });
+  const mappingPay = await prisma.stripePriceMapping.create({
+    data: {
+      offerId: offerPay.id,
+      offerVersion: 1,
+      amount: 99,
+      currency: 'usd',
+      billingInterval: 'month',
+      environment: 'local',
+      livemode: false,
+      stripeProductId: 'prod_fake_for_pay_test',
+      stripePriceId: 'price_fake_for_pay_test',
+    },
+  });
+
+  const contactPay = await prisma.contact.create({
+    data: { workspaceId: wsPay.id, firstName: 'Pay', lastName: 'Client', emails: [`pay-client-${paySuffix}@example.com`], phones: [], status: 'LEAD' },
+  });
+  await prisma.opportunity.create({
+    data: { workspaceId: wsPay.id, contactId: contactPay.id, pipelineId: pipelinePay.id, stageId: stagePay.id, name: 'Pay Deal', value: 99, status: 'OPEN' },
+  });
+
+  const loginResPay = await fetch(`${webhookBase}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: userPay.email, passwordPlain: 'PayTest123!' }),
+  }).then((r) => r.json());
+  const selectResPay = await fetch(`${webhookBase}/api/auth/select-workspace`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${loginResPay.preAuthToken}` },
+    body: JSON.stringify({ workspaceId: wsPay.id }),
+  }).then((r) => r.json());
+  const tokenPay = selectResPay.access_token;
+
+  const convertResPay = await fetch(`${webhookBase}/marketing/leads/${contactPay.id}/convert`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${tokenPay}`,
+      'x-workspace-id': wsPay.id,
+      'Idempotency-Key': `pay-idem-${paySuffix}`,
+    },
+    body: JSON.stringify({ offerId: offerPay.id, contractState: 'SIGNED_MANUAL' }),
+  }).then((r) => r.json());
+
+  const clientAccountIdPay: string = convertResPay.id;
+  const custForPay = `cus_test_pay_${paySuffix}`;
+  await prisma.clientAccount.update({ where: { id: clientAccountIdPay }, data: { stripeCustomerId: custForPay } });
+
+  const subForPay = `sub_test_pay_${paySuffix}`;
+  // status starts at PAST_DUE (not ACTIVE) so invoice.paid's status-recovery
+  // write below is provably exercised, not a no-op.
+  const billingSubscriptionPay = await prisma.billingSubscription.create({
+    data: {
+      clientAccountId: clientAccountIdPay,
+      stripePriceMappingId: mappingPay.id,
+      stripeSubscriptionId: subForPay,
+      stripeCustomerId: custForPay,
+      status: 'PAST_DUE',
+    },
+  });
+
+  // -- Payment success: invoice.paid -> BillingPaymentRecord +
+  // ClientCommercialStateChange dual-write, and BillingSubscription
+  // recovers to ACTIVE. --
+  const invSuccessSuffix = paySuffix + '-success';
+  const invIdSuccess = `in_test_${invSuccessSuffix}`;
+  const piIdSuccess = `pi_test_${invSuccessSuffix}`;
+  const invoicePaidPayload = JSON.stringify({
+    id: `evt_invpaid_${invSuccessSuffix}`,
+    object: 'event',
+    api_version: '2025-08-27.basil',
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    type: 'invoice.paid',
+    data: {
+      object: {
+        id: invIdSuccess,
+        object: 'invoice',
+        customer: custForPay,
+        subscription: subForPay,
+        amount_paid: 9900,
+        currency: 'usd',
+        tax: null,
+        period_start: Math.floor(Date.now() / 1000),
+        period_end: Math.floor(Date.now() / 1000) + 2592000,
+        payment_intent: piIdSuccess,
+      },
+    },
+  });
+  const invoicePaidRes = await deliverWebhook(invoicePaidPayload);
+  check('invoice.paid delivery returns 200', invoicePaidRes.status === 200);
+  await new Promise((r) => setTimeout(r, 300));
+
+  const paymentRecordSuccess = await prisma.billingPaymentRecord.findUnique({ where: { stripeInvoiceId: invIdSuccess } });
+  check(
+    'invoice.paid creates a BillingPaymentRecord with correct amount/clientAccountId/subscription link',
+    paymentRecordSuccess?.clientAccountId === clientAccountIdPay &&
+      Number(paymentRecordSuccess?.amountPaid) === 99 &&
+      paymentRecordSuccess?.billingSubscriptionId === billingSubscriptionPay.id &&
+      paymentRecordSuccess?.stripePaymentIntentId === piIdSuccess,
+  );
+
+  const commercialChangeSuccess = await prisma.clientCommercialStateChange.findFirst({
+    where: { clientAccountId: clientAccountIdPay, field: 'PAYMENT', newValue: 'PAID' },
+    orderBy: { createdAt: 'desc' },
+  });
+  check(
+    'invoice.paid dual-writes a ClientCommercialStateChange (PAYMENT/PAID) with matching amount and STRIPE_WEBHOOK source',
+    Number(commercialChangeSuccess?.amount) === 99 && commercialChangeSuccess?.source === 'STRIPE_WEBHOOK',
+  );
+
+  const subAfterInvoicePaid = await prisma.billingSubscription.findUnique({ where: { id: billingSubscriptionPay.id } });
+  check(
+    'invoice.paid flips a PAST_DUE BillingSubscription back to ACTIVE',
+    subAfterInvoicePaid?.status === 'ACTIVE',
+  );
+
+  // -- Out-of-order: invoice.paid for a subscription ID we have never
+  // recorded a BillingSubscription for. resolveClientAccountId (Task 11,
+  // already reviewed/approved) has no try/catch around
+  // stripe.subscriptions.retrieve() -- against the local placeholder
+  // STRIPE_SECRET_KEY this genuinely fails (401-style error from Stripe's
+  // real servers), and that exception propagates up through onInvoicePaid
+  // -> handleEvent -> is caught by claimAndProcess's outer try/catch,
+  // landing the event in FAILED (durably recorded + retryable), not
+  // PROCESSED. This is a deliberate deviation from the plan's stale
+  // expectation -- see Task 12 report. --
+  const oooSuffix = paySuffix + '-ooo';
+  const oooEventId = `evt_ooo_${oooSuffix}`;
+  const oooInvoicePayload = JSON.stringify({
+    id: oooEventId,
+    object: 'event',
+    api_version: '2025-08-27.basil',
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    type: 'invoice.paid',
+    data: {
+      object: {
+        id: `in_test_${oooSuffix}`,
+        object: 'invoice',
+        customer: `cus_test_${oooSuffix}`,
+        subscription: `sub_test_${oooSuffix}`,
+        amount_paid: 9900,
+        currency: 'usd',
+        tax: null,
+        period_start: Math.floor(Date.now() / 1000),
+        period_end: Math.floor(Date.now() / 1000) + 2592000,
+        payment_intent: `pi_test_${oooSuffix}`,
+      },
+    },
+  });
+  const oooRes = await deliverWebhook(oooInvoicePayload);
+  check('Out-of-order invoice.paid delivery still returns 200 (failure handled internally, not surfaced as 5xx)', oooRes.status === 200);
+  await new Promise((r) => setTimeout(r, 300));
+  const oooEventRow = await prisma.stripeWebhookEvent.findUnique({ where: { stripeEventId: oooEventId } });
+  check(
+    'Out-of-order invoice.paid for a genuinely unresolvable subscription is durably recorded as FAILED (retryable), not silently lost',
+    oooEventRow?.processingState === 'FAILED' && !!oooEventRow?.lastError,
+  );
+
+  // -- Concurrent duplicate: fire the SAME signed payload twice in
+  // parallel; the dedup advisory lock must ensure only ONE
+  // BillingPaymentRecord is ever created. --
+  const concurPaySuffix = paySuffix + '-concur';
+  const concurInvId = `in_test_${concurPaySuffix}`;
+  const concurInvoicePayload = JSON.stringify({
+    id: `evt_invpaid_${concurPaySuffix}`,
+    object: 'event',
+    api_version: '2025-08-27.basil',
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    type: 'invoice.paid',
+    data: {
+      object: {
+        id: concurInvId,
+        object: 'invoice',
+        customer: custForPay,
+        subscription: subForPay,
+        amount_paid: 9900,
+        currency: 'usd',
+        tax: null,
+        period_start: Math.floor(Date.now() / 1000),
+        period_end: Math.floor(Date.now() / 1000) + 2592000,
+        payment_intent: `pi_test_${concurPaySuffix}`,
+      },
+    },
+  });
+  const [concurInvResA, concurInvResB] = await Promise.all([
+    deliverWebhook(concurInvoicePayload),
+    deliverWebhook(concurInvoicePayload),
+  ]);
+  check(
+    'Two concurrent deliveries of the same invoice.paid event both return 200',
+    concurInvResA.status === 200 && concurInvResB.status === 200,
+  );
+  await new Promise((r) => setTimeout(r, 300));
+  const concurPaymentRecordCount = await prisma.billingPaymentRecord.count({ where: { stripeInvoiceId: concurInvId } });
+  check(
+    'Concurrent duplicate invoice.paid deliveries create exactly ONE BillingPaymentRecord',
+    concurPaymentRecordCount === 1,
+  );
+
+  // -- Failed-event retry: dedupService.claimAndProcess consolidates the
+  // old claimForProcessing/markFailed pair into one method. Prove a FAILED
+  // event stays retryable and succeeds on its next attempt. --
+  console.log('\n🔁 Testing failed-event retry via claimAndProcess...');
+  const dedupService = new StripeWebhookDedupService(prisma as any);
+  let retryAttemptCount = 0;
+  const flakyHandler = async () => {
+    retryAttemptCount++;
+    if (retryAttemptCount === 1) throw new Error('simulated failure');
+  };
+  const retrySuffix = paySuffix + '-retry';
+  const fakeFailEvent = {
+    id: `evt_retry_${retrySuffix}`,
+    type: 'invoice.paid',
+    created: Math.floor(Date.now() / 1000),
+    api_version: '2025-08-27.basil',
+    livemode: false,
+  } as any;
+  const firstRetryOutcome = await dedupService.claimAndProcess(fakeFailEvent, 'hash1', flakyHandler);
+  check('First attempt with a throwing handler results in FAILED', firstRetryOutcome.action === 'FAILED');
+  const secondRetryOutcome = await dedupService.claimAndProcess(fakeFailEvent, 'hash1', flakyHandler);
+  check(
+    'A FAILED event remains retryable and now succeeds',
+    secondRetryOutcome.action === 'PROCESSED' && retryAttemptCount === 2,
+  );
+  await prisma.stripeWebhookEvent.deleteMany({ where: { stripeEventId: `evt_retry_${retrySuffix}` } });
+
+  // -- Refund: charge.refunded marks FULL_REFUND, writes a
+  // negative-amount ClientCommercialStateChange. --
+  console.log('\n💸 Testing charge.refunded...');
+  const refundSuffix = paySuffix + '-refund';
+  const refundEventId = `evt_refund_${refundSuffix}`;
+  const chargeRefundedPayload = JSON.stringify({
+    id: refundEventId,
+    object: 'event',
+    api_version: '2025-08-27.basil',
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    type: 'charge.refunded',
+    data: {
+      object: {
+        id: `ch_test_${refundSuffix}`,
+        object: 'charge',
+        payment_intent: piIdSuccess, // reuse the payment intent from the earlier successful invoice.paid test
+        amount: 9900,
+        amount_refunded: 9900,
+      },
+    },
+  });
+  const chargeRefundedRes = await deliverWebhook(chargeRefundedPayload);
+  check('charge.refunded delivery returns 200', chargeRefundedRes.status === 200);
+  await new Promise((r) => setTimeout(r, 300));
+
+  const paymentRecordAfterRefund = await prisma.billingPaymentRecord.findUnique({ where: { stripeInvoiceId: invIdSuccess } });
+  check(
+    'charge.refunded marks the BillingPaymentRecord FULL_REFUND with matching refundedAmount',
+    paymentRecordAfterRefund?.reversalState === 'FULL_REFUND' && Number(paymentRecordAfterRefund?.refundedAmount) === 99,
+  );
+
+  const commercialChangeRefund = await prisma.clientCommercialStateChange.findFirst({
+    where: { clientAccountId: clientAccountIdPay, field: 'PAYMENT', newValue: 'REFUNDED' },
+    orderBy: { createdAt: 'desc' },
+  });
+  check(
+    'charge.refunded dual-writes a negative-amount ClientCommercialStateChange (PAYMENT/REFUNDED)',
+    Number(commercialChangeRefund?.amount) === -99 && commercialChangeRefund?.source === 'STRIPE_WEBHOOK',
+  );
+
+  // Teardown: reverse creation order, respecting FKs, mirroring the
+  // buWalk teardown block above, extended with the BillingPaymentRecord
+  // rows and StripeWebhookEvent rows this block additionally creates.
+  await prisma.stripeWebhookEvent.deleteMany({
+    where: {
+      stripeEventId: {
+        in: [
+          `evt_invpaid_${invSuccessSuffix}`,
+          oooEventId,
+          `evt_invpaid_${concurPaySuffix}`,
+          refundEventId,
+        ],
+      },
+    },
+  });
+  await prisma.billingPaymentRecord.deleteMany({ where: { clientAccountId: clientAccountIdPay } });
+  await prisma.billingSubscription.deleteMany({ where: { stripeSubscriptionId: subForPay } });
+  await prisma.clientCommercialStateChange.deleteMany({
+    where: { clientAccount: { businessUnitId: buPay.id } },
+  });
+  await prisma.conversionIdempotencyKey.deleteMany({
+    where: { clientAccount: { businessUnitId: buPay.id } },
+  });
+  await prisma.launchGateOverride.deleteMany({
+    where: { plan: { clientAccount: { businessUnitId: buPay.id } } },
+  });
+  await prisma.onboardingChecklistItemHistory.deleteMany({
+    where: { item: { plan: { clientAccount: { businessUnitId: buPay.id } } } },
+  });
+  await prisma.onboardingChecklistItem.deleteMany({
+    where: { plan: { clientAccount: { businessUnitId: buPay.id } } },
+  });
+  await prisma.onboardingPlan.deleteMany({
+    where: { clientAccount: { businessUnitId: buPay.id } },
+  });
+  await prisma.serviceDeliverableHistory.deleteMany({
+    where: { deliverable: { clientAccount: { businessUnitId: buPay.id } } },
+  });
+  await prisma.serviceDeliverable.deleteMany({
+    where: { clientAccount: { businessUnitId: buPay.id } },
+  });
+  await prisma.memoryAuditEvent.deleteMany({ where: { businessUnitId: buPay.id } });
+  await prisma.briefEvidence.deleteMany({
+    where: { brief: { profile: { businessUnitId: buPay.id } } },
+  });
+  await prisma.relationshipBrief.deleteMany({
+    where: { profile: { businessUnitId: buPay.id } },
+  });
+  const candidateEvidenceRowsPay = await prisma.candidateEvidence.findMany({
+    where: { candidate: { profile: { businessUnitId: buPay.id } } },
+    select: { sourceId: true },
+  });
+  const engramEvidenceRowsPay = await prisma.engramEvidence.findMany({
+    where: { engram: { businessUnitId: buPay.id } },
+    select: { sourceId: true },
+  });
+  const ownedSourceIdsPay = [
+    ...new Set([
+      ...candidateEvidenceRowsPay.map((r) => r.sourceId),
+      ...engramEvidenceRowsPay.map((r) => r.sourceId),
+    ]),
+  ];
+  await prisma.candidateEvidence.deleteMany({
+    where: { candidate: { profile: { businessUnitId: buPay.id } } },
+  });
+  await prisma.memoryApproval.deleteMany({
+    where: { candidate: { profile: { businessUnitId: buPay.id } } },
+  });
+  await prisma.memoryCandidate.deleteMany({
+    where: { profile: { businessUnitId: buPay.id } },
+  });
+  await prisma.engramEvidence.deleteMany({
+    where: { engram: { businessUnitId: buPay.id } },
+  });
+  await prisma.engram.deleteMany({ where: { businessUnitId: buPay.id } });
+  await prisma.engramSource.deleteMany({
+    where: { id: { in: ownedSourceIdsPay } },
+  });
+  await prisma.relationshipProfile.deleteMany({
+    where: { businessUnitId: buPay.id },
+  });
+  await prisma.relationshipSubject.deleteMany({
+    where: {
+      OR: [
+        { contact: { workspaceId: wsPay.id } },
+        { company: { workspaceId: wsPay.id } },
+      ],
+    },
+  });
+  await prisma.clientAccount.deleteMany({ where: { businessUnitId: buPay.id } });
+  await prisma.offerSnapshot.deleteMany({ where: { offer: { businessUnitId: buPay.id } } });
+  await prisma.stripePriceMapping.deleteMany({ where: { offerId: offerPay.id } });
+  await prisma.offer.deleteMany({ where: { businessUnitId: buPay.id } });
+  await prisma.auditLog.deleteMany({ where: { workspaceId: wsPay.id } });
+  await prisma.task.deleteMany({ where: { workspaceId: wsPay.id } });
+  await prisma.opportunity.deleteMany({ where: { workspaceId: wsPay.id } });
+  await prisma.stage.deleteMany({ where: { pipelineId: pipelinePay.id } });
+  await prisma.pipeline.deleteMany({ where: { id: pipelinePay.id } });
+  await prisma.contact.deleteMany({ where: { workspaceId: wsPay.id } });
+  await prisma.membership.deleteMany({ where: { userId: userPay.id } });
+  await prisma.user.delete({ where: { id: userPay.id } });
+  await prisma.workspace.delete({ where: { id: wsPay.id } });
+  await prisma.businessUnit.delete({ where: { id: buPay.id } });
+  await prisma.organization.delete({ where: { id: orgPay.id } });
 
   await webhookApp.close();
 
