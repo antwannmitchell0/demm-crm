@@ -9,11 +9,15 @@ DROP TABLE IF EXISTS "BillingPaymentRecord";
 DROP TABLE IF EXISTS "BillingCheckoutSession";
 DROP TABLE IF EXISTS "BillingSubscription";
 DROP TABLE IF EXISTS "StripeWebhookEvent";
+
+-- Must drop before "StripePriceMapping": OfferSnapshot_stripePriceMappingId_fkey
+-- depends on that table, so the table drop below would fail otherwise.
+ALTER TABLE "OfferSnapshot" DROP COLUMN IF EXISTS "stripePriceMappingId";
+
 DROP TABLE IF EXISTS "StripePriceMapping";
 
 ALTER TABLE "OfferSnapshot" DROP COLUMN IF EXISTS "trialEligible";
 ALTER TABLE "OfferSnapshot" DROP COLUMN IF EXISTS "trialDays";
-ALTER TABLE "OfferSnapshot" DROP COLUMN IF EXISTS "stripePriceMappingId";
 
 ALTER TABLE "Offer" DROP COLUMN IF EXISTS "trialEligible";
 ALTER TABLE "Offer" DROP COLUMN IF EXISTS "trialDays";
