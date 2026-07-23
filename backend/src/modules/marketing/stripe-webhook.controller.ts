@@ -38,24 +38,32 @@ export class StripeWebhookController {
     }
 
     const payloadHash = createHash('sha256').update(req.body).digest('hex');
-    const outcome = await this.dedup.claimForProcessing(event, payloadHash);
 
-    if (outcome.action === 'SKIP_ALREADY_PROCESSED') {
+    // claimAndProcess holds the dedup advisory lock for the ENTIRE
+    // claim -> handle -> mark-processed/failed lifecycle (not just the
+    // claim), so a genuinely concurrent duplicate delivery of the same
+    // event ID stays blocked until this whole thing commits -- see the
+    // lock-scope note on StripeWebhookDedupService.claimAndProcess.
+    const outcome = await this.dedup.claimAndProcess(event, payloadHash, (ev) =>
+      this.handler.handleEvent(ev),
+    );
+
+    if (outcome.action === 'SKIPPED_ALREADY_PROCESSED') {
       return res.status(HttpStatus.OK).json({ received: true, skipped: 'already_processed' });
     }
 
-    try {
-      await this.handler.handleEvent(event);
-      await this.dedup.markProcessed(outcome.rowId);
-      return res.status(HttpStatus.OK).json({ received: true });
-    } catch (err) {
-      await this.dedup.markFailed(outcome.rowId, err);
-      this.logger.error(`Webhook handler failed for event ${event.id} (${event.type})`, err as Error);
+    if (outcome.action === 'FAILED') {
+      this.logger.error(
+        `Webhook handler failed for event ${event.id} (${event.type})`,
+        outcome.error as Error,
+      );
       // Return 200 anyway: Stripe would otherwise retry, and our own
       // FAILED-state row already makes this retryable/inspectable without
       // relying on Stripe's retry schedule. A 500 here is reserved for
       // genuine infrastructure outages, not business-logic failures.
       return res.status(HttpStatus.OK).json({ received: true, processingFailed: true });
     }
+
+    return res.status(HttpStatus.OK).json({ received: true });
   }
 }

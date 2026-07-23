@@ -7,6 +7,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { StripeEnvironmentGuard } from './src/modules/marketing/stripe-environment.guard';
 import { createStripeClient } from './src/modules/marketing/stripe-config';
+import { StripeWebhookHandlerService } from './src/modules/marketing/stripe-webhook-handler.service';
 import Stripe from 'stripe';
 
 const connectionString =
@@ -338,7 +339,7 @@ async function runApiTests() {
   const eventRow = await prisma.stripeWebhookEvent.findUnique({ where: { stripeEventId: `evt_test_${webhookTestSuffix}` } });
   check('StripeWebhookEvent row reaches PROCESSED', eventRow?.processingState === 'PROCESSED');
 
-  // Duplicate delivery (sequential -- true concurrency tested in Task 12)
+  // Duplicate delivery (sequential)
   const dupRes = await fetch(`${webhookBase}/webhooks/stripe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'stripe-signature': testHeader },
@@ -346,8 +347,83 @@ async function runApiTests() {
   });
   check('Duplicate delivery of an already-PROCESSED event returns 200 and is skipped', dupRes.status === 200);
 
-  // Teardown: delete the StripeWebhookEvent row this test created
-  await prisma.stripeWebhookEvent.deleteMany({ where: { stripeEventId: `evt_test_${webhookTestSuffix}` } });
+  // --- TRUE concurrency: two genuinely parallel deliveries of the SAME
+  // event must produce exactly ONE handler execution, not two. This is
+  // precisely the race the advisory lock's transaction-spanning scope (see
+  // StripeWebhookDedupService.claimAndProcess) exists to close -- proven by
+  // monkey-patching the live StripeWebhookHandlerService instance to count
+  // invocations and hold each one open briefly (widening the race window
+  // well past normal request latency), then firing two fetch() calls via
+  // Promise.all so they are genuinely in flight at the same time.
+  const handlerInstance = webhookApp.get(StripeWebhookHandlerService);
+  const originalHandleEvent = handlerInstance.handleEvent.bind(handlerInstance);
+  let handlerInvocationCount = 0;
+  let concurrentInFlight = 0;
+  let maxConcurrentInFlight = 0;
+  (handlerInstance as any).handleEvent = async (ev: Stripe.Event) => {
+    handlerInvocationCount++;
+    concurrentInFlight++;
+    maxConcurrentInFlight = Math.max(maxConcurrentInFlight, concurrentInFlight);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    concurrentInFlight--;
+    return originalHandleEvent(ev);
+  };
+
+  const concurrentSuffix = Date.now() + '-concurrent';
+  const concurrentPayload = JSON.stringify({
+    id: `evt_test_${concurrentSuffix}`,
+    object: 'event',
+    api_version: '2025-08-27.basil',
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    type: 'checkout.session.completed',
+    data: {
+      object: {
+        id: 'cs_test_fake_concurrent',
+        metadata: { clientAccountId: 'placeholder-not-real' },
+        subscription: 'sub_test_fake_concurrent',
+      },
+    },
+  });
+  const concurrentHeader = (Stripe as any).webhooks.generateTestHeaderString({
+    payload: concurrentPayload,
+    secret: process.env.STRIPE_WEBHOOK_SECRET!,
+  });
+  const fireConcurrentDelivery = () =>
+    fetch(`${webhookBase}/webhooks/stripe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'stripe-signature': concurrentHeader },
+      body: concurrentPayload,
+    });
+  const [concurrentResA, concurrentResB] = await Promise.all([
+    fireConcurrentDelivery(),
+    fireConcurrentDelivery(),
+  ]);
+  check(
+    'Two genuinely concurrent deliveries of the same event both return 200',
+    concurrentResA.status === 200 && concurrentResB.status === 200,
+  );
+  check(
+    'Handler is invoked exactly ONCE for two truly concurrent duplicate deliveries (no double business effects)',
+    handlerInvocationCount === 1,
+  );
+  check(
+    'Handler is never running for more than one concurrent duplicate at a time',
+    maxConcurrentInFlight === 1,
+  );
+  const concurrentEventRow = await prisma.stripeWebhookEvent.findUnique({
+    where: { stripeEventId: `evt_test_${concurrentSuffix}` },
+  });
+  check(
+    'Concurrent-delivery StripeWebhookEvent row reaches PROCESSED with attemptCount 1 (only the winner ever claimed it)',
+    concurrentEventRow?.processingState === 'PROCESSED' && concurrentEventRow?.attemptCount === 1,
+  );
+  (handlerInstance as any).handleEvent = originalHandleEvent;
+
+  // Teardown: delete the StripeWebhookEvent rows this test created
+  await prisma.stripeWebhookEvent.deleteMany({
+    where: { stripeEventId: { in: [`evt_test_${webhookTestSuffix}`, `evt_test_${concurrentSuffix}`] } },
+  });
   await webhookApp.close();
 
   console.log('=====================================');
