@@ -40,21 +40,28 @@ export class CreateOfferDto {
   @IsString({ each: true })
   onboardingRequirements: string[];
 
+  // Nullable by design (2026-07-23 Commercial Truth Lock): these four have
+  // no confirmed answer for most tiers yet. Omitting them leaves the Offer
+  // honestly "not yet defined" instead of forcing a fabricated promise.
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  supportBoundaries: string;
+  supportBoundaries?: string;
 
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  reportingCadence: string;
+  reportingCadence?: string;
 
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  cancellationTerms: string;
+  cancellationTerms?: string;
 
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  expectedLaunchTime: string;
+  expectedLaunchTime?: string;
 
   @IsOptional()
   @IsBoolean()

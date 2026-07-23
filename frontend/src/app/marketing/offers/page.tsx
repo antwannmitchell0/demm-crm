@@ -28,10 +28,10 @@ interface Offer {
   includedServices: string[];
   excludedServices: string[];
   onboardingRequirements: string[];
-  supportBoundaries: string;
-  reportingCadence: string;
-  cancellationTerms: string;
-  expectedLaunchTime: string;
+  supportBoundaries: string | null;
+  reportingCadence: string | null;
+  cancellationTerms: string | null;
+  expectedLaunchTime: string | null;
   lifecycleState: 'DRAFT' | 'ACTIVE' | 'RETIRED';
   isPubliclyAvailable: boolean;
 }
@@ -114,10 +114,10 @@ export default function OffersPage() {
       includedServices: toLines(offer.includedServices),
       excludedServices: toLines(offer.excludedServices),
       onboardingRequirements: toLines(offer.onboardingRequirements),
-      supportBoundaries: offer.supportBoundaries,
-      reportingCadence: offer.reportingCadence,
-      cancellationTerms: offer.cancellationTerms,
-      expectedLaunchTime: offer.expectedLaunchTime,
+      supportBoundaries: offer.supportBoundaries ?? '',
+      reportingCadence: offer.reportingCadence ?? '',
+      cancellationTerms: offer.cancellationTerms ?? '',
+      expectedLaunchTime: offer.expectedLaunchTime ?? '',
       isPubliclyAvailable: offer.isPubliclyAvailable,
     });
     setEditingOfferId(offer.id);
@@ -142,10 +142,10 @@ export default function OffersPage() {
       includedServices: fromLines(form.includedServices),
       excludedServices: fromLines(form.excludedServices),
       onboardingRequirements: fromLines(form.onboardingRequirements),
-      supportBoundaries: form.supportBoundaries,
-      reportingCadence: form.reportingCadence,
-      cancellationTerms: form.cancellationTerms,
-      expectedLaunchTime: form.expectedLaunchTime,
+      supportBoundaries: form.supportBoundaries.trim() || undefined,
+      reportingCadence: form.reportingCadence.trim() || undefined,
+      cancellationTerms: form.cancellationTerms.trim() || undefined,
+      expectedLaunchTime: form.expectedLaunchTime.trim() || undefined,
       isPubliclyAvailable: form.isPubliclyAvailable,
     };
 
@@ -331,19 +331,21 @@ export default function OffersPage() {
               />
             </label>
 
+            <p className="text-[10px] text-slate-600">
+              The four fields below are optional -- leave blank if genuinely not yet decided.
+              An empty field means "not yet defined," not a fabricated promise.
+            </p>
             <div className="grid grid-cols-2 gap-4">
               <input
                 type="text"
-                required
-                placeholder="Support boundaries"
+                placeholder="Support boundaries (optional)"
                 value={form.supportBoundaries}
                 onChange={(e) => setForm({ ...form, supportBoundaries: e.target.value })}
                 className="px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm focus:border-cyan-500/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
               />
               <input
                 type="text"
-                required
-                placeholder="Reporting cadence"
+                placeholder="Reporting cadence (optional)"
                 value={form.reportingCadence}
                 onChange={(e) => setForm({ ...form, reportingCadence: e.target.value })}
                 className="px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm focus:border-cyan-500/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
@@ -353,16 +355,14 @@ export default function OffersPage() {
             <div className="grid grid-cols-2 gap-4">
               <input
                 type="text"
-                required
-                placeholder="Cancellation terms"
+                placeholder="Cancellation terms (optional)"
                 value={form.cancellationTerms}
                 onChange={(e) => setForm({ ...form, cancellationTerms: e.target.value })}
                 className="px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm focus:border-cyan-500/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
               />
               <input
                 type="text"
-                required
-                placeholder="Expected launch time"
+                placeholder="Expected launch time (optional)"
                 value={form.expectedLaunchTime}
                 onChange={(e) => setForm({ ...form, expectedLaunchTime: e.target.value })}
                 className="px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm focus:border-cyan-500/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"

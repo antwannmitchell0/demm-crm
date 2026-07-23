@@ -835,10 +835,15 @@ model Offer {
   includedServices       String[]
   excludedServices       String[]
   onboardingRequirements String[]
-  supportBoundaries      String
-  reportingCadence       String
-  cancellationTerms      String
-  expectedLaunchTime     String
+  // Nullable by design (2026-07-23 Commercial Truth Lock): unlike
+  // includedServices/price, these four have no confirmed answer for most
+  // tiers yet. A required NOT NULL column would force fabricating customer
+  // promises (launch time, cancellation terms) that were never actually
+  // decided -- null means "not yet defined," not "empty string."
+  supportBoundaries      String?
+  reportingCadence       String?
+  cancellationTerms      String?
+  expectedLaunchTime     String?
   lifecycleState         OfferLifecycleState @default(DRAFT)
   isPubliclyAvailable    Boolean             @default(false)
   snapshots              OfferSnapshot[]
@@ -862,10 +867,10 @@ model OfferSnapshot {
   includedServices       String[]
   excludedServices       String[]
   onboardingRequirements String[]
-  supportBoundaries      String
-  reportingCadence       String
-  cancellationTerms      String
-  expectedLaunchTime     String
+  supportBoundaries      String?
+  reportingCadence       String?
+  cancellationTerms      String?
+  expectedLaunchTime     String?
   clientAccount          ClientAccount?
   createdAt              DateTime       @default(now())
 }

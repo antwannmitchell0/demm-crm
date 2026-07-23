@@ -86,54 +86,102 @@ async function main() {
         });
       }
 
-      // Seed Founder-tier Offers for MARKETING BusinessUnit
-      console.log(`Seeding founder-tier offers for MARKETING business unit (${marketingBU.id})...`);
-      const founderTiers = [
+      // Seed DEMM OS Offers for MARKETING BusinessUnit.
+      //
+      // Commercial Truth Lock (2026-07-23): replaces the earlier fabricated
+      // "Founder $99/$299/$999" placeholder with the real, sourced DEMM OS
+      // tiers, confirmed directly by Antwann plus gbrain page `demm-pricing`
+      // (id 928) and ~/.openclaw/workspace-council/plans/THE_UNIFIED_BUILD.md
+      // (both locked 2026-06-24, Rule R3). Prices are HELD until proof --
+      // do not step these up without a fresh, explicit decision.
+      //
+      // Fields left `undefined` (supportBoundaries/reportingCadence/
+      // cancellationTerms/expectedLaunchTime on Survivor and Empire, and
+      // setupFee on all three) are genuine open gaps, not oversights --
+      // no confirmed answer exists yet. See the same migration that made
+      // these columns nullable for why an invented value isn't acceptable
+      // here. Growth's supportBoundaries ("Priority support") is the one
+      // tier with an explicitly sourced value.
+      console.log(`Seeding DEMM OS offers for MARKETING business unit (${marketingBU.id})...`);
+      const demmOsTiers = [
         {
-          key: 'FOUNDER_99',
+          key: 'SURVIVOR',
           version: 1,
-          name: 'Founder $99',
-          price: 99.00,
+          name: 'Survivor',
+          price: 99.0,
           setupFee: null,
-          includedServices: ['Monthly strategy check-in', 'CRM access', 'Email support'],
-          excludedServices: ['Done-for-you ad management', 'Custom automation builds'],
-          onboardingRequirements: ['Complete intake form', 'Connect CRM workspace'],
-          supportBoundaries: 'Email support, 48-hour response time',
-          reportingCadence: 'Monthly summary report',
-          cancellationTerms: 'Cancel anytime, no refund for the current billing period',
-          expectedLaunchTime: '7 days from signed contract',
+          includedServices: [
+            'Mirror microsite',
+            'AI Receptionist (HERMES/VAPI)',
+            'Missed-call text-back (Never Miss A Lead)',
+            'Review Manager (automated review requests + reputation management)',
+            'CRM sync',
+            'Core GHL pipeline + automations (new-contact welcome, appointment reminders, invoice-paid review request)',
+          ],
+          excludedServices: [
+            'Full multi-touch nurture',
+            'ATLAS cross-client pattern injection',
+            'Proof/content engine',
+            'Priority support',
+            'White-glove deployment',
+            'ORACLE / Oracle-Audit (AEO)',
+            'Custom workflows',
+          ],
+          onboardingRequirements: ['GHL sub-account provisioned by ALEXIS'],
+          supportBoundaries: null,
+          reportingCadence: null,
+          cancellationTerms: null,
+          expectedLaunchTime: null,
         },
         {
-          key: 'FOUNDER_299',
+          key: 'GROWTH',
           version: 1,
-          name: 'Founder $299',
-          price: 299.00,
+          name: 'Growth',
+          price: 299.0,
           setupFee: null,
-          includedServices: ['Everything in Founder $99', 'Bi-weekly strategy call', 'One automation build per month'],
-          excludedServices: ['Full done-for-you ad management', 'Dedicated account manager'],
-          onboardingRequirements: ['Complete intake form', 'Connect CRM workspace', 'Kickoff call scheduled'],
-          supportBoundaries: 'Email + chat support, 24-hour response time',
-          reportingCadence: 'Bi-weekly summary report',
-          cancellationTerms: 'Cancel anytime, no refund for the current billing period',
-          expectedLaunchTime: '5 days from signed contract',
+          includedServices: [
+            'Everything in Survivor',
+            'Full multi-touch nurture',
+            'ATLAS cross-client pattern injection',
+            'Proof/content engine',
+            'Priority support',
+          ],
+          excludedServices: [
+            'White-glove deployment',
+            'ORACLE / Oracle-Audit (AEO)',
+            'Custom workflows',
+          ],
+          onboardingRequirements: ['GHL sub-account provisioned by ALEXIS'],
+          supportBoundaries: 'Priority support',
+          reportingCadence: null,
+          cancellationTerms: null,
+          expectedLaunchTime: null,
         },
         {
-          key: 'FOUNDER_999',
+          key: 'EMPIRE',
           version: 1,
-          name: 'Founder $999',
-          price: 999.00,
+          name: 'Empire',
+          price: 999.0,
           setupFee: null,
-          includedServices: ['Everything in Founder $299', 'Weekly strategy call', 'Dedicated account manager', 'Unlimited automation builds'],
-          excludedServices: ['Paid ad spend management (billed separately)'],
-          onboardingRequirements: ['Complete intake form', 'Connect CRM workspace', 'Kickoff call scheduled', 'Brand assets received'],
-          supportBoundaries: 'Priority email + chat + phone support, same-day response time',
-          reportingCadence: 'Weekly summary report',
-          cancellationTerms: '30-day notice required for cancellation',
-          expectedLaunchTime: '3 days from signed contract',
+          includedServices: [
+            'Everything in Growth',
+            'White-glove deployment',
+            'ORACLE / Oracle-Audit (AEO — get recommended by AI assistants)',
+            'Custom workflows',
+          ],
+          excludedServices: [],
+          onboardingRequirements: [
+            'GHL sub-account provisioned by ALEXIS',
+            'White-glove deployment scheduling',
+          ],
+          supportBoundaries: null,
+          reportingCadence: null,
+          cancellationTerms: null,
+          expectedLaunchTime: null,
         },
       ];
 
-      for (const tier of founderTiers) {
+      for (const tier of demmOsTiers) {
         await prisma.offer.upsert({
           where: {
             businessUnitId_key_version: {
@@ -154,6 +202,10 @@ async function main() {
             cancellationTerms: tier.cancellationTerms,
             expectedLaunchTime: tier.expectedLaunchTime,
             lifecycleState: 'ACTIVE',
+            // These are the real, currently-marketed DEMM OS prices Antwann
+            // confirmed are actively for sale (2026-07-23) -- publicly
+            // available is the honest state, not an assumption.
+            isPubliclyAvailable: true,
           },
           create: {
             businessUnitId: marketingBU.id,
@@ -170,6 +222,7 @@ async function main() {
             cancellationTerms: tier.cancellationTerms,
             expectedLaunchTime: tier.expectedLaunchTime,
             lifecycleState: 'ACTIVE',
+            isPubliclyAvailable: true,
           },
         });
       }
