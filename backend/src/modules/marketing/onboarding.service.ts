@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import {
@@ -14,14 +15,18 @@ import {
 } from '@prisma/client';
 import { Dom26rAuditService } from '../dom26r/dom26r-audit.service';
 import { MarketingRelationshipService } from './marketing-relationship.service';
+import { ClientHealthService } from './client-health.service';
 import { SubjectType } from '@prisma/client';
 
 @Injectable()
 export class OnboardingService {
+  private readonly logger = new Logger(OnboardingService.name);
+
   constructor(
     private prisma: PrismaService,
     private dom26rAudit: Dom26rAuditService,
     private marketingRelationship: MarketingRelationshipService,
+    private clientHealth: ClientHealthService,
   ) {}
 
   /**
@@ -252,7 +257,7 @@ export class OnboardingService {
       throw new NotFoundException('Checklist item not found for this client');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       const data: Prisma.OnboardingChecklistItemUpdateInput = {
         evidence: dto.evidence,
         clientSubmission: dto.clientSubmission as Prisma.InputJsonValue,
@@ -278,6 +283,21 @@ export class OnboardingService {
         data,
       });
     });
+
+    // Recalculate Client Health after any status/dueDate change -- outside
+    // the transaction above (health is a derived, recomputable view, not a
+    // source-of-truth commercial fact, so eventual consistency here is
+    // fine). Never fails the caller's request if it errors.
+    await this.clientHealth
+      .calculate(businessUnitId, clientAccountId, actorId)
+      .catch((err) =>
+        this.logger.error(
+          `Client Health recalculation failed for ${clientAccountId}`,
+          err,
+        ),
+      );
+
+    return updated;
   }
 
   /**
@@ -297,7 +317,7 @@ export class OnboardingService {
     clientAccountId: string,
     override?: { reason: string },
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const clientAccount = await tx.clientAccount.findFirst({
         where: { id: clientAccountId, businessUnitId },
       });
@@ -404,5 +424,16 @@ export class OnboardingService {
 
       return updatedClientAccount;
     });
+
+    await this.clientHealth
+      .calculate(businessUnitId, clientAccountId, actorId)
+      .catch((err) =>
+        this.logger.error(
+          `Client Health recalculation failed for ${clientAccountId}`,
+          err,
+        ),
+      );
+
+    return result;
   }
 }

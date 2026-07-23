@@ -6,8 +6,10 @@ import {
   Param,
   Headers,
   UseGuards,
+  Logger,
 } from '@nestjs/common';
 import { ClientAccountService } from './client-account.service';
+import { ClientHealthService } from './client-health.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { WorkspaceGuard } from '../../common/guards/workspace.guard';
 import { BusinessUnitGuard } from '../../common/guards/business-unit.guard';
@@ -29,7 +31,12 @@ import { RecordCommercialStateChangeDto } from './dto/commercial-state-change.dt
 @Controller()
 @UseGuards(JwtAuthGuard, WorkspaceGuard, BusinessUnitGuard)
 export class ClientAccountController {
-  constructor(private clientAccountService: ClientAccountService) {}
+  private readonly logger = new Logger(ClientAccountController.name);
+
+  constructor(
+    private clientAccountService: ClientAccountService,
+    private clientHealth: ClientHealthService,
+  ) {}
 
   @Post('marketing/leads/:contactId/convert')
   async convert(
@@ -42,7 +49,7 @@ export class ClientAccountController {
     @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Body() dto: ConvertLeadDto,
   ) {
-    return this.clientAccountService.convert(
+    const clientAccount = await this.clientAccountService.convert(
       organizationId,
       businessUnitId,
       workspaceId,
@@ -52,6 +59,21 @@ export class ClientAccountController {
       idempotencyKey,
       dto,
     );
+
+    // Initial Client Health calculation -- deliberately AFTER convert()'s
+    // own transaction has fully committed (never inside it: convert() is
+    // an accepted, tested Sub-project 1 surface this sub-project must not
+    // reopen). A failure here never fails the conversion itself.
+    await this.clientHealth
+      .calculate(businessUnitId, clientAccount.id, user.id, correlationId)
+      .catch((err) =>
+        this.logger.error(
+          `Initial Client Health calculation failed for ${clientAccount.id}`,
+          err,
+        ),
+      );
+
+    return clientAccount;
   }
 
   @Get('marketing/clients/:id')

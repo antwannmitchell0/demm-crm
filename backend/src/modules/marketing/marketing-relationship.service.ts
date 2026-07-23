@@ -206,6 +206,50 @@ export class MarketingRelationshipService {
   }
 
   /**
+   * A Client Health transition into or out of AT_RISK/CRITICAL is a
+   * synthesized inference (the rule engine's conclusion), not a directly
+   * observed fact -- so unlike the onboarding milestones below, this goes
+   * in as a PENDING MemoryCandidate for human confirmation, matching the
+   * conversion-facts pattern. Called only on MEANINGFUL transitions
+   * (ClientHealthService enforces this), never on routine recalculation.
+   */
+  async recordHealthChangeCandidate(
+    organizationId: string,
+    businessUnitId: string,
+    workspaceId: string | null,
+    actorId: string,
+    correlationId: string,
+    params: {
+      subjectType: SubjectType;
+      subjectRefId: string;
+      profileId: string;
+      summary: string;
+    },
+  ) {
+    return this.candidates.create(
+      organizationId,
+      businessUnitId,
+      workspaceId,
+      actorId,
+      correlationId,
+      {
+        subjectType: params.subjectType,
+        subjectRefId: params.subjectRefId,
+        form: MemoryForm.SEMANTIC,
+        topic: MemoryTopic.ISSUE_AND_RESOLUTION,
+        proposedTruth: TruthClassification.INFERRED,
+        confidence: 0.7,
+        sensitivity: SensitivityClassification.INTERNAL,
+        consentBasis: 'CONTRACT',
+        summary: params.summary,
+        sources: [
+          { type: SourceType.AGENT, referenceId: 'client-health-service' },
+        ],
+      },
+    );
+  }
+
+  /**
    * System-observed onboarding milestones go directly to an ACTIVE Engram
    * (not a pending MemoryCandidate) -- "this item was completed" or "the
    * client was activated" are facts, not inferred claims. Routine

@@ -1,14 +1,20 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import {
   Prisma,
   ServiceDeliverableStatus,
   ServiceDeliverableCadence,
 } from '@prisma/client';
+import { ClientHealthService } from './client-health.service';
 
 @Injectable()
 export class ServiceDeliverableService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(ServiceDeliverableService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private clientHealth: ClientHealthService,
+  ) {}
 
   async findAll(businessUnitId: string, clientAccountId: string) {
     const clientAccount = await this.prisma.clientAccount.findFirst({
@@ -53,7 +59,7 @@ export class ServiceDeliverableService {
       throw new NotFoundException('Deliverable not found for this client');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       const data: Prisma.ServiceDeliverableUpdateInput = {
         evidence: dto.evidence,
         blockerReason: dto.blockerReason,
@@ -78,6 +84,17 @@ export class ServiceDeliverableService {
         data,
       });
     });
+
+    await this.clientHealth
+      .calculate(businessUnitId, clientAccountId, actorId)
+      .catch((err) =>
+        this.logger.error(
+          `Client Health recalculation failed for ${clientAccountId}`,
+          err,
+        ),
+      );
+
+    return updated;
   }
 
   async createOutsideScope(
