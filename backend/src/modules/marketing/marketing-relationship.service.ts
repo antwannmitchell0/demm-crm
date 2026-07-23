@@ -204,4 +204,50 @@ export class MarketingRelationshipService {
       },
     );
   }
+
+  /**
+   * System-observed onboarding milestones go directly to an ACTIVE Engram
+   * (not a pending MemoryCandidate) -- "this item was completed" or "the
+   * client was activated" are facts, not inferred claims. Routine
+   * IN_PROGRESS/WAITING_ON_CLIENT toggles do NOT call this -- only real
+   * milestones: plan generated, a required item completed, an override
+   * applied, activation, a blocker raised or resolved.
+   */
+  async recordOnboardingMilestone(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    businessUnitId: string,
+    workspaceId: string | null,
+    actorId: string,
+    correlationId: string,
+    params: {
+      subjectType: SubjectType;
+      subjectRefId: string;
+      clientAccountId: string;
+      summary: string;
+      structuredContent: Record<string, unknown>;
+    },
+  ) {
+    return this.engrams.create(
+      organizationId,
+      businessUnitId,
+      workspaceId,
+      actorId,
+      correlationId,
+      {
+        subjectType: params.subjectType,
+        subjectRefId: params.subjectRefId,
+        form: MemoryForm.EPISODIC,
+        topic: MemoryTopic.MILESTONE,
+        truthClassification: TruthClassification.OBSERVED,
+        sensitivity: SensitivityClassification.INTERNAL,
+        summary: params.summary,
+        structuredContent: params.structuredContent,
+        sources: [
+          { type: SourceType.EVENT, referenceId: params.clientAccountId },
+        ],
+      },
+      tx,
+    );
+  }
 }
