@@ -35,6 +35,14 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
+# Server-side only (read by src/app/api/version/route.ts) -- deliberately
+# NOT NEXT_PUBLIC_*, so it's set here in the runner stage rather than
+# baked into the client bundle in the builder stage above.
+ARG GIT_COMMIT_SHA=UNKNOWN_COMMIT
+ENV GIT_COMMIT_SHA=$GIT_COMMIT_SHA
+ARG BUILD_TIMESTAMP=""
+ENV BUILD_TIMESTAMP=$BUILD_TIMESTAMP
+
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
