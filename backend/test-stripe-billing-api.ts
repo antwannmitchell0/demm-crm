@@ -1173,6 +1173,233 @@ async function runApiTests() {
   await prisma.businessUnit.delete({ where: { id: buPay.id } });
   await prisma.organization.delete({ where: { id: orgPay.id } });
 
+  // --- KPI classification (MIXED_SOURCES) + double-counting guard (Task 13) ---
+  // Fresh fixture again -- the Pay block's fixture above is already torn
+  // down by this point.
+  console.log('\n📈 Testing KPI classification + double-counting guard...');
+
+  const kpiSuffix = Date.now() + '-kpi';
+  const orgKpi = await prisma.organization.create({ data: { name: `Kpi Test Org ${kpiSuffix}` } });
+  const buKpi = await prisma.businessUnit.create({
+    data: { organizationId: orgKpi.id, key: 'MARKETING', name: 'DEMM Marketing' },
+  });
+  const wsKpi = await prisma.workspace.create({
+    data: { organizationId: orgKpi.id, businessUnitId: buKpi.id, name: 'WS', subdomain: `kpi-${kpiSuffix}` },
+  });
+  const passwordHashKpi = await bcrypt.hash('KpiTest123!', 10);
+  const userKpi = await prisma.user.create({
+    data: { email: `kpi-${kpiSuffix}@example.com`, passwordHash: passwordHashKpi, firstName: 'K', lastName: 'T' },
+  });
+  await prisma.membership.create({
+    data: { userId: userKpi.id, organizationId: orgKpi.id, workspaceId: wsKpi.id, role: 'ORG_ADMIN' },
+  });
+  const pipelineKpi = await prisma.pipeline.create({ data: { name: 'P', workspaceId: wsKpi.id } });
+  const stageKpi = await prisma.stage.create({ data: { name: 'New', order: 1, pipelineId: pipelineKpi.id } });
+
+  const offerKpi = await prisma.offer.create({
+    data: {
+      businessUnitId: buKpi.id,
+      key: `kpi-survivor-${kpiSuffix}`,
+      version: 1,
+      name: 'Kpi Survivor',
+      price: 99,
+      trialEligible: true,
+      trialDays: 7,
+      includedServices: [],
+      excludedServices: [],
+      onboardingRequirements: [],
+      lifecycleState: 'ACTIVE',
+    },
+  });
+  const mappingKpi = await prisma.stripePriceMapping.create({
+    data: {
+      offerId: offerKpi.id,
+      offerVersion: 1,
+      amount: 99,
+      currency: 'usd',
+      billingInterval: 'month',
+      environment: 'local',
+      livemode: false,
+      stripeProductId: 'prod_fake_for_kpi_test',
+      stripePriceId: 'price_fake_for_kpi_test',
+    },
+  });
+
+  const contactKpi = await prisma.contact.create({
+    data: { workspaceId: wsKpi.id, firstName: 'Kpi', lastName: 'Client', emails: [`kpi-client-${kpiSuffix}@example.com`], phones: [], status: 'LEAD' },
+  });
+  await prisma.opportunity.create({
+    data: { workspaceId: wsKpi.id, contactId: contactKpi.id, pipelineId: pipelineKpi.id, stageId: stageKpi.id, name: 'Kpi Deal', value: 99, status: 'OPEN' },
+  });
+
+  const loginResKpi = await fetch(`${webhookBase}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: userKpi.email, passwordPlain: 'KpiTest123!' }),
+  }).then((r) => r.json());
+  const selectResKpi = await fetch(`${webhookBase}/api/auth/select-workspace`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${loginResKpi.preAuthToken}` },
+    body: JSON.stringify({ workspaceId: wsKpi.id }),
+  }).then((r) => r.json());
+  const tokenKpi = selectResKpi.access_token;
+  const authHeadersKpi = { Authorization: `Bearer ${tokenKpi}`, 'x-workspace-id': wsKpi.id };
+
+  const convertResKpi = await fetch(`${webhookBase}/marketing/leads/${contactKpi.id}/convert`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeadersKpi,
+      'Idempotency-Key': `kpi-idem-${kpiSuffix}`,
+    },
+    body: JSON.stringify({ offerId: offerKpi.id, contractState: 'SIGNED_MANUAL' }),
+  }).then((r) => r.json());
+
+  const clientAccountIdKpi: string = convertResKpi.id;
+  // Mark ACTIVE (not just PENDING_ONBOARDING) so computeMrr's
+  // serviceStatus: ACTIVE filter picks this client up.
+  await prisma.clientAccount.update({
+    where: { id: clientAccountIdKpi },
+    data: { serviceStatus: 'ACTIVE' },
+  });
+  const custForKpi = `cus_test_kpi_${kpiSuffix}`;
+  await prisma.clientAccount.update({ where: { id: clientAccountIdKpi }, data: { stripeCustomerId: custForKpi } });
+
+  const subForKpi = `sub_test_kpi_${kpiSuffix}`;
+  await prisma.billingSubscription.create({
+    data: {
+      clientAccountId: clientAccountIdKpi,
+      stripePriceMappingId: mappingKpi.id,
+      stripeSubscriptionId: subForKpi,
+      stripeCustomerId: custForKpi,
+      status: 'ACTIVE',
+    },
+  });
+
+  // A Stripe-sourced payment via webhook -- source: STRIPE_WEBHOOK.
+  const kpiInvoicePayload = JSON.stringify({
+    id: `evt_kpi_invpaid_${kpiSuffix}`,
+    object: 'event',
+    api_version: '2025-08-27.basil',
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    type: 'invoice.paid',
+    data: {
+      object: {
+        id: `in_kpi_${kpiSuffix}`,
+        object: 'invoice',
+        customer: custForKpi,
+        subscription: subForKpi,
+        amount_paid: 9900,
+        currency: 'usd',
+        payment_intent: `pi_kpi_${kpiSuffix}`,
+      },
+    },
+  });
+  await deliverWebhook(kpiInvoicePayload);
+  await new Promise((r) => setTimeout(r, 300));
+
+  const dashboardResKpi1 = await fetch(`${webhookBase}/marketing/dashboard`, { headers: authHeadersKpi }).then((r) => r.json());
+  check(
+    'Dashboard collectedRevenue90d is ACTUAL_VERIFIED when all payments are Stripe-sourced',
+    dashboardResKpi1.revenueTrajectory.collectedRevenue90d.classification === 'ACTUAL_VERIFIED',
+  );
+  check(
+    'Dashboard mrr is ACTUAL_VERIFIED when the only ACTIVE client has a Stripe-backed ACTIVE subscription',
+    dashboardResKpi1.revenueTrajectory.mrr.classification === 'ACTUAL_VERIFIED' &&
+      Number(dashboardResKpi1.revenueTrajectory.mrr.value) === 99,
+  );
+
+  // Manual PAYMENT entry blocked while a BillingSubscription is ACTIVE.
+  const blockedResKpi = await fetch(`${webhookBase}/marketing/clients/${clientAccountIdKpi}/commercial-state`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeadersKpi },
+    body: JSON.stringify({ field: 'PAYMENT', newValue: 'PAID_IN_FULL_MANUAL', amount: 50 }),
+  });
+  check('Manual PAYMENT entry is rejected (409) while a Stripe subscription is ACTIVE', blockedResKpi.status === 409);
+
+  const overrideResKpi = await fetch(`${webhookBase}/marketing/clients/${clientAccountIdKpi}/commercial-state`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeadersKpi },
+    body: JSON.stringify({ field: 'PAYMENT', newValue: 'PAID_IN_FULL_MANUAL', amount: 50, allowManualAlongsideStripe: true }),
+  });
+  check(
+    'Manual PAYMENT entry succeeds with allowManualAlongsideStripe: true (status 201)',
+    overrideResKpi.status === 201,
+  );
+
+  const dashboardResKpi2 = await fetch(`${webhookBase}/marketing/dashboard`, { headers: authHeadersKpi }).then((r) => r.json());
+  check(
+    'Dashboard collectedRevenue90d becomes MIXED_SOURCES once both a MANUAL and a STRIPE_WEBHOOK row exist',
+    dashboardResKpi2.revenueTrajectory.collectedRevenue90d.classification === 'MIXED_SOURCES',
+  );
+
+  // Teardown.
+  await prisma.billingSubscription.deleteMany({ where: { clientAccountId: clientAccountIdKpi } });
+  await prisma.clientCommercialStateChange.deleteMany({ where: { clientAccountId: clientAccountIdKpi } });
+  await prisma.billingPaymentRecord.deleteMany({ where: { clientAccountId: clientAccountIdKpi } });
+  await prisma.onboardingChecklistItem.deleteMany({
+    where: { plan: { clientAccount: { businessUnitId: buKpi.id } } },
+  });
+  await prisma.onboardingChecklistItemHistory.deleteMany({
+    where: { item: { plan: { clientAccount: { businessUnitId: buKpi.id } } } },
+  });
+  await prisma.onboardingPlan.deleteMany({
+    where: { clientAccount: { businessUnitId: buKpi.id } },
+  });
+  await prisma.serviceDeliverable.deleteMany({
+    where: { clientAccount: { businessUnitId: buKpi.id } },
+  });
+  await prisma.clientHealthOverride.deleteMany({
+    where: { health: { clientAccount: { businessUnitId: buKpi.id } } },
+  });
+  await prisma.clientHealthHistory.deleteMany({
+    where: { health: { clientAccount: { businessUnitId: buKpi.id } } },
+  });
+  await prisma.clientHealth.deleteMany({
+    where: { clientAccount: { businessUnitId: buKpi.id } },
+  });
+  await prisma.memoryAuditEvent.deleteMany({ where: { businessUnitId: buKpi.id } });
+  const profilesKpi = await prisma.relationshipProfile.findMany({
+    where: { businessUnitId: buKpi.id },
+    select: { id: true },
+  });
+  const profileIdsKpi = profilesKpi.map((p) => p.id);
+  await prisma.briefEvidence.deleteMany({ where: { brief: { profileId: { in: profileIdsKpi } } } });
+  await prisma.relationshipBrief.deleteMany({ where: { profileId: { in: profileIdsKpi } } });
+  await prisma.candidateEvidence.deleteMany({ where: { candidate: { profileId: { in: profileIdsKpi } } } });
+  await prisma.memoryApproval.deleteMany({ where: { candidate: { profileId: { in: profileIdsKpi } } } });
+  await prisma.memoryCandidate.deleteMany({ where: { profileId: { in: profileIdsKpi } } });
+  const engramEvidenceRowsKpi = await prisma.engramEvidence.findMany({
+    where: { engram: { businessUnitId: buKpi.id } },
+    select: { sourceId: true },
+  });
+  const ownedSourceIdsKpi = [...new Set(engramEvidenceRowsKpi.map((r) => r.sourceId))];
+  await prisma.engramEvidence.deleteMany({ where: { engram: { businessUnitId: buKpi.id } } });
+  await prisma.engram.deleteMany({ where: { businessUnitId: buKpi.id } });
+  await prisma.engramSource.deleteMany({ where: { id: { in: ownedSourceIdsKpi } } });
+  await prisma.relationshipProfile.deleteMany({ where: { businessUnitId: buKpi.id } });
+  await prisma.relationshipSubject.deleteMany({
+    where: {
+      OR: [{ contact: { workspaceId: wsKpi.id } }, { company: { workspaceId: wsKpi.id } }],
+    },
+  });
+  await prisma.clientAccount.deleteMany({ where: { businessUnitId: buKpi.id } });
+  await prisma.offerSnapshot.deleteMany({ where: { offer: { businessUnitId: buKpi.id } } });
+  await prisma.stripePriceMapping.deleteMany({ where: { offerId: offerKpi.id } });
+  await prisma.offer.deleteMany({ where: { businessUnitId: buKpi.id } });
+  await prisma.auditLog.deleteMany({ where: { workspaceId: wsKpi.id } });
+  await prisma.task.deleteMany({ where: { workspaceId: wsKpi.id } });
+  await prisma.opportunity.deleteMany({ where: { workspaceId: wsKpi.id } });
+  await prisma.stage.deleteMany({ where: { pipelineId: pipelineKpi.id } });
+  await prisma.pipeline.deleteMany({ where: { id: pipelineKpi.id } });
+  await prisma.contact.deleteMany({ where: { workspaceId: wsKpi.id } });
+  await prisma.membership.deleteMany({ where: { userId: userKpi.id } });
+  await prisma.user.delete({ where: { id: userKpi.id } });
+  await prisma.workspace.delete({ where: { id: wsKpi.id } });
+  await prisma.businessUnit.delete({ where: { id: buKpi.id } });
+  await prisma.organization.delete({ where: { id: orgKpi.id } });
+
   await webhookApp.close();
 
   console.log('=====================================');

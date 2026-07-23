@@ -468,11 +468,29 @@ export class ClientAccountService {
     field: 'CONTRACT' | 'PAYMENT',
     newValue: string,
     amount?: number,
+    allowManualAlongsideStripe = false,
   ) {
     const clientAccount = await this.findByIdScoped(
       businessUnitId,
       clientAccountId,
     );
+
+    if (field === 'PAYMENT' && !allowManualAlongsideStripe) {
+      const blockingSubscription =
+        await this.prisma.billingSubscription.findFirst({
+          where: {
+            clientAccountId: clientAccount.id,
+            status: { in: ['ACTIVE', 'TRIALING', 'PAST_DUE', 'INCOMPLETE'] },
+          },
+        });
+      if (blockingSubscription) {
+        throw new ConflictException(
+          'This client has an active Stripe subscription -- Stripe is the authoritative payment source. ' +
+            'Pass allowManualAlongsideStripe: true if this is a genuine out-of-band payment alongside Stripe.',
+        );
+      }
+    }
+
     return this.prisma.clientCommercialStateChange.create({
       data: {
         clientAccountId: clientAccount.id,

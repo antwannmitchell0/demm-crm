@@ -3,6 +3,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsNumber,
+  IsBoolean,
   Min,
   IsIn,
   Matches,
@@ -27,4 +28,8 @@ export class RecordCommercialStateChangeDto {
   @IsNumber()
   @Min(0)
   amount?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  allowManualAlongsideStripe?: boolean;
 }

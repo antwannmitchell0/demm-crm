@@ -98,6 +98,7 @@ export class ClientAccountController {
       dto.field,
       dto.newValue,
       dto.amount,
+      dto.allowManualAlongsideStripe,
     );
   }
 }

@@ -12,6 +12,7 @@ import {
 export type KpiClassification =
   | 'ACTUAL_VERIFIED'
   | 'MANUALLY_RECORDED'
+  | 'MIXED_SOURCES'
   | 'PROJECTED'
   | 'ESTIMATED'
   | 'UNAVAILABLE';
@@ -360,19 +361,30 @@ export class KpiService {
         createdAt: { gte: this.ninetyDaysAgo() },
         clientAccount: { businessUnitId },
       },
-      select: { amount: true },
+      select: { amount: true, source: true },
     });
     const total = rows.reduce((sum, r) => sum + Number(r.amount ?? 0), 0);
+    const sources = new Set(rows.map((r) => r.source));
+    let classification: KpiClassification;
+    if (rows.length === 0) {
+      classification = 'MANUALLY_RECORDED';
+    } else if (sources.size === 1 && sources.has('STRIPE_WEBHOOK')) {
+      classification = 'ACTUAL_VERIFIED';
+    } else if (sources.size === 1 && sources.has('MANUAL')) {
+      classification = 'MANUALLY_RECORDED';
+    } else {
+      classification = 'MIXED_SOURCES';
+    }
     return {
       code: 'collectedRevenue90d',
       value: total,
-      classification: 'MANUALLY_RECORDED',
+      classification,
       asOf: this.now(),
       sources: ['ClientCommercialStateChange'],
       missingData:
         rows.length === 0
           ? [
-              'No manually-recorded PAID payment amounts in the trailing 90 days.',
+              'No manually-recorded or Stripe-verified PAID payment amounts in the trailing 90 days.',
             ]
           : undefined,
     };
@@ -381,18 +393,47 @@ export class KpiService {
   private async computeMrr(businessUnitId: string): Promise<KpiValue> {
     const active = await this.prisma.clientAccount.findMany({
       where: { businessUnitId, serviceStatus: MarketingServiceStatus.ACTIVE },
-      include: { offerSnapshot: { select: { price: true } } },
+      include: {
+        offerSnapshot: { select: { price: true } },
+        billingSubscriptions: {
+          where: { status: 'ACTIVE' },
+          include: { stripePriceMapping: { select: { amount: true } } },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
+      },
     });
-    const total = active.reduce(
-      (sum, c) => sum + Number(c.offerSnapshot.price),
-      0,
-    );
+
+    let stripeVerifiedCount = 0;
+    const total = active.reduce((sum, c) => {
+      const stripeSub = c.billingSubscriptions[0];
+      if (stripeSub) {
+        stripeVerifiedCount++;
+        return sum + Number(stripeSub.stripePriceMapping.amount);
+      }
+      return sum + Number(c.offerSnapshot.price);
+    }, 0);
+
+    const classification: KpiClassification =
+      active.length === 0
+        ? 'ESTIMATED'
+        : stripeVerifiedCount === active.length
+          ? 'ACTUAL_VERIFIED'
+          : stripeVerifiedCount === 0
+            ? 'ESTIMATED'
+            : 'MIXED_SOURCES';
+
     return {
       code: 'mrr',
       value: total,
-      classification: 'ESTIMATED',
+      classification,
       asOf: this.now(),
-      sources: ['ClientAccount', 'OfferSnapshot'],
+      sources: [
+        'ClientAccount',
+        'OfferSnapshot',
+        'BillingSubscription',
+        'StripePriceMapping',
+      ],
     };
   }
 
