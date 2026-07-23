@@ -316,6 +316,13 @@ async function runApiTests() {
   // Stripe network call, works fine with the local placeholder secret)
   const stripeSdk = createStripeClient();
   const webhookTestSuffix = Date.now();
+  // subscription: null (not a fake id) -- as of Task 11,
+  // onCheckoutCompleted() genuinely calls stripe.subscriptions.retrieve()
+  // when session.subscription is truthy, which would hit Stripe's real
+  // API and fail against the local placeholder STRIPE_SECRET_KEY. This
+  // block only exercises signature verification / dedup plumbing, not
+  // checkout business logic, so we keep it on the metadata-present /
+  // no-subscription no-op branch (a real, testable code path).
   const fakeEventPayload = JSON.stringify({
     id: `evt_test_${webhookTestSuffix}`,
     object: 'event',
@@ -323,7 +330,7 @@ async function runApiTests() {
     created: Math.floor(Date.now() / 1000),
     livemode: false,
     type: 'checkout.session.completed',
-    data: { object: { id: 'cs_test_fake', metadata: { clientAccountId: 'placeholder-not-real' }, subscription: 'sub_test_fake' } },
+    data: { object: { id: 'cs_test_fake', metadata: { clientAccountId: 'placeholder-not-real' }, subscription: null } },
   });
   const testHeader = (Stripe as any).webhooks.generateTestHeaderString({
     payload: fakeEventPayload,
@@ -370,6 +377,10 @@ async function runApiTests() {
   };
 
   const concurrentSuffix = Date.now() + '-concurrent';
+  // subscription: null -- same reasoning as fakeEventPayload above: this
+  // block (via originalHandleEvent) runs the real onCheckoutCompleted(),
+  // and a truthy subscription id would trigger a real
+  // stripe.subscriptions.retrieve() call against the placeholder key.
   const concurrentPayload = JSON.stringify({
     id: `evt_test_${concurrentSuffix}`,
     object: 'event',
@@ -381,7 +392,7 @@ async function runApiTests() {
       object: {
         id: 'cs_test_fake_concurrent',
         metadata: { clientAccountId: 'placeholder-not-real' },
-        subscription: 'sub_test_fake_concurrent',
+        subscription: null,
       },
     },
   });
@@ -424,6 +435,293 @@ async function runApiTests() {
   await prisma.stripeWebhookEvent.deleteMany({
     where: { stripeEventId: { in: [`evt_test_${webhookTestSuffix}`, `evt_test_${concurrentSuffix}`] } },
   });
+
+  // --- Subscription status synchronization walk ---
+  // Exercises customer.subscription.created/updated/deleted end-to-end
+  // through the real handler with a FULL synthetic Subscription object
+  // (metadata included) on every event, which never triggers
+  // stripe.subscriptions.retrieve() -- fully testable against the local
+  // placeholder key. (Use a distinct suffix/IDs from any earlier test
+  // block to avoid collisions.)
+  const subForWalkSuffix = Date.now() + '-walk';
+  const subForWalk = 'sub_test_walk_' + subForWalkSuffix;
+  const custForWalk = 'cus_test_walk_' + subForWalkSuffix;
+
+  const orgWalk = await prisma.organization.create({ data: { name: `Walk Test Org ${subForWalkSuffix}` } });
+  const buWalk = await prisma.businessUnit.create({
+    data: { organizationId: orgWalk.id, key: 'MARKETING', name: 'DEMM Marketing' },
+  });
+  const wsWalk = await prisma.workspace.create({
+    data: { organizationId: orgWalk.id, businessUnitId: buWalk.id, name: 'WS', subdomain: `walk-${subForWalkSuffix}` },
+  });
+  const passwordHashWalk = await bcrypt.hash('WalkTest123!', 10);
+  const userWalk = await prisma.user.create({
+    data: { email: `walk-${subForWalkSuffix}@example.com`, passwordHash: passwordHashWalk, firstName: 'W', lastName: 'T' },
+  });
+  await prisma.membership.create({
+    data: { userId: userWalk.id, organizationId: orgWalk.id, workspaceId: wsWalk.id, role: 'ORG_ADMIN' },
+  });
+  const pipelineWalk = await prisma.pipeline.create({ data: { name: 'P', workspaceId: wsWalk.id } });
+  const stageWalk = await prisma.stage.create({ data: { name: 'New', order: 1, pipelineId: pipelineWalk.id } });
+
+  // A local test Offer with a StripePriceMapping so the OfferSnapshot
+  // produced by conversion has a stripePriceMappingId -- required by
+  // upsertBillingSubscription's guard.
+  const offerWalk = await prisma.offer.create({
+    data: {
+      businessUnitId: buWalk.id,
+      key: `walk-survivor-${subForWalkSuffix}`,
+      version: 1,
+      name: 'Walk Survivor',
+      price: 99,
+      trialEligible: true,
+      trialDays: 7,
+      includedServices: [],
+      excludedServices: [],
+      onboardingRequirements: [],
+      lifecycleState: 'ACTIVE',
+    },
+  });
+  const mappingWalk = await prisma.stripePriceMapping.create({
+    data: {
+      offerId: offerWalk.id,
+      offerVersion: 1,
+      amount: 99,
+      currency: 'usd',
+      billingInterval: 'month',
+      environment: 'local',
+      livemode: false,
+      stripeProductId: 'prod_fake_for_walk_test',
+      stripePriceId: 'price_fake_for_walk_test',
+    },
+  });
+
+  const contactWalk = await prisma.contact.create({
+    data: { workspaceId: wsWalk.id, firstName: 'Walk', lastName: 'Client', emails: [`walk-client-${subForWalkSuffix}@example.com`], phones: [], status: 'LEAD' },
+  });
+  await prisma.opportunity.create({
+    data: { workspaceId: wsWalk.id, contactId: contactWalk.id, pipelineId: pipelineWalk.id, stageId: stageWalk.id, name: 'Walk Deal', value: 99, status: 'OPEN' },
+  });
+
+  const loginResWalk = await fetch(`${webhookBase}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: userWalk.email, passwordPlain: 'WalkTest123!' }),
+  }).then((r) => r.json());
+  const selectResWalk = await fetch(`${webhookBase}/api/auth/select-workspace`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${loginResWalk.preAuthToken}` },
+    body: JSON.stringify({ workspaceId: wsWalk.id }),
+  }).then((r) => r.json());
+  const tokenWalk = selectResWalk.access_token;
+
+  const convertResWalk = await fetch(`${webhookBase}/marketing/leads/${contactWalk.id}/convert`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${tokenWalk}`,
+      'x-workspace-id': wsWalk.id,
+      'Idempotency-Key': `walk-idem-${subForWalkSuffix}`,
+    },
+    body: JSON.stringify({ offerId: offerWalk.id, contractState: 'SIGNED_MANUAL' }),
+  }).then((r) => r.json());
+
+  const clientAccountIdWalk: string = convertResWalk.id;
+  await prisma.clientAccount.update({ where: { id: clientAccountIdWalk }, data: { stripeCustomerId: custForWalk } });
+
+  const offerSnapshotWalk = await prisma.offerSnapshot.findUnique({ where: { id: convertResWalk.offerSnapshotId } });
+  check(
+    'Walk-test ClientAccount OfferSnapshot has a non-null stripePriceMappingId (required by upsertBillingSubscription guard)',
+    offerSnapshotWalk?.stripePriceMappingId === mappingWalk.id,
+  );
+
+  function synthesizeSubscriptionEvent(
+    eventType: string,
+    status: string,
+    clientAccountId: string,
+    overrides: Record<string, any> = {},
+  ) {
+    return JSON.stringify({
+      id: `evt_walk_${status}_${subForWalkSuffix}`,
+      object: 'event',
+      api_version: '2025-08-27.basil',
+      created: Math.floor(Date.now() / 1000),
+      livemode: false,
+      type: eventType,
+      data: {
+        object: {
+          id: subForWalk,
+          object: 'subscription',
+          customer: custForWalk,
+          status,
+          metadata: { clientAccountId },
+          items: { data: [{ current_period_start: Math.floor(Date.now() / 1000), current_period_end: Math.floor(Date.now() / 1000) + 2592000 }] },
+          cancel_at_period_end: false,
+          canceled_at: null,
+          trial_start: null,
+          trial_end: null,
+          ...overrides,
+        },
+      },
+    });
+  }
+
+  async function deliverWebhook(payload: string) {
+    const header = (Stripe as any).webhooks.generateTestHeaderString({ payload, secret: process.env.STRIPE_WEBHOOK_SECRET! });
+    return fetch(`${webhookBase}/webhooks/stripe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'stripe-signature': header },
+      body: payload,
+    });
+  }
+
+  const walkStatuses = ['incomplete', 'trialing', 'active', 'past_due', 'active', 'canceled'];
+  const walkDeliveryResults: number[] = [];
+  for (const status of walkStatuses) {
+    // Each status uses a distinct Stripe event id (evt_walk_<status>_<suffix>)
+    // so the dedup layer treats every step of the walk as a new event
+    // rather than a duplicate of the previous status.
+    const walkRes = await deliverWebhook(
+      synthesizeSubscriptionEvent('customer.subscription.updated', status, clientAccountIdWalk),
+    );
+    walkDeliveryResults.push(walkRes.status);
+  }
+  check(
+    'All subscription-status-walk webhook deliveries return 200',
+    walkDeliveryResults.every((s) => s === 200),
+  );
+  await new Promise((r) => setTimeout(r, 300));
+  const finalSub = await prisma.billingSubscription.findUnique({ where: { stripeSubscriptionId: subForWalk } });
+  check(
+    'Subscription status walk ends at CANCELED after INCOMPLETE→TRIALING→ACTIVE→PAST_DUE→ACTIVE→CANCELED',
+    finalSub?.status === 'CANCELED',
+  );
+  check(
+    'Subscription status walk resolved via metadata.clientAccountId (no stripe.subscriptions.retrieve() call needed)',
+    finalSub?.clientAccountId === clientAccountIdWalk,
+  );
+
+  // Also prove customer.subscription.deleted independently sets CANCELED
+  // + canceledAt even when delivered as its own event type (not just via
+  // the .updated walk above).
+  await prisma.billingSubscription.update({
+    where: { stripeSubscriptionId: subForWalk },
+    data: { status: 'ACTIVE', canceledAt: null },
+  });
+  const deletedPayload = synthesizeSubscriptionEvent('customer.subscription.deleted', 'canceled', clientAccountIdWalk, {
+    canceled_at: Math.floor(Date.now() / 1000),
+  });
+  const deletedRes = await deliverWebhook(
+    JSON.stringify({ ...JSON.parse(deletedPayload), id: `evt_walk_deleted_${subForWalkSuffix}` }),
+  );
+  check('customer.subscription.deleted delivery returns 200', deletedRes.status === 200);
+  await new Promise((r) => setTimeout(r, 300));
+  const afterDeleteSub = await prisma.billingSubscription.findUnique({ where: { stripeSubscriptionId: subForWalk } });
+  check(
+    'customer.subscription.deleted sets status CANCELED and canceledAt',
+    afterDeleteSub?.status === 'CANCELED' && afterDeleteSub?.canceledAt !== null,
+  );
+
+  // Teardown: reverse creation order, respecting FKs.
+  await prisma.stripeWebhookEvent.deleteMany({
+    where: {
+      stripeEventId: {
+        in: [
+          ...walkStatuses.map((s) => `evt_walk_${s}_${subForWalkSuffix}`),
+          `evt_walk_deleted_${subForWalkSuffix}`,
+        ],
+      },
+    },
+  });
+  await prisma.billingSubscription.deleteMany({ where: { stripeSubscriptionId: subForWalk } });
+  await prisma.clientCommercialStateChange.deleteMany({
+    where: { clientAccount: { businessUnitId: buWalk.id } },
+  });
+  await prisma.conversionIdempotencyKey.deleteMany({
+    where: { clientAccount: { businessUnitId: buWalk.id } },
+  });
+  await prisma.launchGateOverride.deleteMany({
+    where: { plan: { clientAccount: { businessUnitId: buWalk.id } } },
+  });
+  await prisma.onboardingChecklistItemHistory.deleteMany({
+    where: { item: { plan: { clientAccount: { businessUnitId: buWalk.id } } } },
+  });
+  await prisma.onboardingChecklistItem.deleteMany({
+    where: { plan: { clientAccount: { businessUnitId: buWalk.id } } },
+  });
+  await prisma.onboardingPlan.deleteMany({
+    where: { clientAccount: { businessUnitId: buWalk.id } },
+  });
+  await prisma.serviceDeliverableHistory.deleteMany({
+    where: { deliverable: { clientAccount: { businessUnitId: buWalk.id } } },
+  });
+  await prisma.serviceDeliverable.deleteMany({
+    where: { clientAccount: { businessUnitId: buWalk.id } },
+  });
+  await prisma.memoryAuditEvent.deleteMany({ where: { businessUnitId: buWalk.id } });
+  await prisma.briefEvidence.deleteMany({
+    where: { brief: { profile: { businessUnitId: buWalk.id } } },
+  });
+  await prisma.relationshipBrief.deleteMany({
+    where: { profile: { businessUnitId: buWalk.id } },
+  });
+  const candidateEvidenceRowsWalk = await prisma.candidateEvidence.findMany({
+    where: { candidate: { profile: { businessUnitId: buWalk.id } } },
+    select: { sourceId: true },
+  });
+  const engramEvidenceRowsWalk = await prisma.engramEvidence.findMany({
+    where: { engram: { businessUnitId: buWalk.id } },
+    select: { sourceId: true },
+  });
+  const ownedSourceIdsWalk = [
+    ...new Set([
+      ...candidateEvidenceRowsWalk.map((r) => r.sourceId),
+      ...engramEvidenceRowsWalk.map((r) => r.sourceId),
+    ]),
+  ];
+  await prisma.candidateEvidence.deleteMany({
+    where: { candidate: { profile: { businessUnitId: buWalk.id } } },
+  });
+  await prisma.memoryApproval.deleteMany({
+    where: { candidate: { profile: { businessUnitId: buWalk.id } } },
+  });
+  await prisma.memoryCandidate.deleteMany({
+    where: { profile: { businessUnitId: buWalk.id } },
+  });
+  await prisma.engramEvidence.deleteMany({
+    where: { engram: { businessUnitId: buWalk.id } },
+  });
+  await prisma.engram.deleteMany({ where: { businessUnitId: buWalk.id } });
+  await prisma.engramSource.deleteMany({
+    where: { id: { in: ownedSourceIdsWalk } },
+  });
+  await prisma.relationshipProfile.deleteMany({
+    where: { businessUnitId: buWalk.id },
+  });
+  await prisma.relationshipSubject.deleteMany({
+    where: {
+      OR: [
+        { contact: { workspaceId: wsWalk.id } },
+        { company: { workspaceId: wsWalk.id } },
+      ],
+    },
+  });
+  await prisma.clientAccount.deleteMany({ where: { businessUnitId: buWalk.id } });
+  await prisma.offerSnapshot.deleteMany({ where: { offer: { businessUnitId: buWalk.id } } });
+  await prisma.stripePriceMapping.deleteMany({ where: { offerId: offerWalk.id } });
+  await prisma.offer.deleteMany({ where: { businessUnitId: buWalk.id } });
+  await prisma.auditLog.deleteMany({ where: { workspaceId: wsWalk.id } });
+  await prisma.task.deleteMany({ where: { workspaceId: wsWalk.id } });
+  await prisma.opportunity.deleteMany({ where: { workspaceId: wsWalk.id } });
+  await prisma.stage.deleteMany({ where: { pipelineId: pipelineWalk.id } });
+  await prisma.pipeline.deleteMany({ where: { id: pipelineWalk.id } });
+  await prisma.contact.deleteMany({ where: { workspaceId: wsWalk.id } });
+  await prisma.membership.deleteMany({ where: { userId: userWalk.id } });
+  await prisma.user.delete({ where: { id: userWalk.id } });
+  await prisma.workspace.delete({ where: { id: wsWalk.id } });
+  await prisma.businessUnit.delete({ where: { id: buWalk.id } });
+  await prisma.organization.delete({ where: { id: orgWalk.id } });
+
   await webhookApp.close();
 
   console.log('=====================================');
