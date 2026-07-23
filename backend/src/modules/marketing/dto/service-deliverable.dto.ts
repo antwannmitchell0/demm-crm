@@ -26,6 +26,11 @@ export class UpdateDeliverableDto {
   @IsOptional()
   @IsDateString()
   clientApprovedAt?: string;
+
+  // Added for the Marketing Dashboard's "overdue service deliverables" KPI.
+  @IsOptional()
+  @IsDateString()
+  dueDate?: string;
 }
 
 export class CreateOutsideScopeDeliverableDto {

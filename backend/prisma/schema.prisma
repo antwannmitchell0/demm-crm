@@ -938,6 +938,7 @@ model ClientAccount {
   idempotencyKeys          ConversionIdempotencyKey[]
   onboardingPlan           OnboardingPlan?
   serviceDeliverables      ServiceDeliverable[]
+  health                   ClientHealth?
   createdAt                DateTime                      @default(now())
   updatedAt                DateTime                      @updatedAt
 
@@ -952,6 +953,13 @@ model ClientCommercialStateChange {
   clientAccount   ClientAccount @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
   field           String // "CONTRACT" | "PAYMENT"
   newValue        String // e.g. "SIGNED_MANUAL", "DEPOSIT_PAID_MANUAL"
+  // Nullable by design: only meaningful for field="PAYMENT" rows, and only
+  // when a real dollar amount was actually recorded (2026-07-23, added for
+  // the Marketing Dashboard's revenue KPIs -- without this there was no way
+  // to derive a real MANUALLY_RECORDED revenue figure, only guess at the
+  // full OfferSnapshot price, which would misrepresent partial/deposit
+  // payments as full payments).
+  amount          Decimal?      @db.Decimal(12, 2)
   recordedById    String
   recordedBy      User          @relation(fields: [recordedById], references: [id])
   source          String        @default("MANUAL")
@@ -1080,6 +1088,72 @@ model ServiceDeliverableHistory {
   createdAt     DateTime                 @default(now())
 
   @@index([deliverableId, createdAt])
+}
+
+// --- Marketing Business Unit: Client Health (Phase 2 Sub-project 3) ---
+//
+// Deliberately a SEPARATE model from ClientAccount.serviceStatus. Service
+// status is the client's commercial lifecycle stage (PENDING_ONBOARDING /
+// ACTIVE / AT_RISK / PAUSED / CHURNED); ClientHealth is a diagnostic,
+// explainable risk assessment layered on top -- computed from real
+// evidence, never a mysterious score. See ClientHealthService for the rule
+// engine that populates `factors`/`missingData`.
+
+enum ClientHealthState {
+  HEALTHY
+  WATCH
+  AT_RISK
+  CRITICAL
+  PAUSED
+  CHURNED
+  UNKNOWN
+}
+
+model ClientHealth {
+  id                String                 @id @default(uuid())
+  clientAccountId   String                 @unique
+  clientAccount     ClientAccount          @relation(fields: [clientAccountId], references: [id], onDelete: Cascade)
+  // `state` is what callers read -- overrideState if set, else computedState.
+  // Both are stored explicitly so a human override never overwrites (and
+  // therefore never hides) what the rule engine actually computed.
+  state             ClientHealthState      @default(UNKNOWN)
+  computedState     ClientHealthState      @default(UNKNOWN)
+  overrideState     ClientHealthState?
+  // Structured JSON array of { code, description, riskOwner, evidence }
+  // -- riskOwner is one of DEMM/CLIENT/COMMERCIAL/RELATIONSHIP/DELIVERY,
+  // matching the "distinguish who/what is causing the risk" requirement.
+  factors           Json
+  missingData       String[]
+  recommendedAction String?
+  calculatedAt      DateTime               @default(now())
+  overrides         ClientHealthOverride[]
+  history           ClientHealthHistory[]
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+}
+
+model ClientHealthOverride {
+  id        String            @id @default(uuid())
+  healthId  String
+  health    ClientHealth      @relation(fields: [healthId], references: [id], onDelete: Cascade)
+  state     ClientHealthState
+  reason    String
+  actorId   String
+  createdAt DateTime          @default(now())
+
+  @@index([healthId, createdAt])
+}
+
+model ClientHealthHistory {
+  id        String            @id @default(uuid())
+  healthId  String
+  health    ClientHealth      @relation(fields: [healthId], references: [id], onDelete: Cascade)
+  oldState  ClientHealthState
+  newState  ClientHealthState
+  trigger   String // "RECALCULATION" | "OVERRIDE" | "OVERRIDE_CLEARED"
+  createdAt DateTime          @default(now())
+
+  @@index([healthId, createdAt])
 }
 
 model Task {

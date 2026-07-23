@@ -364,6 +364,7 @@ export class ClientAccountService {
               clientAccountId: clientAccount.id,
               field: 'PAYMENT',
               newValue: dto.paymentState,
+              amount: dto.paymentAmount ?? null,
               recordedById: actorId,
               source: 'MANUAL',
             },
@@ -435,5 +436,37 @@ export class ClientAccountService {
       }
       throw err;
     }
+  }
+
+  /**
+   * Records an ADDITIONAL contract/payment state change after conversion --
+   * e.g. month 2's payment, or a contract renewal. Deliberately separate
+   * from the convert() transaction (which only records the state supplied
+   * at conversion time): ongoing revenue tracking needs a way to log
+   * further manually-recorded events over a client's lifetime, and this is
+   * new functionality, not a modification of convert()'s existing behavior.
+   */
+  async recordCommercialStateChange(
+    businessUnitId: string,
+    actorId: string,
+    clientAccountId: string,
+    field: 'CONTRACT' | 'PAYMENT',
+    newValue: string,
+    amount?: number,
+  ) {
+    const clientAccount = await this.findByIdScoped(
+      businessUnitId,
+      clientAccountId,
+    );
+    return this.prisma.clientCommercialStateChange.create({
+      data: {
+        clientAccountId: clientAccount.id,
+        field,
+        newValue,
+        amount: amount ?? null,
+        recordedById: actorId,
+        source: 'MANUAL',
+      },
+    });
   }
 }

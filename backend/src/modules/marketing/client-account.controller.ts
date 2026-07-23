@@ -17,6 +17,7 @@ import { CurrentOrganizationId } from '../../common/decorators/current-organizat
 import { CurrentCorrelationId } from '../../common/decorators/current-correlation-id.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ConvertLeadDto } from './dto/convert-lead.dto';
+import { RecordCommercialStateChangeDto } from './dto/commercial-state-change.dto';
 
 /**
  * One controller covering both route groups the plan calls for --
@@ -59,5 +60,22 @@ export class ClientAccountController {
     @Param('id') id: string,
   ) {
     return this.clientAccountService.getClientDetail(businessUnitId, id);
+  }
+
+  @Post('marketing/clients/:id/commercial-state')
+  async recordCommercialStateChange(
+    @CurrentBusinessUnitId() businessUnitId: string,
+    @CurrentUser() user: any,
+    @Param('id') id: string,
+    @Body() dto: RecordCommercialStateChangeDto,
+  ) {
+    return this.clientAccountService.recordCommercialStateChange(
+      businessUnitId,
+      user.id,
+      id,
+      dto.field,
+      dto.newValue,
+      dto.amount,
+    );
   }
 }

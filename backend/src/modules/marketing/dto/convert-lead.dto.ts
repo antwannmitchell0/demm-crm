@@ -1,4 +1,11 @@
-import { IsString, IsNotEmpty, IsOptional, Matches } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+  IsNumber,
+  Min,
+  Matches,
+} from 'class-validator';
 
 /**
  * Contract/payment state is manually recorded until real Stripe/DocuSign
@@ -32,6 +39,19 @@ export class ConvertLeadDto {
       'paymentState must be uppercase and end in _MANUAL (e.g. DEPOSIT_PAID_MANUAL)',
   })
   paymentState?: string;
+
+  /**
+   * The real dollar amount recorded alongside paymentState, if known --
+   * e.g. a $99 deposit on a $299/mo plan. Optional and independent of
+   * paymentState's presence: a state can be recorded without a dollar
+   * figure (honest "we don't know the exact amount yet"), but an amount
+   * without a state is meaningless, so the service only persists this
+   * when paymentState is also supplied.
+   */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  paymentAmount?: number;
 
   /**
    * Overrides the Contact's existing companyId as the client entity, if

@@ -234,6 +234,7 @@ export class OnboardingService {
       evidence?: string;
       clientSubmission?: Record<string, unknown>;
       blockerReason?: string;
+      dueDate?: string;
     },
   ) {
     const clientAccount = await this.prisma.clientAccount.findFirst({
@@ -256,6 +257,7 @@ export class OnboardingService {
         evidence: dto.evidence,
         clientSubmission: dto.clientSubmission as Prisma.InputJsonValue,
         blockerReason: dto.blockerReason,
+        dueDate: dto.dueDate ? new Date(dto.dueDate) : undefined,
       };
       if (dto.status && dto.status !== item.status) {
         data.status = dto.status;

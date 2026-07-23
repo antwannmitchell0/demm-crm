@@ -35,6 +35,7 @@ export class ServiceDeliverableService {
       evidence?: string;
       blockerReason?: string;
       clientApprovedAt?: string;
+      dueDate?: string;
     },
   ) {
     const clientAccount = await this.prisma.clientAccount.findFirst({
@@ -59,6 +60,7 @@ export class ServiceDeliverableService {
         clientApprovedAt: dto.clientApprovedAt
           ? new Date(dto.clientApprovedAt)
           : undefined,
+        dueDate: dto.dueDate ? new Date(dto.dueDate) : undefined,
       };
       if (dto.status && dto.status !== deliverable.status) {
         data.status = dto.status;
