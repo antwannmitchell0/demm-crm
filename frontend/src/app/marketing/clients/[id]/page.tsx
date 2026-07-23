@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Sidebar from '../../../../components/Sidebar';
+import ClientHealthTab from '../../../../components/ClientHealthTab';
 import { api, getAuthToken, getActiveUser } from '../../../../lib/api';
 import {
   RefreshCw,
@@ -23,7 +24,7 @@ const OVERRIDE_ALLOWED_ROLES = [
   'WORKSPACE_ADMIN',
 ];
 
-type Tab = 'overview' | 'onboarding' | 'delivery' | 'memory';
+type Tab = 'overview' | 'onboarding' | 'delivery' | 'health' | 'memory';
 
 const CHECKLIST_STATUSES = [
   'NOT_STARTED',
@@ -366,7 +367,7 @@ export default function ClientDetailPage() {
         )}
 
         <nav className="flex gap-1 mb-6 border-b border-slate-900">
-          {(['overview', 'onboarding', 'delivery', 'memory'] as Tab[]).map((t) => (
+          {(['overview', 'onboarding', 'delivery', 'health', 'memory'] as Tab[]).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -382,7 +383,9 @@ export default function ClientDetailPage() {
                   ? 'Onboarding'
                   : t === 'delivery'
                     ? 'Service Delivery'
-                    : 'Memory & Relationship'}
+                    : t === 'health'
+                      ? 'Client Health'
+                      : 'Memory & Relationship'}
             </button>
           ))}
         </nav>
@@ -458,6 +461,13 @@ export default function ClientDetailPage() {
                 <p className="text-xs text-slate-600">No relationship brief generated yet.</p>
               )}
             </div>
+
+            <button
+              onClick={() => router.push(`/marketing/reports?clientId=${clientId}`)}
+              className="text-[10px] font-bold text-cyan-400 hover:text-cyan-300 flex items-center gap-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400 rounded"
+            >
+              View Client Progress Report →
+            </button>
           </div>
         )}
 
@@ -594,6 +604,8 @@ export default function ClientDetailPage() {
             </form>
           </div>
         )}
+
+        {tab === 'health' && <ClientHealthTab clientAccountId={clientId} />}
 
         {tab === 'memory' && (
           <div className="space-y-4">

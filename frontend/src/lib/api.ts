@@ -327,4 +327,55 @@ export const api = {
       body: JSON.stringify(data),
     });
   },
+
+  // Marketing: Dashboard
+  getMarketingDashboard: async () => {
+    return request('marketing/dashboard');
+  },
+
+  // Marketing: Client Health
+  getClientHealth: async (clientAccountId: string) => {
+    return request(`marketing/clients/${clientAccountId}/health`);
+  },
+
+  recalculateClientHealth: async (clientAccountId: string) => {
+    return request(`marketing/clients/${clientAccountId}/health/recalculate`, {
+      method: 'POST',
+    });
+  },
+
+  overrideClientHealth: async (
+    clientAccountId: string,
+    data: { state: string; reason: string },
+  ) => {
+    return request(`marketing/clients/${clientAccountId}/health/override`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  clearClientHealthOverride: async (clientAccountId: string) => {
+    return request(`marketing/clients/${clientAccountId}/health/override`, {
+      method: 'DELETE',
+    });
+  },
+
+  // Marketing: Reporting
+  getInternalReport: async () => {
+    return request('marketing/reports/internal');
+  },
+
+  getClientReport: async (clientAccountId: string) => {
+    return request(`marketing/clients/${clientAccountId}/report`);
+  },
+
+  recordCommercialStateChange: async (
+    clientAccountId: string,
+    data: { field: 'CONTRACT' | 'PAYMENT'; newValue: string; amount?: number },
+  ) => {
+    return request(`marketing/clients/${clientAccountId}/commercial-state`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
 };

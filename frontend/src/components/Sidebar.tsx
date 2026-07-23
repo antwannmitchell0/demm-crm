@@ -12,7 +12,9 @@ import {
   User as UserIcon,
   Sparkles,
   Tag,
-  UserPlus
+  UserPlus,
+  TrendingUp,
+  FileBarChart,
 } from 'lucide-react';
 import { removeAuthToken, removeActiveUser, getActiveUser } from '../lib/api';
 
@@ -32,6 +34,8 @@ export default function Sidebar() {
     { name: 'Contacts', href: '/contacts', icon: Users },
     { name: 'Pipelines', href: '/pipelines', icon: GitFork },
     { name: 'Leads', href: '/marketing/leads', icon: UserPlus },
+    { name: 'Marketing Dashboard', href: '/marketing/dashboard', icon: TrendingUp },
+    { name: 'Reports', href: '/marketing/reports', icon: FileBarChart },
     { name: 'Offers & Settings', href: '/marketing/offers', icon: Tag },
     { name: 'Agent Console', href: '/agent', icon: Terminal },
   ];
