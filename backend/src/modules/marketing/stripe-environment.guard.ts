@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
+import { isLiveKey, currentEnvironment } from './stripe-config';
 
 /**
  * Refuses any Stripe operation where the configured secret key's livemode
@@ -15,7 +16,7 @@ export class StripeEnvironmentGuard {
         'STRIPE_SECRET_KEY is not configured. Refusing to proceed (fail-closed).',
       );
     }
-    const configuredLivemode = secretKey.startsWith('sk_live_');
+    const configuredLivemode = isLiveKey();
 
     if (configuredLivemode !== target.livemode) {
       throw new BadRequestException(
@@ -24,7 +25,7 @@ export class StripeEnvironmentGuard {
       );
     }
 
-    const appEnv = (process.env.APP_ENVIRONMENT || 'local').toLowerCase();
+    const appEnv = currentEnvironment();
     if (appEnv !== 'production' && configuredLivemode) {
       throw new BadRequestException(
         `Stripe environment mismatch: a LIVE-mode key is configured while APP_ENVIRONMENT=${appEnv}. ` +
