@@ -43,7 +43,9 @@ export class StripeWebhookHandlerService {
       case 'charge.dispute.created':
         return this.onChargeDisputeCreated(event);
       default:
-        this.logger.log(`No handler for event type ${event.type} -- acknowledged, no-op.`);
+        this.logger.log(
+          `No handler for event type ${event.type} -- acknowledged, no-op.`,
+        );
     }
   }
 
@@ -54,23 +56,30 @@ export class StripeWebhookHandlerService {
    * from Stripe directly (which carries the metadata we set at Checkout-
    * creation time) rather than failing.
    */
-  private async resolveClientAccountId(stripeSubscriptionId: string): Promise<string | null> {
+  private async resolveClientAccountId(
+    stripeSubscriptionId: string,
+  ): Promise<string | null> {
     const existing = await this.prisma.billingSubscription.findUnique({
       where: { stripeSubscriptionId },
     });
     if (existing) return existing.clientAccountId;
 
     const stripe = createStripeClient();
-    const subscription = await stripe.subscriptions.retrieve(stripeSubscriptionId);
+    const subscription =
+      await stripe.subscriptions.retrieve(stripeSubscriptionId);
     return subscription.metadata?.clientAccountId ?? null;
   }
 
-  private async upsertBillingSubscription(subscription: Stripe.Subscription): Promise<void> {
+  private async upsertBillingSubscription(
+    subscription: Stripe.Subscription,
+  ): Promise<void> {
     const clientAccountId =
       subscription.metadata?.clientAccountId ??
       (await this.resolveClientAccountId(subscription.id));
     if (!clientAccountId) {
-      this.logger.error(`Cannot resolve clientAccountId for subscription ${subscription.id} -- skipping.`);
+      this.logger.error(
+        `Cannot resolve clientAccountId for subscription ${subscription.id} -- skipping.`,
+      );
       return;
     }
 
@@ -79,11 +88,15 @@ export class StripeWebhookHandlerService {
       include: { offerSnapshot: true },
     });
     if (!clientAccount?.offerSnapshot.stripePriceMappingId) {
-      this.logger.error(`ClientAccount ${clientAccountId} has no stripePriceMappingId -- cannot upsert subscription.`);
+      this.logger.error(
+        `ClientAccount ${clientAccountId} has no stripePriceMappingId -- cannot upsert subscription.`,
+      );
       return;
     }
 
-    const status = STRIPE_TO_BILLING_STATUS[subscription.status] ?? BillingSubscriptionStatus.INCOMPLETE;
+    const status =
+      STRIPE_TO_BILLING_STATUS[subscription.status] ??
+      BillingSubscriptionStatus.INCOMPLETE;
     const item = subscription.items.data[0];
 
     await this.prisma.billingSubscription.upsert({
@@ -94,21 +107,41 @@ export class StripeWebhookHandlerService {
         stripeSubscriptionId: subscription.id,
         stripeCustomerId: subscription.customer as string,
         status,
-        trialStart: subscription.trial_start ? new Date(subscription.trial_start * 1000) : null,
-        trialEnd: subscription.trial_end ? new Date(subscription.trial_end * 1000) : null,
-        currentPeriodStart: item?.current_period_start ? new Date(item.current_period_start * 1000) : null,
-        currentPeriodEnd: item?.current_period_end ? new Date(item.current_period_end * 1000) : null,
+        trialStart: subscription.trial_start
+          ? new Date(subscription.trial_start * 1000)
+          : null,
+        trialEnd: subscription.trial_end
+          ? new Date(subscription.trial_end * 1000)
+          : null,
+        currentPeriodStart: item?.current_period_start
+          ? new Date(item.current_period_start * 1000)
+          : null,
+        currentPeriodEnd: item?.current_period_end
+          ? new Date(item.current_period_end * 1000)
+          : null,
         cancelAtPeriodEnd: subscription.cancel_at_period_end,
-        canceledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : null,
+        canceledAt: subscription.canceled_at
+          ? new Date(subscription.canceled_at * 1000)
+          : null,
       },
       update: {
         status,
-        trialStart: subscription.trial_start ? new Date(subscription.trial_start * 1000) : null,
-        trialEnd: subscription.trial_end ? new Date(subscription.trial_end * 1000) : null,
-        currentPeriodStart: item?.current_period_start ? new Date(item.current_period_start * 1000) : null,
-        currentPeriodEnd: item?.current_period_end ? new Date(item.current_period_end * 1000) : null,
+        trialStart: subscription.trial_start
+          ? new Date(subscription.trial_start * 1000)
+          : null,
+        trialEnd: subscription.trial_end
+          ? new Date(subscription.trial_end * 1000)
+          : null,
+        currentPeriodStart: item?.current_period_start
+          ? new Date(item.current_period_start * 1000)
+          : null,
+        currentPeriodEnd: item?.current_period_end
+          ? new Date(item.current_period_end * 1000)
+          : null,
         cancelAtPeriodEnd: subscription.cancel_at_period_end,
-        canceledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : null,
+        canceledAt: subscription.canceled_at
+          ? new Date(subscription.canceled_at * 1000)
+          : null,
       },
     });
   }
@@ -117,7 +150,9 @@ export class StripeWebhookHandlerService {
     const session = event.data.object as Stripe.Checkout.Session;
     const clientAccountId = session.metadata?.clientAccountId;
     if (!clientAccountId) {
-      this.logger.error(`checkout.session.completed with no clientAccountId metadata (session ${session.id})`);
+      this.logger.error(
+        `checkout.session.completed with no clientAccountId metadata (session ${session.id})`,
+      );
       return;
     }
 
@@ -128,7 +163,9 @@ export class StripeWebhookHandlerService {
 
     if (session.subscription) {
       const stripe = createStripeClient();
-      const subscription = await stripe.subscriptions.retrieve(session.subscription as string);
+      const subscription = await stripe.subscriptions.retrieve(
+        session.subscription as string,
+      );
       await this.upsertBillingSubscription(subscription);
     }
   }
@@ -164,7 +201,10 @@ export class StripeWebhookHandlerService {
         'CANCELLATION_SCHEDULED',
         `Stripe subscription ${subscription.id} is scheduled to cancel at period end.`,
       );
-    } else if (!subscription.cancel_at_period_end && priorRow?.cancelAtPeriodEnd) {
+    } else if (
+      !subscription.cancel_at_period_end &&
+      priorRow?.cancelAtPeriodEnd
+    ) {
       await this.billingSignals.resolveSignals(clientAccountId, [
         'CANCELLATION_SCHEDULED',
       ]);
@@ -178,7 +218,10 @@ export class StripeWebhookHandlerService {
     });
     await this.prisma.billingSubscription.updateMany({
       where: { stripeSubscriptionId: subscription.id },
-      data: { status: BillingSubscriptionStatus.CANCELED, canceledAt: new Date() },
+      data: {
+        status: BillingSubscriptionStatus.CANCELED,
+        canceledAt: new Date(),
+      },
     });
 
     const clientAccountId =
@@ -194,9 +237,13 @@ export class StripeWebhookHandlerService {
     }
   }
 
-  private async resolveClientAccountIdBySubscription(stripeSubscriptionId: string | null): Promise<string | null> {
+  private async resolveClientAccountIdBySubscription(
+    stripeSubscriptionId: string | null,
+  ): Promise<string | null> {
     if (!stripeSubscriptionId) return null;
-    const sub = await this.prisma.billingSubscription.findUnique({ where: { stripeSubscriptionId } });
+    const sub = await this.prisma.billingSubscription.findUnique({
+      where: { stripeSubscriptionId },
+    });
     if (sub) return sub.clientAccountId;
     return this.resolveClientAccountId(stripeSubscriptionId);
   }
@@ -204,18 +251,25 @@ export class StripeWebhookHandlerService {
   private async onInvoicePaid(event: Stripe.Event): Promise<void> {
     const invoice = event.data.object as Stripe.Invoice;
     const stripeSubscriptionId = (invoice as any).subscription as string | null;
-    const clientAccountId = await this.resolveClientAccountIdBySubscription(stripeSubscriptionId);
+    const clientAccountId =
+      await this.resolveClientAccountIdBySubscription(stripeSubscriptionId);
     if (!clientAccountId) {
-      this.logger.error(`invoice.paid: cannot resolve clientAccountId for invoice ${invoice.id}`);
+      this.logger.error(
+        `invoice.paid: cannot resolve clientAccountId for invoice ${invoice.id}`,
+      );
       return;
     }
 
     const billingSubscription = stripeSubscriptionId
-      ? await this.prisma.billingSubscription.findUnique({ where: { stripeSubscriptionId } })
+      ? await this.prisma.billingSubscription.findUnique({
+          where: { stripeSubscriptionId },
+        })
       : null;
 
     const existingRecord = invoice.id
-      ? await this.prisma.billingPaymentRecord.findUnique({ where: { stripeInvoiceId: invoice.id } })
+      ? await this.prisma.billingPaymentRecord.findUnique({
+          where: { stripeInvoiceId: invoice.id },
+        })
       : null;
     if (!existingRecord) {
       await this.prisma.billingPaymentRecord.create({
@@ -223,7 +277,8 @@ export class StripeWebhookHandlerService {
           clientAccountId,
           billingSubscriptionId: billingSubscription?.id ?? null,
           stripeInvoiceId: invoice.id,
-          stripePaymentIntentId: (invoice as any).payment_intent as string | null,
+          stripePaymentIntentId: (invoice as any).payment_intent as
+            string | null,
           stripeCustomerId: invoice.customer as string,
           stripeSubscriptionId,
           amountPaid: invoice.amount_paid / 100,
@@ -237,8 +292,12 @@ export class StripeWebhookHandlerService {
           taxAmount: invoice.total_taxes?.length
             ? invoice.total_taxes.reduce((sum, t) => sum + t.amount, 0) / 100
             : null,
-          billingPeriodStart: invoice.period_start ? new Date(invoice.period_start * 1000) : null,
-          billingPeriodEnd: invoice.period_end ? new Date(invoice.period_end * 1000) : null,
+          billingPeriodStart: invoice.period_start
+            ? new Date(invoice.period_start * 1000)
+            : null,
+          billingPeriodEnd: invoice.period_end
+            ? new Date(invoice.period_end * 1000)
+            : null,
           paidAt: new Date(),
         },
       });
@@ -300,9 +359,8 @@ export class StripeWebhookHandlerService {
       data: { status: BillingSubscriptionStatus.PAST_DUE },
     });
 
-    const clientAccountId = await this.resolveClientAccountIdBySubscription(
-      stripeSubscriptionId,
-    );
+    const clientAccountId =
+      await this.resolveClientAccountIdBySubscription(stripeSubscriptionId);
     if (clientAccountId) {
       await this.billingSignals.createSignal(
         clientAccountId,
@@ -321,7 +379,9 @@ export class StripeWebhookHandlerService {
       where: { stripePaymentIntentId: paymentIntentId },
     });
     if (!record) {
-      this.logger.error(`charge.refunded: no BillingPaymentRecord found for payment intent ${paymentIntentId}`);
+      this.logger.error(
+        `charge.refunded: no BillingPaymentRecord found for payment intent ${paymentIntentId}`,
+      );
       return;
     }
 
@@ -348,8 +408,12 @@ export class StripeWebhookHandlerService {
     });
   }
 
-  private async onChargeDisputeCreated(event: Stripe.Event): Promise<void> {
+  private onChargeDisputeCreated(event: Stripe.Event): void {
     const dispute = event.data.object as Stripe.Dispute;
-    this.logger.warn(`Dispute created for charge ${dispute.charge} -- amount ${dispute.amount / 100} ${dispute.currency}. Manual review required (no automated handling in this sub-project).`);
+    const chargeId =
+      typeof dispute.charge === 'string' ? dispute.charge : dispute.charge.id;
+    this.logger.warn(
+      `Dispute created for charge ${chargeId} -- amount ${dispute.amount / 100} ${dispute.currency}. Manual review required (no automated handling in this sub-project).`,
+    );
   }
 }

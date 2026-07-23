@@ -21,20 +21,34 @@ export class StripeWebhookController {
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
     if (!webhookSecret) {
-      this.logger.error('STRIPE_WEBHOOK_SECRET is not configured -- rejecting all webhook payloads (fail-closed).');
-      return res.status(HttpStatus.BAD_REQUEST).json({ error: 'Webhook not configured' });
+      this.logger.error(
+        'STRIPE_WEBHOOK_SECRET is not configured -- rejecting all webhook payloads (fail-closed).',
+      );
+      return res
+        .status(HttpStatus.BAD_REQUEST)
+        .json({ error: 'Webhook not configured' });
     }
     if (!signature) {
-      return res.status(HttpStatus.BAD_REQUEST).json({ error: 'Missing Stripe-Signature header' });
+      return res
+        .status(HttpStatus.BAD_REQUEST)
+        .json({ error: 'Missing Stripe-Signature header' });
     }
 
     let event: Stripe.Event;
     const stripe = createStripeClient();
     try {
-      event = stripe.webhooks.constructEvent(req.body, signature, webhookSecret);
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        signature,
+        webhookSecret,
+      );
     } catch (err: any) {
-      this.logger.warn(`Stripe webhook signature verification failed: ${err.message}`);
-      return res.status(HttpStatus.BAD_REQUEST).json({ error: 'Invalid signature' });
+      this.logger.warn(
+        `Stripe webhook signature verification failed: ${err.message}`,
+      );
+      return res
+        .status(HttpStatus.BAD_REQUEST)
+        .json({ error: 'Invalid signature' });
     }
 
     const payloadHash = createHash('sha256').update(req.body).digest('hex');
@@ -49,7 +63,9 @@ export class StripeWebhookController {
     );
 
     if (outcome.action === 'SKIPPED_ALREADY_PROCESSED') {
-      return res.status(HttpStatus.OK).json({ received: true, skipped: 'already_processed' });
+      return res
+        .status(HttpStatus.OK)
+        .json({ received: true, skipped: 'already_processed' });
     }
 
     if (outcome.action === 'FAILED') {
@@ -61,7 +77,9 @@ export class StripeWebhookController {
       // FAILED-state row already makes this retryable/inspectable without
       // relying on Stripe's retry schedule. A 500 here is reserved for
       // genuine infrastructure outages, not business-logic failures.
-      return res.status(HttpStatus.OK).json({ received: true, processingFailed: true });
+      return res
+        .status(HttpStatus.OK)
+        .json({ received: true, processingFailed: true });
     }
 
     return res.status(HttpStatus.OK).json({ received: true });

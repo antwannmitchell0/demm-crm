@@ -117,12 +117,10 @@ export class ClientHealthService {
     }
 
     // --- Stripe subscription payment status.
-    const latestSubscription = await this.prisma.billingSubscription.findFirst(
-      {
-        where: { clientAccountId },
-        orderBy: { createdAt: 'desc' },
-      },
-    );
+    const latestSubscription = await this.prisma.billingSubscription.findFirst({
+      where: { clientAccountId },
+      orderBy: { createdAt: 'desc' },
+    });
     if (
       latestSubscription?.status === 'PAST_DUE' ||
       latestSubscription?.status === 'UNPAID'

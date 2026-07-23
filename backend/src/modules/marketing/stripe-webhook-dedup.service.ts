@@ -77,7 +77,9 @@ export class StripeWebhookDedupService {
             },
           });
           rowId = created.id;
-        } else if (existing.processingState === WebhookProcessingState.PROCESSED) {
+        } else if (
+          existing.processingState === WebhookProcessingState.PROCESSED
+        ) {
           // True no-op replay: whoever held this exact advisory lock
           // before us already ran the handler to completion and committed
           // PROCESSED before we were able to acquire it.
