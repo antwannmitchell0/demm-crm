@@ -18,6 +18,8 @@ import { Dom26rAuditService } from '../dom26r/dom26r-audit.service';
 import { RelationshipProfileService } from '../dom26r/relationship-profile.service';
 import { RelationshipBriefService } from '../dom26r/relationship-brief.service';
 import { ConvertLeadDto } from './dto/convert-lead.dto';
+import { OnboardingService } from './onboarding.service';
+import { ServiceDeliverableService } from './service-deliverable.service';
 
 @Injectable()
 export class ClientAccountService {
@@ -28,6 +30,8 @@ export class ClientAccountService {
     private dom26rAudit: Dom26rAuditService,
     private profiles: RelationshipProfileService,
     private briefs: RelationshipBriefService,
+    private onboarding: OnboardingService,
+    private deliverables: ServiceDeliverableService,
   ) {}
 
   async findByIdScoped(businessUnitId: string, id: string) {
@@ -106,7 +110,17 @@ export class ClientAccountService {
         )
       : null;
 
-    return { ...clientAccount, currentCommercialState, brief };
+    // .catch(() => null/[]): a client converted before Sub-project 2 shipped
+    // (or one whose generation somehow failed) may not have a plan yet --
+    // this endpoint degrades gracefully rather than 500ing.
+    const onboarding = await this.onboarding
+      .getPlanDetail(businessUnitId, id)
+      .catch(() => null);
+    const deliverables = await this.deliverables
+      .findAll(businessUnitId, id)
+      .catch(() => []);
+
+    return { ...clientAccount, currentCommercialState, brief, onboarding, deliverables };
   }
 
   /**
@@ -253,6 +267,20 @@ export class ClientAccountService {
             serviceStatus: MarketingServiceStatus.PENDING_ONBOARDING,
           },
         });
+
+        // Step 5b: generate the onboarding plan + service deliverables from
+        // the OfferSnapshot just frozen above -- inside the same
+        // transaction, so a client can never exist at PENDING_ONBOARDING
+        // without a plan.
+        await this.onboarding.generateForClient(
+          tx,
+          organizationId,
+          businessUnitId,
+          workspaceId,
+          actorId,
+          correlationId,
+          clientAccount.id,
+        );
 
         // Step 7: mark the acquisition Opportunity WON.
         await tx.opportunity.update({
