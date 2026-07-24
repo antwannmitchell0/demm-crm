@@ -29,6 +29,7 @@ import {
   EmailOutboundController,
   ResendWebhookController,
 } from './email.controller';
+import { InboxController } from './inbox.controller';
 
 @Module({
   controllers: [
@@ -38,6 +39,7 @@ import {
     MessageTemplateController,
     EmailOutboundController,
     ResendWebhookController,
+    InboxController,
   ],
   providers: [
     PrismaService,
