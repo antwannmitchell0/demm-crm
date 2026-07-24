@@ -8,6 +8,7 @@ import { NullVoiceProvider } from './providers/null-voice-provider';
 import { NullEmailProvider } from './providers/null-email-provider';
 import { NullInboundEmailProvider } from './providers/null-inbound-email-provider';
 import { NullDeliveryStatusProvider } from './providers/null-delivery-status-provider';
+import { TwilioAdapter } from './providers/twilio-adapter';
 
 // Each function is intentionally a plain factory (not a class) so
 // CommunicationsModule's `useFactory` providers can call it directly --
@@ -15,14 +16,22 @@ import { NullDeliveryStatusProvider } from './providers/null-delivery-status-pro
 // gated on the presence of that provider's required env var. Nothing here
 // ever reads a secret value, only checks whether one is present.
 
+function buildTwilioAdapter(): TwilioAdapter {
+  return new TwilioAdapter({
+    accountSid: process.env.TWILIO_ACCOUNT_SID!,
+    authToken: process.env.TWILIO_AUTH_TOKEN!,
+    fromNumber: process.env.TWILIO_FROM_NUMBER!,
+  });
+}
+
 export function bindSmsProvider(): SmsProvider {
   if (!process.env.TWILIO_ACCOUNT_SID) return new NullSmsProvider();
-  throw new Error('Twilio adapter not yet wired -- see Task 9');
+  return buildTwilioAdapter();
 }
 
 export function bindVoiceProvider(): VoiceProvider {
   if (!process.env.TWILIO_ACCOUNT_SID) return new NullVoiceProvider();
-  throw new Error('Twilio adapter not yet wired -- see Task 9');
+  return buildTwilioAdapter();
 }
 
 export function bindEmailProvider(): EmailProvider {
@@ -36,8 +45,11 @@ export function bindInboundEmailProvider(): InboundEmailProvider {
 }
 
 export function bindDeliveryStatusProvider(): DeliveryStatusProvider {
-  if (!process.env.TWILIO_ACCOUNT_SID && !process.env.RESEND_API_KEY) {
-    return new NullDeliveryStatusProvider();
+  if (process.env.TWILIO_ACCOUNT_SID) return buildTwilioAdapter();
+  if (process.env.RESEND_API_KEY) {
+    throw new Error(
+      'Resend delivery-status adapter not yet wired -- see Task 14',
+    );
   }
-  throw new Error('Delivery status adapter not yet wired -- see Tasks 9/14');
+  return new NullDeliveryStatusProvider();
 }
