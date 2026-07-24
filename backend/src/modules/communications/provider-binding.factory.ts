@@ -9,6 +9,7 @@ import { NullEmailProvider } from './providers/null-email-provider';
 import { NullInboundEmailProvider } from './providers/null-inbound-email-provider';
 import { NullDeliveryStatusProvider } from './providers/null-delivery-status-provider';
 import { TwilioAdapter } from './providers/twilio-adapter';
+import { ResendAdapter } from './providers/resend-adapter';
 
 // Each function is intentionally a plain factory (not a class) so
 // CommunicationsModule's `useFactory` providers can call it directly --
@@ -24,6 +25,14 @@ function buildTwilioAdapter(): TwilioAdapter {
   });
 }
 
+function buildResendAdapter(): ResendAdapter {
+  return new ResendAdapter({
+    apiKey: process.env.RESEND_API_KEY!,
+    webhookSecret: process.env.RESEND_WEBHOOK_SECRET!,
+    inboundDomain: process.env.RESEND_INBOUND_DOMAIN!,
+  });
+}
+
 export function bindSmsProvider(): SmsProvider {
   if (!process.env.TWILIO_ACCOUNT_SID) return new NullSmsProvider();
   return buildTwilioAdapter();
@@ -36,20 +45,16 @@ export function bindVoiceProvider(): VoiceProvider {
 
 export function bindEmailProvider(): EmailProvider {
   if (!process.env.RESEND_API_KEY) return new NullEmailProvider();
-  throw new Error('Resend adapter not yet wired -- see Task 14');
+  return buildResendAdapter();
 }
 
 export function bindInboundEmailProvider(): InboundEmailProvider {
   if (!process.env.RESEND_API_KEY) return new NullInboundEmailProvider();
-  throw new Error('Resend adapter not yet wired -- see Task 14');
+  return buildResendAdapter();
 }
 
 export function bindDeliveryStatusProvider(): DeliveryStatusProvider {
   if (process.env.TWILIO_ACCOUNT_SID) return buildTwilioAdapter();
-  if (process.env.RESEND_API_KEY) {
-    throw new Error(
-      'Resend delivery-status adapter not yet wired -- see Task 14',
-    );
-  }
+  if (process.env.RESEND_API_KEY) return buildResendAdapter();
   return new NullDeliveryStatusProvider();
 }

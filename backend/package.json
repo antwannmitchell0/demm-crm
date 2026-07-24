@@ -39,8 +39,10 @@
     "passport-jwt": "^4.0.1",
     "pg": "^8.16.0",
     "reflect-metadata": "^0.2.2",
+    "resend": "^6.18.0",
     "rxjs": "^7.8.1",
     "stripe": "^22.3.2",
+    "svix": "^1.99.1",
     "twilio": "^6.0.2"
   },
   "devDependencies": {
