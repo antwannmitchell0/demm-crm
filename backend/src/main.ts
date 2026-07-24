@@ -19,6 +19,16 @@ async function bootstrap() {
   // other route keeps Nest's default JSON body parser untouched.
   app.use('/webhooks/stripe', express.raw({ type: 'application/json' }));
 
+  // Twilio signs the exact raw x-www-form-urlencoded bytes it sent -- same
+  // reasoning as the Stripe webhook raw-body mount just above. Every route
+  // under /webhooks/twilio needs the untouched Buffer, not Nest's parsed body.
+  app.use(
+    '/webhooks/twilio',
+    express.raw({ type: 'application/x-www-form-urlencoded' }),
+  );
+  // Resend/Svix signs the exact raw JSON bytes -- same reasoning, JSON flavor.
+  app.use('/webhooks/resend', express.raw({ type: 'application/json' }));
+
   // Global Validation Pipe
   app.useGlobalPipes(
     new ValidationPipe({
