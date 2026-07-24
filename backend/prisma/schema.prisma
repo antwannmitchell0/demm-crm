@@ -125,29 +125,35 @@ model Organization {
 }
 
 model Workspace {
-  id             String            @id @default(uuid())
-  name           String
-  subdomain      String            @unique
-  organizationId String
-  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  businessUnitId String?
-  businessUnit   BusinessUnit?     @relation(fields: [businessUnitId], references: [id])
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  contacts       Contact[]
-  companies      Company[]
-  pipelines      Pipeline[]
-  opportunities  Opportunity[]
-  auditLogs      AuditLog[]
-  aiMemories     AIMemory[]
-  memberships    Membership[]
-  tasks          Task[]
-  invitations    Invitation[]
-  bookings       Booking[]
-  equipment      Equipment[]
-  wtaeEvents     WtaeEvent[]
-  candidates     MemoryCandidate[]
-  engrams        Engram[]
+  id                    String                 @id @default(uuid())
+  name                  String
+  subdomain             String                 @unique
+  organizationId        String
+  organization          Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  businessUnitId        String?
+  businessUnit          BusinessUnit?          @relation(fields: [businessUnitId], references: [id])
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  contacts              Contact[]
+  companies             Company[]
+  pipelines             Pipeline[]
+  opportunities         Opportunity[]
+  auditLogs             AuditLog[]
+  aiMemories            AIMemory[]
+  memberships           Membership[]
+  tasks                 Task[]
+  invitations           Invitation[]
+  bookings              Booking[]
+  equipment             Equipment[]
+  wtaeEvents            WtaeEvent[]
+  candidates            MemoryCandidate[]
+  engrams               Engram[]
+  channelConnections    ChannelConnection[]
+  conversations         Conversation[]
+  communicationEvents   CommunicationEvent[]
+  communicationConsents CommunicationConsent[]
+  messageTemplates      MessageTemplate[]
+  callEvents            CallEvent[]
 }
 
 model BusinessUnit {
@@ -166,6 +172,9 @@ model BusinessUnit {
   engrams            Engram[]
   offers             Offer[]
   clientAccounts     ClientAccount[]
+  channelConnections ChannelConnection[]
+  conversations      Conversation[]
+  messageTemplates   MessageTemplate[]
 
   @@unique([organizationId, key])
 }
@@ -754,6 +763,7 @@ model User {
   checklistItemsOwned    OnboardingChecklistItem[]     @relation("ChecklistItemOwner")
   checklistItemsApproved OnboardingChecklistItem[]     @relation("ChecklistItemApprover")
   deliverablesOwned      ServiceDeliverable[]          @relation("ServiceDeliverableOwner")
+  sentMessages           Message[]
 }
 
 model RefreshToken {
@@ -782,33 +792,37 @@ model Company {
 }
 
 model Contact {
-  id             String               @id @default(uuid())
-  firstName      String
-  lastName       String
-  emails         String[] // Supports multiple emails
-  phones         String[] // Supports multiple phones
-  address        Json? // Structured street, city, state, zip, country
-  tags           String[]
-  status         ContactStatus        @default(LEAD)
-  source         String?
-  leadScore      Int                  @default(0)
-  customFields   Json? // User-defined key-values
-  aiSummary      String?
-  aiRecommends   Json? // Structured recommendations & explanation
-  workspaceId    String
-  workspace      Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  companyId      String?
-  company        Company?             @relation(fields: [companyId], references: [id])
-  ownerId        String?
-  owner          User?                @relation(fields: [ownerId], references: [id]) // Account manager/salesperson
-  opportunities  Opportunity[]
-  notes          Note[]
-  activities     Activity[]
-  tasks          Task[]
-  createdAt      DateTime             @default(now())
-  updatedAt      DateTime             @updatedAt
-  subject        RelationshipSubject?
-  clientAccounts ClientAccount[]
+  id                    String                 @id @default(uuid())
+  firstName             String
+  lastName              String
+  emails                String[] // Supports multiple emails
+  phones                String[] // Supports multiple phones
+  address               Json? // Structured street, city, state, zip, country
+  tags                  String[]
+  status                ContactStatus          @default(LEAD)
+  source                String?
+  leadScore             Int                    @default(0)
+  customFields          Json? // User-defined key-values
+  aiSummary             String?
+  aiRecommends          Json? // Structured recommendations & explanation
+  workspaceId           String
+  workspace             Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  companyId             String?
+  company               Company?               @relation(fields: [companyId], references: [id])
+  ownerId               String?
+  owner                 User?                  @relation(fields: [ownerId], references: [id]) // Account manager/salesperson
+  opportunities         Opportunity[]
+  notes                 Note[]
+  activities            Activity[]
+  tasks                 Task[]
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  subject               RelationshipSubject?
+  clientAccounts        ClientAccount[]
+  conversations         Conversation[]
+  communicationEvents   CommunicationEvent[]
+  communicationConsents CommunicationConsent[]
+  callEvents            CallEvent[]
 }
 
 model Pipeline {
@@ -953,6 +967,8 @@ model ClientAccount {
   billingPaymentRecords    BillingPaymentRecord[]
   createdAt                DateTime                      @default(now())
   updatedAt                DateTime                      @updatedAt
+
+  conversations Conversation[]
 
   @@unique([businessUnitId, companyId])
   @@unique([businessUnitId, primaryContactId])
@@ -1392,4 +1408,225 @@ model Invitation {
   status         InvitationStatus @default(PENDING)
   expiresAt      DateTime
   createdAt      DateTime         @default(now())
+}
+
+// --- Unified Communications Core (Task 1: Prisma schema) ---
+
+enum ChannelType {
+  SMS
+  VOICE
+  EMAIL
+}
+
+enum ChannelProvider {
+  TWILIO
+  RESEND
+}
+
+enum ChannelConnectionStatus {
+  NOT_CONFIGURED
+  CONFIGURED
+  VERIFYING
+  ACTIVE
+  DEGRADED
+  DISCONNECTED
+}
+
+model ChannelConnection {
+  id              String                  @id @default(uuid())
+  workspaceId     String
+  workspace       Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  businessUnitId  String
+  businessUnit    BusinessUnit            @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  type            ChannelType
+  provider        ChannelProvider
+  status          ChannelConnectionStatus @default(NOT_CONFIGURED)
+  externalAddress String?
+  providerConfig  Json?
+  lastVerifiedAt  DateTime?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  conversations   Conversation[]
+  callEvents      CallEvent[]
+
+  @@unique([businessUnitId, type, provider])
+  @@index([workspaceId, status])
+}
+
+enum ConversationChannel {
+  SMS
+  EMAIL
+}
+
+model Conversation {
+  id                  String               @id @default(uuid())
+  workspaceId         String
+  workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  businessUnitId      String
+  businessUnit        BusinessUnit         @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  channelConnectionId String
+  channelConnection   ChannelConnection    @relation(fields: [channelConnectionId], references: [id], onDelete: Restrict)
+  channel             ConversationChannel
+  contactId           String?
+  contact             Contact?             @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  clientAccountId     String?
+  clientAccount       ClientAccount?       @relation(fields: [clientAccountId], references: [id], onDelete: SetNull)
+  counterpartyAddress String
+  replyToken          String?              @unique
+  lastMessageAt       DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  messages            Message[]
+  communicationEvents CommunicationEvent[]
+
+  @@unique([channelConnectionId, counterpartyAddress])
+  @@index([workspaceId, lastMessageAt])
+  @@index([contactId])
+}
+
+enum MessageDirection {
+  OUTBOUND
+  INBOUND
+}
+
+enum MessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+  UNDELIVERED
+  RECEIVED
+}
+
+model Message {
+  id                String            @id @default(uuid())
+  conversationId    String
+  conversation      Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  direction         MessageDirection
+  status            MessageStatus
+  body              String?
+  attachments       Json?
+  providerMessageId String?           @unique
+  sentByUserId      String?
+  sentByUser        User?             @relation(fields: [sentByUserId], references: [id], onDelete: SetNull)
+  templateId        String?
+  template          MessageTemplate?  @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  deliveryAttempts  DeliveryAttempt[]
+
+  @@index([conversationId, createdAt])
+}
+
+enum DeliveryAttemptOutcome {
+  SUCCEEDED
+  FAILED
+  UNDELIVERED
+  BOUNCED
+  COMPLAINED
+}
+
+model DeliveryAttempt {
+  id           String                 @id @default(uuid())
+  messageId    String
+  message      Message                @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  outcome      DeliveryAttemptOutcome
+  providerCode String?
+  providerRaw  Json?
+  occurredAt   DateTime
+  createdAt    DateTime               @default(now())
+
+  @@index([messageId, occurredAt])
+}
+
+enum CommunicationEventType {
+  CONSENT_STOP
+  CONSENT_START
+  CONSENT_HELP
+  UNSUBSCRIBE
+  COMPLAINT
+  MISSED_CALL_DETECTED
+  MISSED_CALL_TEXTBACK_SENT
+  MISSED_CALL_TEXTBACK_SUPPRESSED_COOLDOWN
+}
+
+model CommunicationEvent {
+  id             String                 @id @default(uuid())
+  workspaceId    String
+  workspace      Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversationId String?
+  conversation   Conversation?          @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  contactId      String?
+  contact        Contact?               @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  type           CommunicationEventType
+  detail         String?
+  createdAt      DateTime               @default(now())
+
+  @@index([workspaceId, type, createdAt])
+}
+
+enum ConsentChannelType {
+  SMS
+  EMAIL
+}
+
+model CommunicationConsent {
+  id          String             @id @default(uuid())
+  workspaceId String
+  workspace   Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contactId   String
+  contact     Contact            @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  channel     ConsentChannelType
+  optedOut    Boolean            @default(false)
+  reason      String?
+  updatedAt   DateTime           @updatedAt
+  createdAt   DateTime           @default(now())
+
+  @@unique([contactId, channel])
+}
+
+model MessageTemplate {
+  id             String              @id @default(uuid())
+  workspaceId    String
+  workspace      Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  businessUnitId String
+  businessUnit   BusinessUnit        @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  channel        ConversationChannel
+  name           String
+  body           String
+  active         Boolean             @default(true)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  messages       Message[]
+
+  @@unique([businessUnitId, channel, name])
+}
+
+enum CallOutcome {
+  ANSWERED
+  NO_ANSWER
+  BUSY
+  FAILED
+  CANCELED
+  VOICEMAIL
+}
+
+model CallEvent {
+  id                  String            @id @default(uuid())
+  workspaceId         String
+  workspace           Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channelConnectionId String
+  channelConnection   ChannelConnection @relation(fields: [channelConnectionId], references: [id], onDelete: Restrict)
+  contactId           String?
+  contact             Contact?          @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  providerCallId      String            @unique
+  fromAddress         String
+  outcome             CallOutcome?
+  textBackSent        Boolean           @default(false)
+  startedAt           DateTime
+  resolvedAt          DateTime?
+  createdAt           DateTime          @default(now())
+
+  @@index([workspaceId, contactId, startedAt])
+  @@index([fromAddress, startedAt])
 }
