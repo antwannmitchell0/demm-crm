@@ -1531,6 +1531,8 @@ async function runApiTests() {
           oooEventId,
           `evt_invpaid_${concurPaySuffix}`,
           refundEventId,
+          `evt_invpaid_${parentShapeSuffix}`,
+          `evt_invpayfail_${payFailParentShapeSuffix}`,
         ],
       },
     },
