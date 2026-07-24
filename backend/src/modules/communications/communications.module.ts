@@ -14,6 +14,7 @@ import {
 } from './provider-binding.factory';
 import { ChannelConnectionService } from './channel-connection.service';
 import { CommunicationConsentService } from './communication-consent.service';
+import { CommunicationRelationshipSignalService } from './communication-relationship-signal.service';
 import { ConversationService } from './conversation.service';
 import { MessageService } from './message.service';
 import { MessageTemplateService } from './message-template.service';
@@ -50,6 +51,7 @@ import {
     },
     ChannelConnectionService,
     CommunicationConsentService,
+    CommunicationRelationshipSignalService,
     ConversationService,
     MessageService,
     MessageTemplateService,
@@ -63,6 +65,7 @@ import {
     DELIVERY_STATUS_PROVIDER,
     ChannelConnectionService,
     CommunicationConsentService,
+    CommunicationRelationshipSignalService,
     ConversationService,
     MessageService,
     MessageTemplateService,

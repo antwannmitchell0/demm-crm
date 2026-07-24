@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma.service';
 import { MessageService } from './message.service';
 import { VoiceStatusPayload } from './interfaces/voice-provider.interface';
 import { CallOutcome, ChannelType } from '@prisma/client';
+import { CommunicationRelationshipSignalService } from './communication-relationship-signal.service';
 
 const TERMINAL_STATUSES = new Set([
   'completed',
@@ -45,6 +46,7 @@ export class CallEventService {
   constructor(
     private prisma: PrismaService,
     private messages: MessageService,
+    private relationshipSignals: CommunicationRelationshipSignalService,
   ) {}
 
   async recordStatusCallback(
@@ -103,6 +105,19 @@ export class CallEventService {
 
     if (!TEXTBACK_ELIGIBLE.includes(outcome)) return;
 
+    // A missed call is now classified -- record the DOM26-R signal before
+    // the cooldown/text-back logic below, which only decides whether a
+    // text-back fires, not whether the missed call itself happened. No
+    // contact match (unknown caller) means no RelationshipProfile is
+    // possible, so this is skipped rather than guessed at.
+    if (contact?.id) {
+      await this.relationshipSignals.createSignal(
+        contact.id,
+        'MISSED_CALL_DETECTED',
+        `Missed call from ${payload.from} (${outcome}).`,
+      );
+    }
+
     // Atomic check-and-set cooldown: a pg_advisory_xact_lock keyed on
     // fromAddress+connection is acquired FIRST, before the findFirst
     // cooldown check, exactly like StripeWebhookDedupService.claimAndProcess
@@ -140,7 +155,16 @@ export class CallEventService {
       return true;
     });
 
-    if (!sent) return;
+    if (!sent) {
+      if (contact?.id) {
+        await this.relationshipSignals.createSignal(
+          contact.id,
+          'MISSED_CALL_TEXTBACK_SUPPRESSED_COOLDOWN',
+          `Missed-call text-back suppressed for ${payload.from} -- another text-back was already sent within the cooldown window.`,
+        );
+      }
+      return;
+    }
 
     const smsConnection = await this.prisma.channelConnection.findFirst({
       where: {
@@ -172,6 +196,13 @@ export class CallEventService {
         body: template.body,
         templateId: template.id,
       });
+      if (contact?.id) {
+        await this.relationshipSignals.createSignal(
+          contact.id,
+          'MISSED_CALL_TEXTBACK_SENT',
+          `Missed-call text-back sent to ${payload.from}.`,
+        );
+      }
     } catch (err) {
       // MessageService.sendSms throws ForbiddenException when the contact
       // has opted out of SMS -- that is correct, expected behavior there,

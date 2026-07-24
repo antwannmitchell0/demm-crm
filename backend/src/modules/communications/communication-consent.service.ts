@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import { ConsentChannelType } from '@prisma/client';
+import { CommunicationRelationshipSignalService } from './communication-relationship-signal.service';
 
 const STOP_KEYWORDS = new Set([
   'STOP',
@@ -15,7 +16,10 @@ const HELP_KEYWORDS = new Set(['HELP', 'INFO']);
 
 @Injectable()
 export class CommunicationConsentService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private relationshipSignals: CommunicationRelationshipSignalService,
+  ) {}
 
   async isOptedOut(
     contactId: string,
@@ -38,6 +42,11 @@ export class CommunicationConsentService {
       create: { contactId, workspaceId, channel, optedOut: true, reason },
       update: { optedOut: true, reason },
     });
+    await this.relationshipSignals.createSignal(
+      contactId,
+      'CONSENT_STOP',
+      `Contact opted out of ${channel} communications (${reason}).`,
+    );
   }
 
   async recordOptIn(
@@ -51,6 +60,11 @@ export class CommunicationConsentService {
       create: { contactId, workspaceId, channel, optedOut: false, reason },
       update: { optedOut: false, reason },
     });
+    await this.relationshipSignals.createSignal(
+      contactId,
+      'CONSENT_START',
+      `Contact opted back in to ${channel} communications (${reason}).`,
+    );
   }
 
   private async getWorkspaceId(contactId: string): Promise<string> {

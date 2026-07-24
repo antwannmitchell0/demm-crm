@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma.service';
 import { MessageService } from './message.service';
 import { ConversationService } from './conversation.service';
 import { CommunicationConsentService } from './communication-consent.service';
+import { CommunicationRelationshipSignalService } from './communication-relationship-signal.service';
 import { SMS_PROVIDER } from './interfaces/sms-provider.interface';
 import { EMAIL_PROVIDER } from './interfaces/email-provider.interface';
 import {
@@ -30,6 +31,7 @@ describe('MessageService', () => {
         MessageService,
         ConversationService,
         CommunicationConsentService,
+        CommunicationRelationshipSignalService,
         PrismaService,
         { provide: SMS_PROVIDER, useValue: fakeSmsProvider },
         { provide: EMAIL_PROVIDER, useValue: { sendEmail: jest.fn() } },

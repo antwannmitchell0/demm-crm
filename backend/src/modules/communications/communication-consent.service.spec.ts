@@ -1,6 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { PrismaService } from '../../prisma.service';
 import { CommunicationConsentService } from './communication-consent.service';
+import { CommunicationRelationshipSignalService } from './communication-relationship-signal.service';
 import { ConsentChannelType } from '@prisma/client';
 
 describe('CommunicationConsentService', () => {
@@ -12,7 +13,11 @@ describe('CommunicationConsentService', () => {
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
-      providers: [CommunicationConsentService, PrismaService],
+      providers: [
+        CommunicationConsentService,
+        CommunicationRelationshipSignalService,
+        PrismaService,
+      ],
     }).compile();
     service = moduleRef.get(CommunicationConsentService);
     prisma = moduleRef.get(PrismaService);
