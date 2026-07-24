@@ -91,12 +91,15 @@ describe('CommunicationRelationshipSignalService', () => {
   it('createSignal then hasActiveSignal returns true for that type', async () => {
     await service.createSignal(
       contactId,
+      businessUnitId,
       'MISSED_CALL_DETECTED',
       'Missed call from +15555550100 (NO_ANSWER).',
     );
 
     expect(
-      await service.hasActiveSignal(contactId, ['MISSED_CALL_DETECTED']),
+      await service.hasActiveSignal(contactId, businessUnitId, [
+        'MISSED_CALL_DETECTED',
+      ]),
     ).toBe(true);
 
     const row = await prisma.relationshipSignal.findFirst({
@@ -106,22 +109,29 @@ describe('CommunicationRelationshipSignalService', () => {
   });
 
   it('resolveSignals resolves the active signal and hasActiveSignal returns false', async () => {
-    await service.resolveSignals(contactId, ['MISSED_CALL_DETECTED']);
+    await service.resolveSignals(contactId, businessUnitId, [
+      'MISSED_CALL_DETECTED',
+    ]);
 
     expect(
-      await service.hasActiveSignal(contactId, ['MISSED_CALL_DETECTED']),
+      await service.hasActiveSignal(contactId, businessUnitId, [
+        'MISSED_CALL_DETECTED',
+      ]),
     ).toBe(false);
   });
 
   it('createSignal for a self-resolving type creates an already-RESOLVED row', async () => {
     await service.createSignal(
       contactId,
+      businessUnitId,
       'MISSED_CALL_TEXTBACK_SENT',
       'Missed-call text-back sent to +15555550100.',
     );
 
     expect(
-      await service.hasActiveSignal(contactId, ['MISSED_CALL_TEXTBACK_SENT']),
+      await service.hasActiveSignal(contactId, businessUnitId, [
+        'MISSED_CALL_TEXTBACK_SENT',
+      ]),
     ).toBe(false);
     const row = await prisma.relationshipSignal.findFirst({
       where: { profileId, type: 'MISSED_CALL_TEXTBACK_SENT' },
@@ -134,13 +144,44 @@ describe('CommunicationRelationshipSignalService', () => {
     await expect(
       service.createSignal(
         contactWithoutProfileId,
+        businessUnitId,
         'CONSENT_STOP',
         'Contact opted out of SMS communications (STOP).',
       ),
     ).resolves.toBeUndefined();
 
     expect(
-      await service.hasActiveSignal(contactWithoutProfileId, ['CONSENT_STOP']),
+      await service.hasActiveSignal(contactWithoutProfileId, businessUnitId, [
+        'CONSENT_STOP',
+      ]),
     ).toBe(false);
+  });
+
+  it('createSignal is a no-op when a profile exists for the subject but scoped to a different businessUnitId', async () => {
+    const otherBu = await prisma.businessUnit.create({
+      data: { name: 'Other BU', key: 'OTHERBU', organizationId: orgId },
+    });
+    try {
+      await expect(
+        service.createSignal(
+          contactId,
+          otherBu.id,
+          'CONSENT_STOP',
+          'Should not attach to the wrong business unit profile.',
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(
+        await service.hasActiveSignal(contactId, otherBu.id, ['CONSENT_STOP']),
+      ).toBe(false);
+
+      // The original businessUnitId's profile must remain untouched too.
+      const crossBuLeak = await prisma.relationshipSignal.findFirst({
+        where: { profileId, type: 'CONSENT_STOP' },
+      });
+      expect(crossBuLeak).toBeNull();
+    } finally {
+      await prisma.businessUnit.delete({ where: { id: otherBu.id } });
+    }
   });
 });

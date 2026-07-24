@@ -48,34 +48,40 @@ export class CommunicationRelationshipSignalService {
    * Resolves a Contact directly to its RelationshipProfile -- mirrors the
    * subject/profile lookup steps inside billing-relationship-signal
    * .service.ts's findProfileForClient (RelationshipSubject by contactId,
-   * then RelationshipProfile by subjectId). Communications events only ever
-   * carry a bare contactId (no ClientAccount/BusinessUnit context is
-   * available at the consent/call-event call sites), so unlike billing's
-   * version this does not scope by businessUnitId -- it takes whichever
-   * profile the subject already has.
+   * then RelationshipProfile by subjectId + businessUnitId). Scoped by
+   * businessUnitId for the same reason billing's version is: RelationshipProfile
+   * has @@unique([subjectId, businessUnitId]) so one subject can hold a
+   * distinct profile per Business Unit, and resolving without the
+   * businessUnitId filter risks matching a profile belonging to a different
+   * business than the one the communications event actually occurred in.
    */
   private async findProfileForContact(
     contactId: string,
+    businessUnitId: string,
   ): Promise<string | null> {
     const subject = await this.prisma.relationshipSubject.findFirst({
       where: { contactId },
     });
     if (!subject) return null;
     const profile = await this.prisma.relationshipProfile.findFirst({
-      where: { subjectId: subject.id },
+      where: { subjectId: subject.id, businessUnitId },
     });
     return profile?.id ?? null;
   }
 
   async createSignal(
     contactId: string,
+    businessUnitId: string,
     type: CommunicationSignalType,
     summary: string,
   ): Promise<void> {
-    const profileId = await this.findProfileForContact(contactId);
+    const profileId = await this.findProfileForContact(
+      contactId,
+      businessUnitId,
+    );
     if (!profileId) {
       this.logger.warn(
-        `No RelationshipProfile found for contact ${contactId} -- skipping signal ${type}.`,
+        `No RelationshipProfile found for contact ${contactId} in business unit ${businessUnitId} -- skipping signal ${type}.`,
       );
       return;
     }
@@ -98,9 +104,13 @@ export class CommunicationRelationshipSignalService {
   /** True if the contact's profile has any still-ACTIVE signal of the given type(s). */
   async hasActiveSignal(
     contactId: string,
+    businessUnitId: string,
     types: CommunicationSignalType[],
   ): Promise<boolean> {
-    const profileId = await this.findProfileForContact(contactId);
+    const profileId = await this.findProfileForContact(
+      contactId,
+      businessUnitId,
+    );
     if (!profileId) return false;
     const match = await this.prisma.relationshipSignal.findFirst({
       where: { profileId, type: { in: types }, state: SignalState.ACTIVE },
@@ -111,9 +121,13 @@ export class CommunicationRelationshipSignalService {
   /** Auto-resolves any still-ACTIVE signal of the given type(s) for a contact's profile. */
   async resolveSignals(
     contactId: string,
+    businessUnitId: string,
     types: CommunicationSignalType[],
   ): Promise<void> {
-    const profileId = await this.findProfileForContact(contactId);
+    const profileId = await this.findProfileForContact(
+      contactId,
+      businessUnitId,
+    );
     if (!profileId) return;
     await this.prisma.relationshipSignal.updateMany({
       where: { profileId, type: { in: types }, state: SignalState.ACTIVE },

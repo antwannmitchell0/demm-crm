@@ -113,6 +113,7 @@ export class CallEventService {
     if (contact?.id) {
       await this.relationshipSignals.createSignal(
         contact.id,
+        connection.businessUnitId,
         'MISSED_CALL_DETECTED',
         `Missed call from ${payload.from} (${outcome}).`,
       );
@@ -159,6 +160,7 @@ export class CallEventService {
       if (contact?.id) {
         await this.relationshipSignals.createSignal(
           contact.id,
+          connection.businessUnitId,
           'MISSED_CALL_TEXTBACK_SUPPRESSED_COOLDOWN',
           `Missed-call text-back suppressed for ${payload.from} -- another text-back was already sent within the cooldown window.`,
         );
@@ -199,6 +201,7 @@ export class CallEventService {
       if (contact?.id) {
         await this.relationshipSignals.createSignal(
           contact.id,
+          connection.businessUnitId,
           'MISSED_CALL_TEXTBACK_SENT',
           `Missed-call text-back sent to ${payload.from}.`,
         );
