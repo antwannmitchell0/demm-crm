@@ -21,6 +21,7 @@ async function main() {
   await prisma.conversionIdempotencyKey.deleteMany();
   await prisma.clientAccount.deleteMany();
   await prisma.offerSnapshot.deleteMany();
+  await prisma.stripePriceMapping.deleteMany();
   await prisma.offer.deleteMany();
   await prisma.activity.deleteMany();
   await prisma.note.deleteMany();

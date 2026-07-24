@@ -9,6 +9,7 @@ import { StripeEnvironmentGuard } from './src/modules/marketing/stripe-environme
 import { createStripeClient } from './src/modules/marketing/stripe-config';
 import { StripeWebhookHandlerService } from './src/modules/marketing/stripe-webhook-handler.service';
 import { StripeWebhookDedupService } from './src/modules/marketing/stripe-webhook-dedup.service';
+import { StripeProvisioningService } from './src/modules/marketing/stripe-provisioning.service';
 import Stripe from 'stripe';
 
 const connectionString =
@@ -36,6 +37,13 @@ async function runApiTests() {
 
   // --- StripeEnvironmentGuard unit-level checks (no HTTP needed) ---
   const guard = new StripeEnvironmentGuard();
+
+  // Capture the REAL key dotenv loaded from .env before this block starts
+  // mutating process.env.STRIPE_SECRET_KEY for test purposes -- restoring
+  // to a hardcoded literal (as an earlier version of this file did) would
+  // silently clobber a real key for every task that runs after this one
+  // in the same process.
+  const realStripeSecretKey = process.env.STRIPE_SECRET_KEY;
 
   process.env.STRIPE_SECRET_KEY = 'sk_test_abc123';
   process.env.APP_ENVIRONMENT = 'local';
@@ -66,7 +74,7 @@ async function runApiTests() {
       true,
     );
   }
-  process.env.STRIPE_SECRET_KEY = 'sk_test_abc123'; // restore for later tasks' tests
+  process.env.STRIPE_SECRET_KEY = realStripeSecretKey; // restore the REAL key for later tasks' tests
 
   // --- OfferSnapshot trial/price-mapping binding ---
   const app = await NestFactory.create(AppModule, { logger: false });
@@ -1545,6 +1553,43 @@ async function runApiTests() {
   await prisma.workspace.delete({ where: { id: wsKpi.id } });
   await prisma.businessUnit.delete({ where: { id: buKpi.id } });
   await prisma.organization.delete({ where: { id: orgKpi.id } });
+
+  // --- StripeProvisioningService (real Stripe test-mode API calls) ---
+  console.log('\n🏭 Testing StripeProvisioningService (real Stripe test-mode API)...');
+  const provisioning = new StripeProvisioningService(
+    prisma as any,
+    new StripeEnvironmentGuard(),
+  );
+
+  process.env.APP_ENVIRONMENT = 'local';
+  const firstRun = await provisioning.syncOfferPrices();
+  const survivorResult = firstRun.find((r) => r.key === 'SURVIVOR');
+  check(
+    'syncOfferPrices provisions a StripePriceMapping for SURVIVOR',
+    !!survivorResult,
+  );
+
+  const secondRun = await provisioning.syncOfferPrices();
+  const survivorSecond = secondRun.find((r) => r.key === 'SURVIVOR');
+  check(
+    'Re-running syncOfferPrices is a no-op for SURVIVOR (created: false, same mapping)',
+    survivorSecond?.created === false &&
+      survivorSecond?.mappingId === survivorResult?.mappingId,
+  );
+
+  const survivorMapping = await prisma.stripePriceMapping.findUnique({
+    where: { id: survivorResult!.mappingId },
+  });
+  check(
+    'StripePriceMapping has correct amount/environment/livemode for SURVIVOR',
+    Number(survivorMapping?.amount) === 99 &&
+      survivorMapping?.environment === 'local' &&
+      survivorMapping?.livemode === false,
+  );
+
+  const growthResult = firstRun.find((r) => r.key === 'GROWTH');
+  const empireResult = firstRun.find((r) => r.key === 'EMPIRE');
+  check('syncOfferPrices also provisions GROWTH and EMPIRE', !!growthResult && !!empireResult);
 
   await webhookApp.close();
 
