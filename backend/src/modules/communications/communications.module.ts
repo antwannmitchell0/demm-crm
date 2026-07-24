@@ -16,18 +16,21 @@ import { ChannelConnectionService } from './channel-connection.service';
 import { CommunicationConsentService } from './communication-consent.service';
 import { ConversationService } from './conversation.service';
 import { MessageService } from './message.service';
+import { MessageTemplateService } from './message-template.service';
 import { CallEventService } from './call-event.service';
 import {
   SmsOutboundController,
   TwilioSmsWebhookController,
 } from './sms.controller';
 import { TwilioVoiceWebhookController } from './voice.controller';
+import { MessageTemplateController } from './message-template.controller';
 
 @Module({
   controllers: [
     SmsOutboundController,
     TwilioSmsWebhookController,
     TwilioVoiceWebhookController,
+    MessageTemplateController,
   ],
   providers: [
     PrismaService,
@@ -43,6 +46,7 @@ import { TwilioVoiceWebhookController } from './voice.controller';
     CommunicationConsentService,
     ConversationService,
     MessageService,
+    MessageTemplateService,
     CallEventService,
   ],
   exports: [
@@ -55,6 +59,7 @@ import { TwilioVoiceWebhookController } from './voice.controller';
     CommunicationConsentService,
     ConversationService,
     MessageService,
+    MessageTemplateService,
     CallEventService,
   ],
 })
