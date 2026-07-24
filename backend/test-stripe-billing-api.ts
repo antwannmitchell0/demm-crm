@@ -10,6 +10,7 @@ import { createStripeClient } from './src/modules/marketing/stripe-config';
 import { StripeWebhookHandlerService } from './src/modules/marketing/stripe-webhook-handler.service';
 import { StripeWebhookDedupService } from './src/modules/marketing/stripe-webhook-dedup.service';
 import { StripeProvisioningService } from './src/modules/marketing/stripe-provisioning.service';
+import { StripeCheckoutService } from './src/modules/marketing/stripe-checkout.service';
 import Stripe from 'stripe';
 
 const connectionString =
@@ -1590,6 +1591,205 @@ async function runApiTests() {
   const growthResult = firstRun.find((r) => r.key === 'GROWTH');
   const empireResult = firstRun.find((r) => r.key === 'EMPIRE');
   check('syncOfferPrices also provisions GROWTH and EMPIRE', !!growthResult && !!empireResult);
+
+  // --- StripeCheckoutService (real Stripe test-mode API calls) ---
+  console.log('\n🛒 Testing StripeCheckoutService (real Stripe test-mode API)...');
+
+  const checkoutSuffix = Date.now() + '-checkout';
+  const orgCheckout = await prisma.organization.create({ data: { name: `Checkout Test Org ${checkoutSuffix}` } });
+  const buCheckout = await prisma.businessUnit.create({
+    data: { organizationId: orgCheckout.id, key: 'MARKETING', name: 'DEMM Marketing' },
+  });
+  const wsCheckout = await prisma.workspace.create({
+    data: { organizationId: orgCheckout.id, businessUnitId: buCheckout.id, name: 'WS', subdomain: `checkout-${checkoutSuffix}` },
+  });
+  const passwordHashCheckout = await bcrypt.hash('CheckoutTest123!', 10);
+  const userCheckout = await prisma.user.create({
+    data: { email: `checkout-${checkoutSuffix}@example.com`, passwordHash: passwordHashCheckout, firstName: 'C', lastName: 'T' },
+  });
+  await prisma.membership.create({
+    data: { userId: userCheckout.id, organizationId: orgCheckout.id, workspaceId: wsCheckout.id, role: 'ORG_ADMIN' },
+  });
+  const pipelineCheckout = await prisma.pipeline.create({ data: { name: 'P', workspaceId: wsCheckout.id } });
+  const stageCheckout = await prisma.stage.create({ data: { name: 'New', order: 1, pipelineId: pipelineCheckout.id } });
+
+  // A throwaway ACTIVE Offer, provisioned for real through
+  // StripeProvisioningService so its OfferSnapshot binds to a REAL
+  // stripePriceId -- Stripe's actual checkout.sessions.create call would
+  // reject a fake/nonexistent price id, so this can't use a placeholder
+  // mapping the way earlier, non-checkout tests could.
+  const offerCheckout = await prisma.offer.create({
+    data: {
+      businessUnitId: buCheckout.id,
+      key: `checkout-survivor-${checkoutSuffix}`,
+      version: 1,
+      name: 'Checkout Survivor',
+      price: 99,
+      trialEligible: true,
+      trialDays: 7,
+      includedServices: [],
+      excludedServices: [],
+      onboardingRequirements: [],
+      lifecycleState: 'ACTIVE',
+    },
+  });
+  await provisioning.syncOfferPrices();
+  const checkoutMapping = await prisma.stripePriceMapping.findUnique({
+    where: {
+      offerId_offerVersion_environment_livemode: {
+        offerId: offerCheckout.id,
+        offerVersion: 1,
+        environment: 'local',
+        livemode: false,
+      },
+    },
+  });
+  check('Throwaway checkout-test Offer got a real StripePriceMapping provisioned', !!checkoutMapping);
+
+  const contactCheckout = await prisma.contact.create({
+    data: { workspaceId: wsCheckout.id, firstName: 'Checkout', lastName: 'Client', emails: [`checkout-client-${checkoutSuffix}@example.com`], phones: [], status: 'LEAD' },
+  });
+  await prisma.opportunity.create({
+    data: { workspaceId: wsCheckout.id, contactId: contactCheckout.id, pipelineId: pipelineCheckout.id, stageId: stageCheckout.id, name: 'Checkout Deal', value: 99, status: 'OPEN' },
+  });
+
+  const loginResCheckout = await fetch(`${webhookBase}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: userCheckout.email, passwordPlain: 'CheckoutTest123!' }),
+  }).then((r) => r.json());
+  const selectResCheckout = await fetch(`${webhookBase}/api/auth/select-workspace`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${loginResCheckout.preAuthToken}` },
+    body: JSON.stringify({ workspaceId: wsCheckout.id }),
+  }).then((r) => r.json());
+  const tokenCheckout = selectResCheckout.access_token;
+
+  const convertResCheckout = await fetch(`${webhookBase}/marketing/leads/${contactCheckout.id}/convert`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${tokenCheckout}`,
+      'x-workspace-id': wsCheckout.id,
+      'Idempotency-Key': `checkout-idem-${checkoutSuffix}`,
+    },
+    body: JSON.stringify({ offerId: offerCheckout.id, contractState: 'SIGNED_MANUAL' }),
+  }).then((r) => r.json());
+  const clientAccountIdCheckout: string = convertResCheckout.id;
+
+  const checkoutService = new StripeCheckoutService(prisma as any, new StripeEnvironmentGuard());
+
+  const checkoutResult = await checkoutService.createSubscriptionCheckout(clientAccountIdCheckout, 1);
+  check(
+    'createSubscriptionCheckout returns a Stripe-hosted checkout URL',
+    checkoutResult.checkoutUrl.startsWith('https://checkout.stripe.com/'),
+  );
+
+  const clientAfterCheckout = await prisma.clientAccount.findUnique({ where: { id: clientAccountIdCheckout } });
+  check('ClientAccount.stripeCustomerId is populated', !!clientAfterCheckout?.stripeCustomerId);
+
+  const checkoutRow = await prisma.billingCheckoutSession.findFirst({
+    where: { clientAccountId: clientAccountIdCheckout },
+    orderBy: { createdAt: 'desc' },
+  });
+  check(
+    'BillingCheckoutSession row persisted with status CREATED and a checkoutUrl',
+    checkoutRow?.status === 'CREATED' && !!checkoutRow?.checkoutUrl,
+  );
+
+  // SURVIVOR-style trial: confirm the Checkout Session actually has trial days set.
+  const stripeForVerify = createStripeClient();
+  const liveSession = await stripeForVerify.checkout.sessions.retrieve(checkoutResult.sessionId);
+  check(
+    'Checkout Session carries clientAccountId in metadata',
+    liveSession.metadata?.clientAccountId === clientAccountIdCheckout,
+  );
+
+  // Regeneration.
+  const regenerated = await checkoutService.regenerateCheckout(clientAccountIdCheckout);
+  const regeneratedRow = await prisma.billingCheckoutSession.findFirst({
+    where: { clientAccountId: clientAccountIdCheckout },
+    orderBy: { createdAt: 'desc' },
+  });
+  check(
+    'Regeneration creates attemptNumber: 2 with a fresh idempotency key',
+    regeneratedRow?.attemptNumber === 2 &&
+      regeneratedRow?.idempotencyKey !== checkoutRow?.idempotencyKey,
+  );
+
+  // Stripe-side idempotency: calling createSubscriptionCheckout again with
+  // the SAME attemptNumber (simulating a retry after local persistence
+  // failed, before this row existed) must not create a second Stripe
+  // object -- Stripe replays the original response for the same key.
+  const idempotentRetryResult = await checkoutService.createSubscriptionCheckout(clientAccountIdCheckout, 2);
+  check(
+    'Retrying with the same attemptNumber/idempotency key returns the SAME Stripe session (no duplicate)',
+    idempotentRetryResult.sessionId === regenerated.sessionId,
+  );
+
+  // Teardown.
+  await prisma.billingCheckoutSession.deleteMany({ where: { clientAccountId: clientAccountIdCheckout } });
+  await prisma.onboardingChecklistItem.deleteMany({
+    where: { plan: { clientAccount: { businessUnitId: buCheckout.id } } },
+  });
+  await prisma.onboardingChecklistItemHistory.deleteMany({
+    where: { item: { plan: { clientAccount: { businessUnitId: buCheckout.id } } } },
+  });
+  await prisma.onboardingPlan.deleteMany({
+    where: { clientAccount: { businessUnitId: buCheckout.id } },
+  });
+  await prisma.serviceDeliverable.deleteMany({
+    where: { clientAccount: { businessUnitId: buCheckout.id } },
+  });
+  await prisma.clientHealthOverride.deleteMany({
+    where: { health: { clientAccount: { businessUnitId: buCheckout.id } } },
+  });
+  await prisma.clientHealthHistory.deleteMany({
+    where: { health: { clientAccount: { businessUnitId: buCheckout.id } } },
+  });
+  await prisma.clientHealth.deleteMany({
+    where: { clientAccount: { businessUnitId: buCheckout.id } },
+  });
+  await prisma.memoryAuditEvent.deleteMany({ where: { businessUnitId: buCheckout.id } });
+  const profilesCheckout = await prisma.relationshipProfile.findMany({
+    where: { businessUnitId: buCheckout.id },
+    select: { id: true },
+  });
+  const profileIdsCheckout = profilesCheckout.map((p) => p.id);
+  await prisma.briefEvidence.deleteMany({ where: { brief: { profileId: { in: profileIdsCheckout } } } });
+  await prisma.relationshipBrief.deleteMany({ where: { profileId: { in: profileIdsCheckout } } });
+  await prisma.candidateEvidence.deleteMany({ where: { candidate: { profileId: { in: profileIdsCheckout } } } });
+  await prisma.memoryApproval.deleteMany({ where: { candidate: { profileId: { in: profileIdsCheckout } } } });
+  await prisma.memoryCandidate.deleteMany({ where: { profileId: { in: profileIdsCheckout } } });
+  const engramEvidenceRowsCheckout = await prisma.engramEvidence.findMany({
+    where: { engram: { businessUnitId: buCheckout.id } },
+    select: { sourceId: true },
+  });
+  const ownedSourceIdsCheckout = [...new Set(engramEvidenceRowsCheckout.map((r) => r.sourceId))];
+  await prisma.engramEvidence.deleteMany({ where: { engram: { businessUnitId: buCheckout.id } } });
+  await prisma.engram.deleteMany({ where: { businessUnitId: buCheckout.id } });
+  await prisma.engramSource.deleteMany({ where: { id: { in: ownedSourceIdsCheckout } } });
+  await prisma.relationshipProfile.deleteMany({ where: { businessUnitId: buCheckout.id } });
+  await prisma.relationshipSubject.deleteMany({
+    where: {
+      OR: [{ contact: { workspaceId: wsCheckout.id } }, { company: { workspaceId: wsCheckout.id } }],
+    },
+  });
+  await prisma.clientAccount.deleteMany({ where: { businessUnitId: buCheckout.id } });
+  await prisma.offerSnapshot.deleteMany({ where: { offer: { businessUnitId: buCheckout.id } } });
+  await prisma.stripePriceMapping.deleteMany({ where: { offerId: offerCheckout.id } });
+  await prisma.offer.deleteMany({ where: { businessUnitId: buCheckout.id } });
+  await prisma.auditLog.deleteMany({ where: { workspaceId: wsCheckout.id } });
+  await prisma.task.deleteMany({ where: { workspaceId: wsCheckout.id } });
+  await prisma.opportunity.deleteMany({ where: { workspaceId: wsCheckout.id } });
+  await prisma.stage.deleteMany({ where: { pipelineId: pipelineCheckout.id } });
+  await prisma.pipeline.deleteMany({ where: { id: pipelineCheckout.id } });
+  await prisma.contact.deleteMany({ where: { workspaceId: wsCheckout.id } });
+  await prisma.membership.deleteMany({ where: { userId: userCheckout.id } });
+  await prisma.user.delete({ where: { id: userCheckout.id } });
+  await prisma.workspace.delete({ where: { id: wsCheckout.id } });
+  await prisma.businessUnit.delete({ where: { id: buCheckout.id } });
+  await prisma.organization.delete({ where: { id: orgCheckout.id } });
 
   await webhookApp.close();
 

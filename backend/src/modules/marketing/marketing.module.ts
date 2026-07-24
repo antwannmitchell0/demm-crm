@@ -26,6 +26,7 @@ import { StripeWebhookHandlerService } from './stripe-webhook-handler.service';
 import { BillingRelationshipSignalService } from './billing-relationship-signal.service';
 import { StripeEnvironmentGuard } from './stripe-environment.guard';
 import { StripeProvisioningService } from './stripe-provisioning.service';
+import { StripeCheckoutService } from './stripe-checkout.service';
 
 @Module({
   imports: [Dom26rModule],
@@ -58,6 +59,7 @@ import { StripeProvisioningService } from './stripe-provisioning.service';
     BillingRelationshipSignalService,
     StripeEnvironmentGuard,
     StripeProvisioningService,
+    StripeCheckoutService,
   ],
   exports: [
     OfferService,
