@@ -13,6 +13,7 @@ import {
   bindDeliveryStatusProvider,
 } from './provider-binding.factory';
 import { ChannelConnectionService } from './channel-connection.service';
+import { CommunicationConsentService } from './communication-consent.service';
 
 @Module({
   providers: [
@@ -26,6 +27,7 @@ import { ChannelConnectionService } from './channel-connection.service';
       useFactory: bindDeliveryStatusProvider,
     },
     ChannelConnectionService,
+    CommunicationConsentService,
   ],
   exports: [
     SMS_PROVIDER,
@@ -34,6 +36,7 @@ import { ChannelConnectionService } from './channel-connection.service';
     INBOUND_EMAIL_PROVIDER,
     DELIVERY_STATUS_PROVIDER,
     ChannelConnectionService,
+    CommunicationConsentService,
   ],
 })
 export class CommunicationsModule {}
