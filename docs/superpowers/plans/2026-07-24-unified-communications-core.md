@@ -2927,6 +2927,7 @@ import {
   UseGuards,
   HttpCode,
   UnauthorizedException,
+  NotFoundException,
   ServiceUnavailableException,
   Inject,
   Logger,
@@ -2939,6 +2940,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { WorkspaceGuard } from '../../common/guards/workspace.guard';
 import { BusinessUnitGuard } from '../../common/guards/business-unit.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { CurrentBusinessUnitId } from '../../common/decorators/current-business-unit.decorator';
 import { EMAIL_PROVIDER, EmailProvider } from '../interfaces/email-provider.interface';
 import { INBOUND_EMAIL_PROVIDER, InboundEmailProvider } from '../interfaces/inbound-email-provider.interface';
 import { DELIVERY_STATUS_PROVIDER, DeliveryStatusProvider } from '../interfaces/delivery-status-provider.interface';
@@ -2954,17 +2956,26 @@ export class EmailOutboundController {
     private prisma: PrismaService,
   ) {}
 
+  // IMPORTANT: clientAccountId is client-supplied (route param). Scope the
+  // lookup to the guard-verified businessUnitId (via @CurrentBusinessUnitId(),
+  // sourced from BusinessUnitGuard's DB-verified workspace lookup, never from
+  // client input) -- an unscoped findUnique-by-id-alone here is a cross-
+  // Business-Unit IDOR: an authenticated user from BU A could supply BU B's
+  // clientAccountId and send email as/to BU B's client. This exact bug was
+  // found and fixed in Task 10's SMS controller (see sms.controller.ts) --
+  // apply the identical @CurrentBusinessUnitId() + findFirst pattern here.
   @Post('email')
   async sendEmail(
     @Param('id') clientAccountId: string,
     @Body() body: { subject: string; html: string },
     @CurrentUser() user: { id: string },
+    @CurrentBusinessUnitId() businessUnitId: string,
   ) {
-    const clientAccount = await this.prisma.clientAccount.findUnique({
-      where: { id: clientAccountId },
+    const clientAccount = await this.prisma.clientAccount.findFirst({
+      where: { id: clientAccountId, businessUnitId },
       include: { primaryContact: true },
     });
-    if (!clientAccount) throw new UnauthorizedException('Client not found in scope');
+    if (!clientAccount) throw new NotFoundException('Client not found in scope');
 
     const connection = await this.channels.findActiveForBusinessUnit(
       clientAccount.businessUnitId,
