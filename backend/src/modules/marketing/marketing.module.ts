@@ -27,6 +27,8 @@ import { BillingRelationshipSignalService } from './billing-relationship-signal.
 import { StripeEnvironmentGuard } from './stripe-environment.guard';
 import { StripeProvisioningService } from './stripe-provisioning.service';
 import { StripeCheckoutService } from './stripe-checkout.service';
+import { StripeCheckoutController } from './stripe-checkout.controller';
+import { BillingCheckoutFailureService } from './billing-checkout-failure.service';
 
 @Module({
   imports: [Dom26rModule],
@@ -40,6 +42,7 @@ import { StripeCheckoutService } from './stripe-checkout.service';
     DashboardController,
     ReportingController,
     StripeWebhookController,
+    StripeCheckoutController,
   ],
   providers: [
     PrismaService,
@@ -60,6 +63,7 @@ import { StripeCheckoutService } from './stripe-checkout.service';
     StripeEnvironmentGuard,
     StripeProvisioningService,
     StripeCheckoutService,
+    BillingCheckoutFailureService,
   ],
   exports: [
     OfferService,

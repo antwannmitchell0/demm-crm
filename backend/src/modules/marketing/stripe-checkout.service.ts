@@ -2,6 +2,7 @@ import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import { createStripeClient } from './stripe-config';
 import { StripeEnvironmentGuard } from './stripe-environment.guard';
+import { BillingRelationshipSignalService } from './billing-relationship-signal.service';
 import { BillingCheckoutStatus } from '@prisma/client';
 
 @Injectable()
@@ -11,6 +12,7 @@ export class StripeCheckoutService {
   constructor(
     private prisma: PrismaService,
     private envGuard: StripeEnvironmentGuard,
+    private billingSignals: BillingRelationshipSignalService,
   ) {}
 
   async createSubscriptionCheckout(
@@ -107,6 +109,16 @@ export class StripeCheckoutService {
         },
       });
 
+      // Supersedes any prior pending signal for an earlier attempt.
+      await this.billingSignals.resolveSignals(clientAccountId, [
+        'CHECKOUT_PENDING',
+      ]);
+      await this.billingSignals.createSignal(
+        clientAccountId,
+        'CHECKOUT_PENDING',
+        `Checkout session generated -- awaiting client payment.`,
+      );
+
       return { checkoutUrl: session.url!, sessionId: session.id };
     } catch (err: any) {
       await this.prisma.billingCheckoutSession.update({
@@ -118,6 +130,12 @@ export class StripeCheckoutService {
             err?.message || 'Unknown error creating Stripe Checkout Session',
         },
       });
+      // A failed checkout is no longer "pending" -- BillingCheckoutFailureService
+      // (called by the controller that invokes this method) is what creates
+      // the BILLING_SETUP_FAILED signal; this only clears the superseded one.
+      await this.billingSignals.resolveSignals(clientAccountId, [
+        'CHECKOUT_PENDING',
+      ]);
       throw err;
     }
   }

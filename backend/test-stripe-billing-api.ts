@@ -11,6 +11,7 @@ import { StripeWebhookHandlerService } from './src/modules/marketing/stripe-webh
 import { StripeWebhookDedupService } from './src/modules/marketing/stripe-webhook-dedup.service';
 import { StripeProvisioningService } from './src/modules/marketing/stripe-provisioning.service';
 import { StripeCheckoutService } from './src/modules/marketing/stripe-checkout.service';
+import { BillingRelationshipSignalService } from './src/modules/marketing/billing-relationship-signal.service';
 import Stripe from 'stripe';
 
 const connectionString =
@@ -51,14 +52,14 @@ async function runApiTests() {
   try {
     guard.assertConsistent({ environment: 'local', livemode: false });
     check('Guard allows test key + local + livemode:false', true);
-  } catch (e) {
+  } catch {
     check('Guard allows test key + local + livemode:false', false);
   }
 
   try {
     guard.assertConsistent({ environment: 'local', livemode: true });
     check('Guard REJECTS test key used with livemode:true mapping', false);
-  } catch (e) {
+  } catch {
     check('Guard REJECTS test key used with livemode:true mapping', true);
   }
 
@@ -69,7 +70,7 @@ async function runApiTests() {
       'Guard REJECTS a live key configured while environment=local (higher-risk direction)',
       false,
     );
-  } catch (e) {
+  } catch {
     check(
       'Guard REJECTS a live key configured while environment=local (higher-risk direction)',
       true,
@@ -80,31 +81,56 @@ async function runApiTests() {
   // --- OfferSnapshot trial/price-mapping binding ---
   const app = await NestFactory.create(AppModule, { logger: false });
   app.useGlobalPipes(
-    new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
   );
   await app.listen(0);
   const server = app.getHttpServer();
-  const port = (server.address() as any).port;
+  const port = server.address().port;
   const base = `http://127.0.0.1:${port}`;
 
   const suffix2 = Date.now() + '-snap';
-  const org2 = await prisma.organization.create({ data: { name: `Snapshot Test Org ${suffix2}` } });
+  const org2 = await prisma.organization.create({
+    data: { name: `Snapshot Test Org ${suffix2}` },
+  });
   const bu2 = await prisma.businessUnit.create({
     data: { organizationId: org2.id, key: 'MARKETING', name: 'DEMM Marketing' },
   });
   const ws2 = await prisma.workspace.create({
-    data: { organizationId: org2.id, businessUnitId: bu2.id, name: 'WS', subdomain: `snap-${suffix2}` },
+    data: {
+      organizationId: org2.id,
+      businessUnitId: bu2.id,
+      name: 'WS',
+      subdomain: `snap-${suffix2}`,
+    },
   });
   const bcrypt = await import('bcrypt');
   const passwordHash2 = await bcrypt.hash('SnapTest123!', 10);
   const user2 = await prisma.user.create({
-    data: { email: `snap-${suffix2}@example.com`, passwordHash: passwordHash2, firstName: 'S', lastName: 'T' },
+    data: {
+      email: `snap-${suffix2}@example.com`,
+      passwordHash: passwordHash2,
+      firstName: 'S',
+      lastName: 'T',
+    },
   });
   await prisma.membership.create({
-    data: { userId: user2.id, organizationId: org2.id, workspaceId: ws2.id, role: 'ORG_ADMIN' },
+    data: {
+      userId: user2.id,
+      organizationId: org2.id,
+      workspaceId: ws2.id,
+      role: 'ORG_ADMIN',
+    },
   });
-  const pipeline2 = await prisma.pipeline.create({ data: { name: 'P', workspaceId: ws2.id } });
-  const stage2 = await prisma.stage.create({ data: { name: 'New', order: 1, pipelineId: pipeline2.id } });
+  const pipeline2 = await prisma.pipeline.create({
+    data: { name: 'P', workspaceId: ws2.id },
+  });
+  const stage2 = await prisma.stage.create({
+    data: { name: 'New', order: 1, pipelineId: pipeline2.id },
+  });
 
   // A local test Offer at v1 with SURVIVOR-style trial terms, provisioned
   // with a StripePriceMapping so the snapshot has one to bind to.
@@ -138,10 +164,25 @@ async function runApiTests() {
   });
 
   const contact2 = await prisma.contact.create({
-    data: { workspaceId: ws2.id, firstName: 'Snap', lastName: 'Client', emails: [`snap-client-${suffix2}@example.com`], phones: [], status: 'LEAD' },
+    data: {
+      workspaceId: ws2.id,
+      firstName: 'Snap',
+      lastName: 'Client',
+      emails: [`snap-client-${suffix2}@example.com`],
+      phones: [],
+      status: 'LEAD',
+    },
   });
   await prisma.opportunity.create({
-    data: { workspaceId: ws2.id, contactId: contact2.id, pipelineId: pipeline2.id, stageId: stage2.id, name: 'Snap Deal', value: 99, status: 'OPEN' },
+    data: {
+      workspaceId: ws2.id,
+      contactId: contact2.id,
+      pipelineId: pipeline2.id,
+      stageId: stage2.id,
+      name: 'Snap Deal',
+      value: 99,
+      status: 'OPEN',
+    },
   });
 
   const loginRes2 = await fetch(`${base}/api/auth/login`, {
@@ -151,23 +192,34 @@ async function runApiTests() {
   }).then((r) => r.json());
   const selectRes2 = await fetch(`${base}/api/auth/select-workspace`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${loginRes2.preAuthToken}` },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${loginRes2.preAuthToken}`,
+    },
     body: JSON.stringify({ workspaceId: ws2.id }),
   }).then((r) => r.json());
   const token2 = selectRes2.access_token;
 
-  const convertRes2 = await fetch(`${base}/marketing/leads/${contact2.id}/convert`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token2}`,
-      'x-workspace-id': ws2.id,
-      'Idempotency-Key': `snap-idem-${suffix2}`,
+  const convertRes2 = await fetch(
+    `${base}/marketing/leads/${contact2.id}/convert`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token2}`,
+        'x-workspace-id': ws2.id,
+        'Idempotency-Key': `snap-idem-${suffix2}`,
+      },
+      body: JSON.stringify({
+        offerId: offer2.id,
+        contractState: 'SIGNED_MANUAL',
+      }),
     },
-    body: JSON.stringify({ offerId: offer2.id, contractState: 'SIGNED_MANUAL' }),
-  }).then((r) => r.json());
+  ).then((r) => r.json());
 
-  const snapshot2 = await prisma.offerSnapshot.findUnique({ where: { id: convertRes2.offerSnapshotId } });
+  const snapshot2 = await prisma.offerSnapshot.findUnique({
+    where: { id: convertRes2.offerSnapshotId },
+  });
   check(
     'OfferSnapshot copies trialEligible/trialDays from Offer at conversion time',
     snapshot2?.trialEligible === true && snapshot2?.trialDays === 7,
@@ -179,8 +231,13 @@ async function runApiTests() {
 
   // Immutability: change the Offer's trial terms AFTER conversion, confirm
   // the existing snapshot is untouched.
-  await prisma.offer.update({ where: { id: offer2.id }, data: { trialDays: 30 } });
-  const snapshot2Again = await prisma.offerSnapshot.findUnique({ where: { id: convertRes2.offerSnapshotId } });
+  await prisma.offer.update({
+    where: { id: offer2.id },
+    data: { trialDays: 30 },
+  });
+  const snapshot2Again = await prisma.offerSnapshot.findUnique({
+    where: { id: convertRes2.offerSnapshotId },
+  });
   check(
     'Changing Offer.trialDays after conversion does not change the existing snapshot',
     snapshot2Again?.trialDays === 7,
@@ -297,10 +354,16 @@ async function runApiTests() {
   const express = await import('express');
   const webhookApp = await NestFactory.create(AppModule, { logger: false });
   webhookApp.use('/webhooks/stripe', express.raw({ type: 'application/json' }));
-  webhookApp.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));
+  webhookApp.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  );
   await webhookApp.listen(0);
   const webhookServer = webhookApp.getHttpServer();
-  const webhookPort = (webhookServer.address() as any).port;
+  const webhookPort = webhookServer.address().port;
   const webhookBase = `http://127.0.0.1:${webhookPort}`;
 
   // Missing-secret fail-closed test
@@ -311,20 +374,25 @@ async function runApiTests() {
     headers: { 'Content-Type': 'application/json', 'stripe-signature': 'fake' },
     body: JSON.stringify({ fake: 'payload' }),
   });
-  check('Missing STRIPE_WEBHOOK_SECRET fails closed with 400', noSecretRes.status === 400);
+  check(
+    'Missing STRIPE_WEBHOOK_SECRET fails closed with 400',
+    noSecretRes.status === 400,
+  );
   process.env.STRIPE_WEBHOOK_SECRET = savedSecret;
 
   // Bad signature test
   const badSigRes = await fetch(`${webhookBase}/webhooks/stripe`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'stripe-signature': 't=1,v1=deadbeef' },
+    headers: {
+      'Content-Type': 'application/json',
+      'stripe-signature': 't=1,v1=deadbeef',
+    },
     body: JSON.stringify({ id: 'evt_fake', type: 'invoice.paid' }),
   });
   check('Bad Stripe-Signature fails closed with 400', badSigRes.status === 400);
 
   // Real, correctly-signed synthetic event (local HMAC only -- no real
   // Stripe network call, works fine with the local placeholder secret)
-  const stripeSdk = createStripeClient();
   const webhookTestSuffix = Date.now();
   // subscription: null (not a fake id) -- as of Task 11,
   // onCheckoutCompleted() genuinely calls stripe.subscriptions.retrieve()
@@ -340,7 +408,13 @@ async function runApiTests() {
     created: Math.floor(Date.now() / 1000),
     livemode: false,
     type: 'checkout.session.completed',
-    data: { object: { id: 'cs_test_fake', metadata: { clientAccountId: 'placeholder-not-real' }, subscription: null } },
+    data: {
+      object: {
+        id: 'cs_test_fake',
+        metadata: { clientAccountId: 'placeholder-not-real' },
+        subscription: null,
+      },
+    },
   });
   const testHeader = (Stripe as any).webhooks.generateTestHeaderString({
     payload: fakeEventPayload,
@@ -348,21 +422,35 @@ async function runApiTests() {
   });
   const validRes = await fetch(`${webhookBase}/webhooks/stripe`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'stripe-signature': testHeader },
+    headers: {
+      'Content-Type': 'application/json',
+      'stripe-signature': testHeader,
+    },
     body: fakeEventPayload,
   });
   check('Correctly-signed event is accepted with 200', validRes.status === 200);
 
-  const eventRow = await prisma.stripeWebhookEvent.findUnique({ where: { stripeEventId: `evt_test_${webhookTestSuffix}` } });
-  check('StripeWebhookEvent row reaches PROCESSED', eventRow?.processingState === 'PROCESSED');
+  const eventRow = await prisma.stripeWebhookEvent.findUnique({
+    where: { stripeEventId: `evt_test_${webhookTestSuffix}` },
+  });
+  check(
+    'StripeWebhookEvent row reaches PROCESSED',
+    eventRow?.processingState === 'PROCESSED',
+  );
 
   // Duplicate delivery (sequential)
   const dupRes = await fetch(`${webhookBase}/webhooks/stripe`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'stripe-signature': testHeader },
+    headers: {
+      'Content-Type': 'application/json',
+      'stripe-signature': testHeader,
+    },
     body: fakeEventPayload,
   });
-  check('Duplicate delivery of an already-PROCESSED event returns 200 and is skipped', dupRes.status === 200);
+  check(
+    'Duplicate delivery of an already-PROCESSED event returns 200 and is skipped',
+    dupRes.status === 200,
+  );
 
   // --- TRUE concurrency: two genuinely parallel deliveries of the SAME
   // event must produce exactly ONE handler execution, not two. This is
@@ -413,7 +501,10 @@ async function runApiTests() {
   const fireConcurrentDelivery = () =>
     fetch(`${webhookBase}/webhooks/stripe`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'stripe-signature': concurrentHeader },
+      headers: {
+        'Content-Type': 'application/json',
+        'stripe-signature': concurrentHeader,
+      },
       body: concurrentPayload,
     });
   const [concurrentResA, concurrentResB] = await Promise.all([
@@ -437,13 +528,18 @@ async function runApiTests() {
   });
   check(
     'Concurrent-delivery StripeWebhookEvent row reaches PROCESSED with attemptCount 1 (only the winner ever claimed it)',
-    concurrentEventRow?.processingState === 'PROCESSED' && concurrentEventRow?.attemptCount === 1,
+    concurrentEventRow?.processingState === 'PROCESSED' &&
+      concurrentEventRow?.attemptCount === 1,
   );
   (handlerInstance as any).handleEvent = originalHandleEvent;
 
   // Teardown: delete the StripeWebhookEvent rows this test created
   await prisma.stripeWebhookEvent.deleteMany({
-    where: { stripeEventId: { in: [`evt_test_${webhookTestSuffix}`, `evt_test_${concurrentSuffix}`] } },
+    where: {
+      stripeEventId: {
+        in: [`evt_test_${webhookTestSuffix}`, `evt_test_${concurrentSuffix}`],
+      },
+    },
   });
 
   // --- Subscription status synchronization walk ---
@@ -457,22 +553,47 @@ async function runApiTests() {
   const subForWalk = 'sub_test_walk_' + subForWalkSuffix;
   const custForWalk = 'cus_test_walk_' + subForWalkSuffix;
 
-  const orgWalk = await prisma.organization.create({ data: { name: `Walk Test Org ${subForWalkSuffix}` } });
+  const orgWalk = await prisma.organization.create({
+    data: { name: `Walk Test Org ${subForWalkSuffix}` },
+  });
   const buWalk = await prisma.businessUnit.create({
-    data: { organizationId: orgWalk.id, key: 'MARKETING', name: 'DEMM Marketing' },
+    data: {
+      organizationId: orgWalk.id,
+      key: 'MARKETING',
+      name: 'DEMM Marketing',
+    },
   });
   const wsWalk = await prisma.workspace.create({
-    data: { organizationId: orgWalk.id, businessUnitId: buWalk.id, name: 'WS', subdomain: `walk-${subForWalkSuffix}` },
+    data: {
+      organizationId: orgWalk.id,
+      businessUnitId: buWalk.id,
+      name: 'WS',
+      subdomain: `walk-${subForWalkSuffix}`,
+    },
   });
   const passwordHashWalk = await bcrypt.hash('WalkTest123!', 10);
   const userWalk = await prisma.user.create({
-    data: { email: `walk-${subForWalkSuffix}@example.com`, passwordHash: passwordHashWalk, firstName: 'W', lastName: 'T' },
+    data: {
+      email: `walk-${subForWalkSuffix}@example.com`,
+      passwordHash: passwordHashWalk,
+      firstName: 'W',
+      lastName: 'T',
+    },
   });
   await prisma.membership.create({
-    data: { userId: userWalk.id, organizationId: orgWalk.id, workspaceId: wsWalk.id, role: 'ORG_ADMIN' },
+    data: {
+      userId: userWalk.id,
+      organizationId: orgWalk.id,
+      workspaceId: wsWalk.id,
+      role: 'ORG_ADMIN',
+    },
   });
-  const pipelineWalk = await prisma.pipeline.create({ data: { name: 'P', workspaceId: wsWalk.id } });
-  const stageWalk = await prisma.stage.create({ data: { name: 'New', order: 1, pipelineId: pipelineWalk.id } });
+  const pipelineWalk = await prisma.pipeline.create({
+    data: { name: 'P', workspaceId: wsWalk.id },
+  });
+  const stageWalk = await prisma.stage.create({
+    data: { name: 'New', order: 1, pipelineId: pipelineWalk.id },
+  });
 
   // A local test Offer with a StripePriceMapping so the OfferSnapshot
   // produced by conversion has a stripePriceMappingId -- required by
@@ -507,39 +628,74 @@ async function runApiTests() {
   });
 
   const contactWalk = await prisma.contact.create({
-    data: { workspaceId: wsWalk.id, firstName: 'Walk', lastName: 'Client', emails: [`walk-client-${subForWalkSuffix}@example.com`], phones: [], status: 'LEAD' },
+    data: {
+      workspaceId: wsWalk.id,
+      firstName: 'Walk',
+      lastName: 'Client',
+      emails: [`walk-client-${subForWalkSuffix}@example.com`],
+      phones: [],
+      status: 'LEAD',
+    },
   });
   await prisma.opportunity.create({
-    data: { workspaceId: wsWalk.id, contactId: contactWalk.id, pipelineId: pipelineWalk.id, stageId: stageWalk.id, name: 'Walk Deal', value: 99, status: 'OPEN' },
+    data: {
+      workspaceId: wsWalk.id,
+      contactId: contactWalk.id,
+      pipelineId: pipelineWalk.id,
+      stageId: stageWalk.id,
+      name: 'Walk Deal',
+      value: 99,
+      status: 'OPEN',
+    },
   });
 
   const loginResWalk = await fetch(`${webhookBase}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: userWalk.email, passwordPlain: 'WalkTest123!' }),
+    body: JSON.stringify({
+      email: userWalk.email,
+      passwordPlain: 'WalkTest123!',
+    }),
   }).then((r) => r.json());
-  const selectResWalk = await fetch(`${webhookBase}/api/auth/select-workspace`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${loginResWalk.preAuthToken}` },
-    body: JSON.stringify({ workspaceId: wsWalk.id }),
-  }).then((r) => r.json());
+  const selectResWalk = await fetch(
+    `${webhookBase}/api/auth/select-workspace`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${loginResWalk.preAuthToken}`,
+      },
+      body: JSON.stringify({ workspaceId: wsWalk.id }),
+    },
+  ).then((r) => r.json());
   const tokenWalk = selectResWalk.access_token;
 
-  const convertResWalk = await fetch(`${webhookBase}/marketing/leads/${contactWalk.id}/convert`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenWalk}`,
-      'x-workspace-id': wsWalk.id,
-      'Idempotency-Key': `walk-idem-${subForWalkSuffix}`,
+  const convertResWalk = await fetch(
+    `${webhookBase}/marketing/leads/${contactWalk.id}/convert`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenWalk}`,
+        'x-workspace-id': wsWalk.id,
+        'Idempotency-Key': `walk-idem-${subForWalkSuffix}`,
+      },
+      body: JSON.stringify({
+        offerId: offerWalk.id,
+        contractState: 'SIGNED_MANUAL',
+      }),
     },
-    body: JSON.stringify({ offerId: offerWalk.id, contractState: 'SIGNED_MANUAL' }),
-  }).then((r) => r.json());
+  ).then((r) => r.json());
 
   const clientAccountIdWalk: string = convertResWalk.id;
-  await prisma.clientAccount.update({ where: { id: clientAccountIdWalk }, data: { stripeCustomerId: custForWalk } });
+  await prisma.clientAccount.update({
+    where: { id: clientAccountIdWalk },
+    data: { stripeCustomerId: custForWalk },
+  });
 
-  const offerSnapshotWalk = await prisma.offerSnapshot.findUnique({ where: { id: convertResWalk.offerSnapshotId } });
+  const offerSnapshotWalk = await prisma.offerSnapshot.findUnique({
+    where: { id: convertResWalk.offerSnapshotId },
+  });
   check(
     'Walk-test ClientAccount OfferSnapshot has a non-null stripePriceMappingId (required by upsertBillingSubscription guard)',
     offerSnapshotWalk?.stripePriceMappingId === mappingWalk.id,
@@ -572,7 +728,14 @@ async function runApiTests() {
           customer: custForWalk,
           status,
           metadata: { clientAccountId },
-          items: { data: [{ current_period_start: Math.floor(Date.now() / 1000), current_period_end: Math.floor(Date.now() / 1000) + 2592000 }] },
+          items: {
+            data: [
+              {
+                current_period_start: Math.floor(Date.now() / 1000),
+                current_period_end: Math.floor(Date.now() / 1000) + 2592000,
+              },
+            ],
+          },
           cancel_at_period_end: false,
           canceled_at: null,
           trial_start: null,
@@ -584,10 +747,16 @@ async function runApiTests() {
   }
 
   async function deliverWebhook(payload: string) {
-    const header = (Stripe as any).webhooks.generateTestHeaderString({ payload, secret: process.env.STRIPE_WEBHOOK_SECRET! });
+    const header = (Stripe as any).webhooks.generateTestHeaderString({
+      payload,
+      secret: process.env.STRIPE_WEBHOOK_SECRET!,
+    });
     return fetch(`${webhookBase}/webhooks/stripe`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'stripe-signature': header },
+      headers: {
+        'Content-Type': 'application/json',
+        'stripe-signature': header,
+      },
       body: payload,
     });
   }
@@ -597,7 +766,14 @@ async function runApiTests() {
   // just terminal CANCELED). Each iteration gets its own event id via
   // `index`, so the two 'active' deliveries are genuinely distinct
   // events and both reach the handler.
-  const walkStatuses = ['incomplete', 'trialing', 'active', 'past_due', 'active', 'canceled'];
+  const walkStatuses = [
+    'incomplete',
+    'trialing',
+    'active',
+    'past_due',
+    'active',
+    'canceled',
+  ];
   const expectedBillingStatus: Record<string, string> = {
     incomplete: 'INCOMPLETE',
     trialing: 'TRIALING',
@@ -608,7 +784,12 @@ async function runApiTests() {
   const walkDeliveryResults: number[] = [];
   for (const [idx, status] of walkStatuses.entries()) {
     const walkRes = await deliverWebhook(
-      synthesizeSubscriptionEvent('customer.subscription.updated', status, clientAccountIdWalk, idx),
+      synthesizeSubscriptionEvent(
+        'customer.subscription.updated',
+        status,
+        clientAccountIdWalk,
+        idx,
+      ),
     );
     walkDeliveryResults.push(walkRes.status);
     // Confirm THIS delivery's status landed before moving to the next
@@ -619,7 +800,9 @@ async function runApiTests() {
     // if that happened, the status here would still read PAST_DUE instead
     // of ACTIVE.
     await new Promise((r) => setTimeout(r, 200));
-    const stepSub = await prisma.billingSubscription.findUnique({ where: { stripeSubscriptionId: subForWalk } });
+    const stepSub = await prisma.billingSubscription.findUnique({
+      where: { stripeSubscriptionId: subForWalk },
+    });
     check(
       `Status walk step ${idx} ('${status}') is reflected in BillingSubscription immediately after its delivery`,
       stepSub?.status === expectedBillingStatus[status],
@@ -629,7 +812,9 @@ async function runApiTests() {
     'All subscription-status-walk webhook deliveries return 200',
     walkDeliveryResults.every((s) => s === 200),
   );
-  const finalSub = await prisma.billingSubscription.findUnique({ where: { stripeSubscriptionId: subForWalk } });
+  const finalSub = await prisma.billingSubscription.findUnique({
+    where: { stripeSubscriptionId: subForWalk },
+  });
   check(
     'Subscription status walk ends at CANCELED after INCOMPLETE→TRIALING→ACTIVE→PAST_DUE→ACTIVE→CANCELED',
     finalSub?.status === 'CANCELED',
@@ -639,7 +824,13 @@ async function runApiTests() {
     finalSub?.clientAccountId === clientAccountIdWalk,
   );
   const walkEventRowCount = await prisma.stripeWebhookEvent.count({
-    where: { stripeEventId: { in: walkStatuses.map((s, idx) => `evt_walk_${idx}_${s}_${subForWalkSuffix}`) } },
+    where: {
+      stripeEventId: {
+        in: walkStatuses.map(
+          (s, idx) => `evt_walk_${idx}_${s}_${subForWalkSuffix}`,
+        ),
+      },
+    },
   });
   check(
     'All 6 status-walk deliveries created 6 DISTINCT StripeWebhookEvent rows (none deduped against each other)',
@@ -653,18 +844,33 @@ async function runApiTests() {
     where: { stripeSubscriptionId: subForWalk },
     data: { status: 'ACTIVE', canceledAt: null },
   });
-  const deletedPayload = synthesizeSubscriptionEvent('customer.subscription.deleted', 'canceled', clientAccountIdWalk, 'deleted', {
-    canceled_at: Math.floor(Date.now() / 1000),
-  });
-  const deletedRes = await deliverWebhook(
-    JSON.stringify({ ...JSON.parse(deletedPayload), id: `evt_walk_deleted_${subForWalkSuffix}` }),
+  const deletedPayload = synthesizeSubscriptionEvent(
+    'customer.subscription.deleted',
+    'canceled',
+    clientAccountIdWalk,
+    'deleted',
+    {
+      canceled_at: Math.floor(Date.now() / 1000),
+    },
   );
-  check('customer.subscription.deleted delivery returns 200', deletedRes.status === 200);
+  const deletedRes = await deliverWebhook(
+    JSON.stringify({
+      ...JSON.parse(deletedPayload),
+      id: `evt_walk_deleted_${subForWalkSuffix}`,
+    }),
+  );
+  check(
+    'customer.subscription.deleted delivery returns 200',
+    deletedRes.status === 200,
+  );
   await new Promise((r) => setTimeout(r, 300));
-  const afterDeleteSub = await prisma.billingSubscription.findUnique({ where: { stripeSubscriptionId: subForWalk } });
+  const afterDeleteSub = await prisma.billingSubscription.findUnique({
+    where: { stripeSubscriptionId: subForWalk },
+  });
   check(
     'customer.subscription.deleted sets status CANCELED and canceledAt',
-    afterDeleteSub?.status === 'CANCELED' && afterDeleteSub?.canceledAt !== null,
+    afterDeleteSub?.status === 'CANCELED' &&
+      afterDeleteSub?.canceledAt !== null,
   );
 
   // Teardown: reverse creation order, respecting FKs.
@@ -672,13 +878,17 @@ async function runApiTests() {
     where: {
       stripeEventId: {
         in: [
-          ...walkStatuses.map((s, idx) => `evt_walk_${idx}_${s}_${subForWalkSuffix}`),
+          ...walkStatuses.map(
+            (s, idx) => `evt_walk_${idx}_${s}_${subForWalkSuffix}`,
+          ),
           `evt_walk_deleted_${subForWalkSuffix}`,
         ],
       },
     },
   });
-  await prisma.billingSubscription.deleteMany({ where: { stripeSubscriptionId: subForWalk } });
+  await prisma.billingSubscription.deleteMany({
+    where: { stripeSubscriptionId: subForWalk },
+  });
   await prisma.clientCommercialStateChange.deleteMany({
     where: { clientAccount: { businessUnitId: buWalk.id } },
   });
@@ -703,7 +913,9 @@ async function runApiTests() {
   await prisma.serviceDeliverable.deleteMany({
     where: { clientAccount: { businessUnitId: buWalk.id } },
   });
-  await prisma.memoryAuditEvent.deleteMany({ where: { businessUnitId: buWalk.id } });
+  await prisma.memoryAuditEvent.deleteMany({
+    where: { businessUnitId: buWalk.id },
+  });
   await prisma.briefEvidence.deleteMany({
     where: { brief: { profile: { businessUnitId: buWalk.id } } },
   });
@@ -751,9 +963,15 @@ async function runApiTests() {
       ],
     },
   });
-  await prisma.clientAccount.deleteMany({ where: { businessUnitId: buWalk.id } });
-  await prisma.offerSnapshot.deleteMany({ where: { offer: { businessUnitId: buWalk.id } } });
-  await prisma.stripePriceMapping.deleteMany({ where: { offerId: offerWalk.id } });
+  await prisma.clientAccount.deleteMany({
+    where: { businessUnitId: buWalk.id },
+  });
+  await prisma.offerSnapshot.deleteMany({
+    where: { offer: { businessUnitId: buWalk.id } },
+  });
+  await prisma.stripePriceMapping.deleteMany({
+    where: { offerId: offerWalk.id },
+  });
   await prisma.offer.deleteMany({ where: { businessUnitId: buWalk.id } });
   await prisma.auditLog.deleteMany({ where: { workspaceId: wsWalk.id } });
   await prisma.task.deleteMany({ where: { workspaceId: wsWalk.id } });
@@ -775,22 +993,47 @@ async function runApiTests() {
   console.log('\n💳 Testing payment/refund webhook handlers...');
 
   const paySuffix = Date.now() + '-pay';
-  const orgPay = await prisma.organization.create({ data: { name: `Pay Test Org ${paySuffix}` } });
+  const orgPay = await prisma.organization.create({
+    data: { name: `Pay Test Org ${paySuffix}` },
+  });
   const buPay = await prisma.businessUnit.create({
-    data: { organizationId: orgPay.id, key: 'MARKETING', name: 'DEMM Marketing' },
+    data: {
+      organizationId: orgPay.id,
+      key: 'MARKETING',
+      name: 'DEMM Marketing',
+    },
   });
   const wsPay = await prisma.workspace.create({
-    data: { organizationId: orgPay.id, businessUnitId: buPay.id, name: 'WS', subdomain: `pay-${paySuffix}` },
+    data: {
+      organizationId: orgPay.id,
+      businessUnitId: buPay.id,
+      name: 'WS',
+      subdomain: `pay-${paySuffix}`,
+    },
   });
   const passwordHashPay = await bcrypt.hash('PayTest123!', 10);
   const userPay = await prisma.user.create({
-    data: { email: `pay-${paySuffix}@example.com`, passwordHash: passwordHashPay, firstName: 'P', lastName: 'T' },
+    data: {
+      email: `pay-${paySuffix}@example.com`,
+      passwordHash: passwordHashPay,
+      firstName: 'P',
+      lastName: 'T',
+    },
   });
   await prisma.membership.create({
-    data: { userId: userPay.id, organizationId: orgPay.id, workspaceId: wsPay.id, role: 'ORG_ADMIN' },
+    data: {
+      userId: userPay.id,
+      organizationId: orgPay.id,
+      workspaceId: wsPay.id,
+      role: 'ORG_ADMIN',
+    },
   });
-  const pipelinePay = await prisma.pipeline.create({ data: { name: 'P', workspaceId: wsPay.id } });
-  const stagePay = await prisma.stage.create({ data: { name: 'New', order: 1, pipelineId: pipelinePay.id } });
+  const pipelinePay = await prisma.pipeline.create({
+    data: { name: 'P', workspaceId: wsPay.id },
+  });
+  const stagePay = await prisma.stage.create({
+    data: { name: 'New', order: 1, pipelineId: pipelinePay.id },
+  });
 
   const offerPay = await prisma.offer.create({
     data: {
@@ -822,38 +1065,68 @@ async function runApiTests() {
   });
 
   const contactPay = await prisma.contact.create({
-    data: { workspaceId: wsPay.id, firstName: 'Pay', lastName: 'Client', emails: [`pay-client-${paySuffix}@example.com`], phones: [], status: 'LEAD' },
+    data: {
+      workspaceId: wsPay.id,
+      firstName: 'Pay',
+      lastName: 'Client',
+      emails: [`pay-client-${paySuffix}@example.com`],
+      phones: [],
+      status: 'LEAD',
+    },
   });
   await prisma.opportunity.create({
-    data: { workspaceId: wsPay.id, contactId: contactPay.id, pipelineId: pipelinePay.id, stageId: stagePay.id, name: 'Pay Deal', value: 99, status: 'OPEN' },
+    data: {
+      workspaceId: wsPay.id,
+      contactId: contactPay.id,
+      pipelineId: pipelinePay.id,
+      stageId: stagePay.id,
+      name: 'Pay Deal',
+      value: 99,
+      status: 'OPEN',
+    },
   });
 
   const loginResPay = await fetch(`${webhookBase}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: userPay.email, passwordPlain: 'PayTest123!' }),
+    body: JSON.stringify({
+      email: userPay.email,
+      passwordPlain: 'PayTest123!',
+    }),
   }).then((r) => r.json());
   const selectResPay = await fetch(`${webhookBase}/api/auth/select-workspace`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${loginResPay.preAuthToken}` },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${loginResPay.preAuthToken}`,
+    },
     body: JSON.stringify({ workspaceId: wsPay.id }),
   }).then((r) => r.json());
   const tokenPay = selectResPay.access_token;
 
-  const convertResPay = await fetch(`${webhookBase}/marketing/leads/${contactPay.id}/convert`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenPay}`,
-      'x-workspace-id': wsPay.id,
-      'Idempotency-Key': `pay-idem-${paySuffix}`,
+  const convertResPay = await fetch(
+    `${webhookBase}/marketing/leads/${contactPay.id}/convert`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenPay}`,
+        'x-workspace-id': wsPay.id,
+        'Idempotency-Key': `pay-idem-${paySuffix}`,
+      },
+      body: JSON.stringify({
+        offerId: offerPay.id,
+        contractState: 'SIGNED_MANUAL',
+      }),
     },
-    body: JSON.stringify({ offerId: offerPay.id, contractState: 'SIGNED_MANUAL' }),
-  }).then((r) => r.json());
+  ).then((r) => r.json());
 
   const clientAccountIdPay: string = convertResPay.id;
   const custForPay = `cus_test_pay_${paySuffix}`;
-  await prisma.clientAccount.update({ where: { id: clientAccountIdPay }, data: { stripeCustomerId: custForPay } });
+  await prisma.clientAccount.update({
+    where: { id: clientAccountIdPay },
+    data: { stripeCustomerId: custForPay },
+  });
 
   const subForPay = `sub_test_pay_${paySuffix}`;
   // status starts at PAST_DUE (not ACTIVE) so invoice.paid's status-recovery
@@ -900,25 +1173,36 @@ async function runApiTests() {
   check('invoice.paid delivery returns 200', invoicePaidRes.status === 200);
   await new Promise((r) => setTimeout(r, 300));
 
-  const paymentRecordSuccess = await prisma.billingPaymentRecord.findUnique({ where: { stripeInvoiceId: invIdSuccess } });
+  const paymentRecordSuccess = await prisma.billingPaymentRecord.findUnique({
+    where: { stripeInvoiceId: invIdSuccess },
+  });
   check(
     'invoice.paid creates a BillingPaymentRecord with correct amount/clientAccountId/subscription link',
     paymentRecordSuccess?.clientAccountId === clientAccountIdPay &&
       Number(paymentRecordSuccess?.amountPaid) === 99 &&
-      paymentRecordSuccess?.billingSubscriptionId === billingSubscriptionPay.id &&
+      paymentRecordSuccess?.billingSubscriptionId ===
+        billingSubscriptionPay.id &&
       paymentRecordSuccess?.stripePaymentIntentId === piIdSuccess,
   );
 
-  const commercialChangeSuccess = await prisma.clientCommercialStateChange.findFirst({
-    where: { clientAccountId: clientAccountIdPay, field: 'PAYMENT', newValue: 'PAID' },
-    orderBy: { createdAt: 'desc' },
-  });
+  const commercialChangeSuccess =
+    await prisma.clientCommercialStateChange.findFirst({
+      where: {
+        clientAccountId: clientAccountIdPay,
+        field: 'PAYMENT',
+        newValue: 'PAID',
+      },
+      orderBy: { createdAt: 'desc' },
+    });
   check(
     'invoice.paid dual-writes a ClientCommercialStateChange (PAYMENT/PAID) with matching amount and STRIPE_WEBHOOK source',
-    Number(commercialChangeSuccess?.amount) === 99 && commercialChangeSuccess?.source === 'STRIPE_WEBHOOK',
+    Number(commercialChangeSuccess?.amount) === 99 &&
+      commercialChangeSuccess?.source === 'STRIPE_WEBHOOK',
   );
 
-  const subAfterInvoicePaid = await prisma.billingSubscription.findUnique({ where: { id: billingSubscriptionPay.id } });
+  const subAfterInvoicePaid = await prisma.billingSubscription.findUnique({
+    where: { id: billingSubscriptionPay.id },
+  });
   check(
     'invoice.paid flips a PAST_DUE BillingSubscription back to ACTIVE',
     subAfterInvoicePaid?.status === 'ACTIVE',
@@ -959,9 +1243,14 @@ async function runApiTests() {
     },
   });
   const oooRes = await deliverWebhook(oooInvoicePayload);
-  check('Out-of-order invoice.paid delivery still returns 200 (failure handled internally, not surfaced as 5xx)', oooRes.status === 200);
+  check(
+    'Out-of-order invoice.paid delivery still returns 200 (failure handled internally, not surfaced as 5xx)',
+    oooRes.status === 200,
+  );
   await new Promise((r) => setTimeout(r, 300));
-  const oooEventRow = await prisma.stripeWebhookEvent.findUnique({ where: { stripeEventId: oooEventId } });
+  const oooEventRow = await prisma.stripeWebhookEvent.findUnique({
+    where: { stripeEventId: oooEventId },
+  });
   check(
     'Out-of-order invoice.paid for a genuinely unresolvable subscription is durably recorded as FAILED (retryable), not silently lost',
     oooEventRow?.processingState === 'FAILED' && !!oooEventRow?.lastError,
@@ -1003,7 +1292,9 @@ async function runApiTests() {
     concurInvResA.status === 200 && concurInvResB.status === 200,
   );
   await new Promise((r) => setTimeout(r, 300));
-  const concurPaymentRecordCount = await prisma.billingPaymentRecord.count({ where: { stripeInvoiceId: concurInvId } });
+  const concurPaymentRecordCount = await prisma.billingPaymentRecord.count({
+    where: { stripeInvoiceId: concurInvId },
+  });
   check(
     'Concurrent duplicate invoice.paid deliveries create exactly ONE BillingPaymentRecord',
     concurPaymentRecordCount === 1,
@@ -1015,9 +1306,10 @@ async function runApiTests() {
   console.log('\n🔁 Testing failed-event retry via claimAndProcess...');
   const dedupService = new StripeWebhookDedupService(prisma as any);
   let retryAttemptCount = 0;
-  const flakyHandler = async () => {
+  const flakyHandler = () => {
     retryAttemptCount++;
     if (retryAttemptCount === 1) throw new Error('simulated failure');
+    return Promise.resolve();
   };
   const retrySuffix = paySuffix + '-retry';
   const fakeFailEvent = {
@@ -1027,14 +1319,27 @@ async function runApiTests() {
     api_version: '2025-08-27.basil',
     livemode: false,
   } as any;
-  const firstRetryOutcome = await dedupService.claimAndProcess(fakeFailEvent, 'hash1', flakyHandler);
-  check('First attempt with a throwing handler results in FAILED', firstRetryOutcome.action === 'FAILED');
-  const secondRetryOutcome = await dedupService.claimAndProcess(fakeFailEvent, 'hash1', flakyHandler);
+  const firstRetryOutcome = await dedupService.claimAndProcess(
+    fakeFailEvent,
+    'hash1',
+    flakyHandler,
+  );
+  check(
+    'First attempt with a throwing handler results in FAILED',
+    firstRetryOutcome.action === 'FAILED',
+  );
+  const secondRetryOutcome = await dedupService.claimAndProcess(
+    fakeFailEvent,
+    'hash1',
+    flakyHandler,
+  );
   check(
     'A FAILED event remains retryable and now succeeds',
     secondRetryOutcome.action === 'PROCESSED' && retryAttemptCount === 2,
   );
-  await prisma.stripeWebhookEvent.deleteMany({ where: { stripeEventId: `evt_retry_${retrySuffix}` } });
+  await prisma.stripeWebhookEvent.deleteMany({
+    where: { stripeEventId: `evt_retry_${retrySuffix}` },
+  });
 
   // -- Refund: charge.refunded marks FULL_REFUND, writes a
   // negative-amount ClientCommercialStateChange. --
@@ -1059,22 +1364,34 @@ async function runApiTests() {
     },
   });
   const chargeRefundedRes = await deliverWebhook(chargeRefundedPayload);
-  check('charge.refunded delivery returns 200', chargeRefundedRes.status === 200);
+  check(
+    'charge.refunded delivery returns 200',
+    chargeRefundedRes.status === 200,
+  );
   await new Promise((r) => setTimeout(r, 300));
 
-  const paymentRecordAfterRefund = await prisma.billingPaymentRecord.findUnique({ where: { stripeInvoiceId: invIdSuccess } });
+  const paymentRecordAfterRefund = await prisma.billingPaymentRecord.findUnique(
+    { where: { stripeInvoiceId: invIdSuccess } },
+  );
   check(
     'charge.refunded marks the BillingPaymentRecord FULL_REFUND with matching refundedAmount',
-    paymentRecordAfterRefund?.reversalState === 'FULL_REFUND' && Number(paymentRecordAfterRefund?.refundedAmount) === 99,
+    paymentRecordAfterRefund?.reversalState === 'FULL_REFUND' &&
+      Number(paymentRecordAfterRefund?.refundedAmount) === 99,
   );
 
-  const commercialChangeRefund = await prisma.clientCommercialStateChange.findFirst({
-    where: { clientAccountId: clientAccountIdPay, field: 'PAYMENT', newValue: 'REFUNDED' },
-    orderBy: { createdAt: 'desc' },
-  });
+  const commercialChangeRefund =
+    await prisma.clientCommercialStateChange.findFirst({
+      where: {
+        clientAccountId: clientAccountIdPay,
+        field: 'PAYMENT',
+        newValue: 'REFUNDED',
+      },
+      orderBy: { createdAt: 'desc' },
+    });
   check(
     'charge.refunded dual-writes a negative-amount ClientCommercialStateChange (PAYMENT/REFUNDED)',
-    Number(commercialChangeRefund?.amount) === -99 && commercialChangeRefund?.source === 'STRIPE_WEBHOOK',
+    Number(commercialChangeRefund?.amount) === -99 &&
+      commercialChangeRefund?.source === 'STRIPE_WEBHOOK',
   );
 
   // Teardown: reverse creation order, respecting FKs, mirroring the
@@ -1092,8 +1409,12 @@ async function runApiTests() {
       },
     },
   });
-  await prisma.billingPaymentRecord.deleteMany({ where: { clientAccountId: clientAccountIdPay } });
-  await prisma.billingSubscription.deleteMany({ where: { stripeSubscriptionId: subForPay } });
+  await prisma.billingPaymentRecord.deleteMany({
+    where: { clientAccountId: clientAccountIdPay },
+  });
+  await prisma.billingSubscription.deleteMany({
+    where: { stripeSubscriptionId: subForPay },
+  });
   await prisma.clientCommercialStateChange.deleteMany({
     where: { clientAccount: { businessUnitId: buPay.id } },
   });
@@ -1118,7 +1439,9 @@ async function runApiTests() {
   await prisma.serviceDeliverable.deleteMany({
     where: { clientAccount: { businessUnitId: buPay.id } },
   });
-  await prisma.memoryAuditEvent.deleteMany({ where: { businessUnitId: buPay.id } });
+  await prisma.memoryAuditEvent.deleteMany({
+    where: { businessUnitId: buPay.id },
+  });
   await prisma.briefEvidence.deleteMany({
     where: { brief: { profile: { businessUnitId: buPay.id } } },
   });
@@ -1166,9 +1489,15 @@ async function runApiTests() {
       ],
     },
   });
-  await prisma.clientAccount.deleteMany({ where: { businessUnitId: buPay.id } });
-  await prisma.offerSnapshot.deleteMany({ where: { offer: { businessUnitId: buPay.id } } });
-  await prisma.stripePriceMapping.deleteMany({ where: { offerId: offerPay.id } });
+  await prisma.clientAccount.deleteMany({
+    where: { businessUnitId: buPay.id },
+  });
+  await prisma.offerSnapshot.deleteMany({
+    where: { offer: { businessUnitId: buPay.id } },
+  });
+  await prisma.stripePriceMapping.deleteMany({
+    where: { offerId: offerPay.id },
+  });
   await prisma.offer.deleteMany({ where: { businessUnitId: buPay.id } });
   await prisma.auditLog.deleteMany({ where: { workspaceId: wsPay.id } });
   await prisma.task.deleteMany({ where: { workspaceId: wsPay.id } });
@@ -1188,22 +1517,47 @@ async function runApiTests() {
   console.log('\n📈 Testing KPI classification + double-counting guard...');
 
   const kpiSuffix = Date.now() + '-kpi';
-  const orgKpi = await prisma.organization.create({ data: { name: `Kpi Test Org ${kpiSuffix}` } });
+  const orgKpi = await prisma.organization.create({
+    data: { name: `Kpi Test Org ${kpiSuffix}` },
+  });
   const buKpi = await prisma.businessUnit.create({
-    data: { organizationId: orgKpi.id, key: 'MARKETING', name: 'DEMM Marketing' },
+    data: {
+      organizationId: orgKpi.id,
+      key: 'MARKETING',
+      name: 'DEMM Marketing',
+    },
   });
   const wsKpi = await prisma.workspace.create({
-    data: { organizationId: orgKpi.id, businessUnitId: buKpi.id, name: 'WS', subdomain: `kpi-${kpiSuffix}` },
+    data: {
+      organizationId: orgKpi.id,
+      businessUnitId: buKpi.id,
+      name: 'WS',
+      subdomain: `kpi-${kpiSuffix}`,
+    },
   });
   const passwordHashKpi = await bcrypt.hash('KpiTest123!', 10);
   const userKpi = await prisma.user.create({
-    data: { email: `kpi-${kpiSuffix}@example.com`, passwordHash: passwordHashKpi, firstName: 'K', lastName: 'T' },
+    data: {
+      email: `kpi-${kpiSuffix}@example.com`,
+      passwordHash: passwordHashKpi,
+      firstName: 'K',
+      lastName: 'T',
+    },
   });
   await prisma.membership.create({
-    data: { userId: userKpi.id, organizationId: orgKpi.id, workspaceId: wsKpi.id, role: 'ORG_ADMIN' },
+    data: {
+      userId: userKpi.id,
+      organizationId: orgKpi.id,
+      workspaceId: wsKpi.id,
+      role: 'ORG_ADMIN',
+    },
   });
-  const pipelineKpi = await prisma.pipeline.create({ data: { name: 'P', workspaceId: wsKpi.id } });
-  const stageKpi = await prisma.stage.create({ data: { name: 'New', order: 1, pipelineId: pipelineKpi.id } });
+  const pipelineKpi = await prisma.pipeline.create({
+    data: { name: 'P', workspaceId: wsKpi.id },
+  });
+  const stageKpi = await prisma.stage.create({
+    data: { name: 'New', order: 1, pipelineId: pipelineKpi.id },
+  });
 
   const offerKpi = await prisma.offer.create({
     data: {
@@ -1235,34 +1589,64 @@ async function runApiTests() {
   });
 
   const contactKpi = await prisma.contact.create({
-    data: { workspaceId: wsKpi.id, firstName: 'Kpi', lastName: 'Client', emails: [`kpi-client-${kpiSuffix}@example.com`], phones: [], status: 'LEAD' },
+    data: {
+      workspaceId: wsKpi.id,
+      firstName: 'Kpi',
+      lastName: 'Client',
+      emails: [`kpi-client-${kpiSuffix}@example.com`],
+      phones: [],
+      status: 'LEAD',
+    },
   });
   await prisma.opportunity.create({
-    data: { workspaceId: wsKpi.id, contactId: contactKpi.id, pipelineId: pipelineKpi.id, stageId: stageKpi.id, name: 'Kpi Deal', value: 99, status: 'OPEN' },
+    data: {
+      workspaceId: wsKpi.id,
+      contactId: contactKpi.id,
+      pipelineId: pipelineKpi.id,
+      stageId: stageKpi.id,
+      name: 'Kpi Deal',
+      value: 99,
+      status: 'OPEN',
+    },
   });
 
   const loginResKpi = await fetch(`${webhookBase}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: userKpi.email, passwordPlain: 'KpiTest123!' }),
+    body: JSON.stringify({
+      email: userKpi.email,
+      passwordPlain: 'KpiTest123!',
+    }),
   }).then((r) => r.json());
   const selectResKpi = await fetch(`${webhookBase}/api/auth/select-workspace`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${loginResKpi.preAuthToken}` },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${loginResKpi.preAuthToken}`,
+    },
     body: JSON.stringify({ workspaceId: wsKpi.id }),
   }).then((r) => r.json());
   const tokenKpi = selectResKpi.access_token;
-  const authHeadersKpi = { Authorization: `Bearer ${tokenKpi}`, 'x-workspace-id': wsKpi.id };
+  const authHeadersKpi = {
+    Authorization: `Bearer ${tokenKpi}`,
+    'x-workspace-id': wsKpi.id,
+  };
 
-  const convertResKpi = await fetch(`${webhookBase}/marketing/leads/${contactKpi.id}/convert`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...authHeadersKpi,
-      'Idempotency-Key': `kpi-idem-${kpiSuffix}`,
+  const convertResKpi = await fetch(
+    `${webhookBase}/marketing/leads/${contactKpi.id}/convert`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeadersKpi,
+        'Idempotency-Key': `kpi-idem-${kpiSuffix}`,
+      },
+      body: JSON.stringify({
+        offerId: offerKpi.id,
+        contractState: 'SIGNED_MANUAL',
+      }),
     },
-    body: JSON.stringify({ offerId: offerKpi.id, contractState: 'SIGNED_MANUAL' }),
-  }).then((r) => r.json());
+  ).then((r) => r.json());
 
   const clientAccountIdKpi: string = convertResKpi.id;
   // Mark ACTIVE (not just PENDING_ONBOARDING) so computeMrr's
@@ -1272,7 +1656,10 @@ async function runApiTests() {
     data: { serviceStatus: 'ACTIVE' },
   });
   const custForKpi = `cus_test_kpi_${kpiSuffix}`;
-  await prisma.clientAccount.update({ where: { id: clientAccountIdKpi }, data: { stripeCustomerId: custForKpi } });
+  await prisma.clientAccount.update({
+    where: { id: clientAccountIdKpi },
+    data: { stripeCustomerId: custForKpi },
+  });
 
   const subForKpi = `sub_test_kpi_${kpiSuffix}`;
   await prisma.billingSubscription.create({
@@ -1308,39 +1695,64 @@ async function runApiTests() {
   await deliverWebhook(kpiInvoicePayload);
   await new Promise((r) => setTimeout(r, 300));
 
-  const dashboardResKpi1 = await fetch(`${webhookBase}/marketing/dashboard`, { headers: authHeadersKpi }).then((r) => r.json());
+  const dashboardResKpi1 = await fetch(`${webhookBase}/marketing/dashboard`, {
+    headers: authHeadersKpi,
+  }).then((r) => r.json());
   check(
     'Dashboard collectedRevenue90d is ACTUAL_VERIFIED when all payments are Stripe-sourced',
-    dashboardResKpi1.revenueTrajectory.collectedRevenue90d.classification === 'ACTUAL_VERIFIED',
+    dashboardResKpi1.revenueTrajectory.collectedRevenue90d.classification ===
+      'ACTUAL_VERIFIED',
   );
   check(
     'Dashboard mrr is ACTUAL_VERIFIED when the only ACTIVE client has a Stripe-backed ACTIVE subscription',
-    dashboardResKpi1.revenueTrajectory.mrr.classification === 'ACTUAL_VERIFIED' &&
+    dashboardResKpi1.revenueTrajectory.mrr.classification ===
+      'ACTUAL_VERIFIED' &&
       Number(dashboardResKpi1.revenueTrajectory.mrr.value) === 99,
   );
 
   // Manual PAYMENT entry blocked while a BillingSubscription is ACTIVE.
-  const blockedResKpi = await fetch(`${webhookBase}/marketing/clients/${clientAccountIdKpi}/commercial-state`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeadersKpi },
-    body: JSON.stringify({ field: 'PAYMENT', newValue: 'PAID_IN_FULL_MANUAL', amount: 50 }),
-  });
-  check('Manual PAYMENT entry is rejected (409) while a Stripe subscription is ACTIVE', blockedResKpi.status === 409);
+  const blockedResKpi = await fetch(
+    `${webhookBase}/marketing/clients/${clientAccountIdKpi}/commercial-state`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeadersKpi },
+      body: JSON.stringify({
+        field: 'PAYMENT',
+        newValue: 'PAID_IN_FULL_MANUAL',
+        amount: 50,
+      }),
+    },
+  );
+  check(
+    'Manual PAYMENT entry is rejected (409) while a Stripe subscription is ACTIVE',
+    blockedResKpi.status === 409,
+  );
 
-  const overrideResKpi = await fetch(`${webhookBase}/marketing/clients/${clientAccountIdKpi}/commercial-state`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeadersKpi },
-    body: JSON.stringify({ field: 'PAYMENT', newValue: 'PAID_IN_FULL_MANUAL', amount: 50, allowManualAlongsideStripe: true }),
-  });
+  const overrideResKpi = await fetch(
+    `${webhookBase}/marketing/clients/${clientAccountIdKpi}/commercial-state`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeadersKpi },
+      body: JSON.stringify({
+        field: 'PAYMENT',
+        newValue: 'PAID_IN_FULL_MANUAL',
+        amount: 50,
+        allowManualAlongsideStripe: true,
+      }),
+    },
+  );
   check(
     'Manual PAYMENT entry succeeds with allowManualAlongsideStripe: true (status 201)',
     overrideResKpi.status === 201,
   );
 
-  const dashboardResKpi2 = await fetch(`${webhookBase}/marketing/dashboard`, { headers: authHeadersKpi }).then((r) => r.json());
+  const dashboardResKpi2 = await fetch(`${webhookBase}/marketing/dashboard`, {
+    headers: authHeadersKpi,
+  }).then((r) => r.json());
   check(
     'Dashboard collectedRevenue90d becomes MIXED_SOURCES once both a MANUAL and a STRIPE_WEBHOOK row exist',
-    dashboardResKpi2.revenueTrajectory.collectedRevenue90d.classification === 'MIXED_SOURCES',
+    dashboardResKpi2.revenueTrajectory.collectedRevenue90d.classification ===
+      'MIXED_SOURCES',
   );
 
   // --- Client Health COMMERCIAL factor from PAST_DUE subscription (Task 14) ---
@@ -1348,14 +1760,21 @@ async function runApiTests() {
     where: { stripeSubscriptionId: subForKpi },
     data: { status: 'PAST_DUE' },
   });
-  const healthRecalcResKpi = await fetch(`${webhookBase}/marketing/clients/${clientAccountIdKpi}/health/recalculate`, {
-    method: 'POST',
-    headers: authHeadersKpi,
-  }).then((r) => r.json());
+  const healthRecalcResKpi = await fetch(
+    `${webhookBase}/marketing/clients/${clientAccountIdKpi}/health/recalculate`,
+    {
+      method: 'POST',
+      headers: authHeadersKpi,
+    },
+  ).then((r) => r.json());
   const hasCommercialFactorKpi = healthRecalcResKpi.factors?.some(
-    (f: any) => f.riskOwner === 'COMMERCIAL' && f.evidence?.includes('PAST_DUE'),
+    (f: any) =>
+      f.riskOwner === 'COMMERCIAL' && f.evidence?.includes('PAST_DUE'),
   );
-  check('Client Health surfaces a COMMERCIAL factor when the subscription is PAST_DUE', hasCommercialFactorKpi);
+  check(
+    'Client Health surfaces a COMMERCIAL factor when the subscription is PAST_DUE',
+    hasCommercialFactorKpi,
+  );
 
   // --- DOM26-R RelationshipSignal lifecycle (Task 15) ---
   // Task 14's raw prisma.billingSubscription.updateMany above bypassed
@@ -1367,22 +1786,34 @@ async function runApiTests() {
     data: { status: 'ACTIVE' },
   });
 
-  const profileForSignalsKpi = await prisma.relationshipSubject.findFirst({
-    where: { contactId: contactKpi.id },
-  }).then((subject) =>
-    subject
-      ? prisma.relationshipProfile.findFirst({ where: { subjectId: subject.id, businessUnitId: buKpi.id } })
-      : null,
-  );
+  const profileForSignalsKpi = await prisma.relationshipSubject
+    .findFirst({
+      where: { contactId: contactKpi.id },
+    })
+    .then((subject) =>
+      subject
+        ? prisma.relationshipProfile.findFirst({
+            where: { subjectId: subject.id, businessUnitId: buKpi.id },
+          })
+        : null,
+    );
   const profileIdSignalsKpi = profileForSignalsKpi!.id;
 
-  const signalsAfterEarlierPayment = await prisma.relationshipSignal.findMany({ where: { profileId: profileIdSignalsKpi } });
+  const signalsAfterEarlierPayment = await prisma.relationshipSignal.findMany({
+    where: { profileId: profileIdSignalsKpi },
+  });
   check(
     'PAYMENT_SUCCESS signal was created (and self-resolved) from the earlier invoice.paid delivery',
-    signalsAfterEarlierPayment.some((s) => s.type === 'PAYMENT_SUCCESS' && s.state === 'RESOLVED'),
+    signalsAfterEarlierPayment.some(
+      (s) => s.type === 'PAYMENT_SUCCESS' && s.state === 'RESOLVED',
+    ),
   );
 
-  function synthesizeKpiSubscriptionEvent(eventType: string, id: string, overrides: Record<string, any> = {}) {
+  function synthesizeKpiSubscriptionEvent(
+    eventType: string,
+    id: string,
+    overrides: Record<string, any> = {},
+  ) {
     return JSON.stringify({
       id,
       object: 'event',
@@ -1397,7 +1828,14 @@ async function runApiTests() {
           customer: custForKpi,
           status: 'active',
           metadata: { clientAccountId: clientAccountIdKpi },
-          items: { data: [{ current_period_start: Math.floor(Date.now() / 1000), current_period_end: Math.floor(Date.now() / 1000) + 2592000 }] },
+          items: {
+            data: [
+              {
+                current_period_start: Math.floor(Date.now() / 1000),
+                current_period_end: Math.floor(Date.now() / 1000) + 2592000,
+              },
+            ],
+          },
           cancel_at_period_end: false,
           canceled_at: null,
           trial_start: null,
@@ -1409,51 +1847,72 @@ async function runApiTests() {
   }
 
   // 1. invoice.payment_failed -> PAYMENT_FAILURE signal (ACTIVE).
-  await deliverWebhook(JSON.stringify({
-    id: `evt_kpi_payfail_${kpiSuffix}`,
-    object: 'event',
-    api_version: '2025-08-27.basil',
-    created: Math.floor(Date.now() / 1000),
-    livemode: false,
-    type: 'invoice.payment_failed',
-    data: { object: { id: `in_kpi_fail_${kpiSuffix}`, object: 'invoice', customer: custForKpi, subscription: subForKpi } },
-  }));
+  await deliverWebhook(
+    JSON.stringify({
+      id: `evt_kpi_payfail_${kpiSuffix}`,
+      object: 'event',
+      api_version: '2025-08-27.basil',
+      created: Math.floor(Date.now() / 1000),
+      livemode: false,
+      type: 'invoice.payment_failed',
+      data: {
+        object: {
+          id: `in_kpi_fail_${kpiSuffix}`,
+          object: 'invoice',
+          customer: custForKpi,
+          subscription: subForKpi,
+        },
+      },
+    }),
+  );
   await new Promise((r) => setTimeout(r, 300));
-  const signalsAfterFailure = await prisma.relationshipSignal.findMany({ where: { profileId: profileIdSignalsKpi } });
+  const signalsAfterFailure = await prisma.relationshipSignal.findMany({
+    where: { profileId: profileIdSignalsKpi },
+  });
   check(
     'invoice.payment_failed creates an ACTIVE PAYMENT_FAILURE signal',
-    signalsAfterFailure.some((s) => s.type === 'PAYMENT_FAILURE' && s.state === 'ACTIVE'),
+    signalsAfterFailure.some(
+      (s) => s.type === 'PAYMENT_FAILURE' && s.state === 'ACTIVE',
+    ),
   );
 
   // 2. invoice.paid while a PAYMENT_FAILURE is active -> PAYMENT_RECOVERY
   // (self-resolved) + PAYMENT_FAILURE/PAST_DUE resolved, not another
   // plain PAYMENT_SUCCESS.
-  await deliverWebhook(JSON.stringify({
-    id: `evt_kpi_recover_${kpiSuffix}`,
-    object: 'event',
-    api_version: '2025-08-27.basil',
-    created: Math.floor(Date.now() / 1000),
-    livemode: false,
-    type: 'invoice.paid',
-    data: {
-      object: {
-        id: `in_kpi_recover_${kpiSuffix}`,
-        object: 'invoice',
-        customer: custForKpi,
-        subscription: subForKpi,
-        amount_paid: 9900,
-        currency: 'usd',
-        payment_intent: `pi_kpi_recover_${kpiSuffix}`,
+  await deliverWebhook(
+    JSON.stringify({
+      id: `evt_kpi_recover_${kpiSuffix}`,
+      object: 'event',
+      api_version: '2025-08-27.basil',
+      created: Math.floor(Date.now() / 1000),
+      livemode: false,
+      type: 'invoice.paid',
+      data: {
+        object: {
+          id: `in_kpi_recover_${kpiSuffix}`,
+          object: 'invoice',
+          customer: custForKpi,
+          subscription: subForKpi,
+          amount_paid: 9900,
+          currency: 'usd',
+          payment_intent: `pi_kpi_recover_${kpiSuffix}`,
+        },
       },
-    },
-  }));
+    }),
+  );
   await new Promise((r) => setTimeout(r, 300));
-  const signalsAfterRecovery = await prisma.relationshipSignal.findMany({ where: { profileId: profileIdSignalsKpi } });
+  const signalsAfterRecovery = await prisma.relationshipSignal.findMany({
+    where: { profileId: profileIdSignalsKpi },
+  });
   check(
     'Recovery invoice.paid creates a RESOLVED PAYMENT_RECOVERY signal',
-    signalsAfterRecovery.some((s) => s.type === 'PAYMENT_RECOVERY' && s.state === 'RESOLVED'),
+    signalsAfterRecovery.some(
+      (s) => s.type === 'PAYMENT_RECOVERY' && s.state === 'RESOLVED',
+    ),
   );
-  const failureSignalAfterRecovery = signalsAfterRecovery.find((s) => s.type === 'PAYMENT_FAILURE');
+  const failureSignalAfterRecovery = signalsAfterRecovery.find(
+    (s) => s.type === 'PAYMENT_FAILURE',
+  );
   check(
     'The earlier PAYMENT_FAILURE signal is resolved by the recovery',
     failureSignalAfterRecovery?.state === 'RESOLVED',
@@ -1461,19 +1920,39 @@ async function runApiTests() {
 
   // 3. customer.subscription.updated with cancel_at_period_end: true ->
   // CANCELLATION_SCHEDULED (ACTIVE).
-  await deliverWebhook(synthesizeKpiSubscriptionEvent('customer.subscription.updated', `evt_kpi_cancelsched_${kpiSuffix}`, { cancel_at_period_end: true }));
+  await deliverWebhook(
+    synthesizeKpiSubscriptionEvent(
+      'customer.subscription.updated',
+      `evt_kpi_cancelsched_${kpiSuffix}`,
+      { cancel_at_period_end: true },
+    ),
+  );
   await new Promise((r) => setTimeout(r, 300));
-  const signalsAfterCancelScheduled = await prisma.relationshipSignal.findMany({ where: { profileId: profileIdSignalsKpi } });
+  const signalsAfterCancelScheduled = await prisma.relationshipSignal.findMany({
+    where: { profileId: profileIdSignalsKpi },
+  });
   check(
     'cancel_at_period_end: true creates an ACTIVE CANCELLATION_SCHEDULED signal',
-    signalsAfterCancelScheduled.some((s) => s.type === 'CANCELLATION_SCHEDULED' && s.state === 'ACTIVE'),
+    signalsAfterCancelScheduled.some(
+      (s) => s.type === 'CANCELLATION_SCHEDULED' && s.state === 'ACTIVE',
+    ),
   );
 
   // 4. Un-scheduling (cancel_at_period_end back to false) resolves it.
-  await deliverWebhook(synthesizeKpiSubscriptionEvent('customer.subscription.updated', `evt_kpi_cancelunsched_${kpiSuffix}`, { cancel_at_period_end: false }));
+  await deliverWebhook(
+    synthesizeKpiSubscriptionEvent(
+      'customer.subscription.updated',
+      `evt_kpi_cancelunsched_${kpiSuffix}`,
+      { cancel_at_period_end: false },
+    ),
+  );
   await new Promise((r) => setTimeout(r, 300));
-  const signalsAfterUnscheduled = await prisma.relationshipSignal.findMany({ where: { profileId: profileIdSignalsKpi } });
-  const cancelScheduledAfterUnschedule = signalsAfterUnscheduled.find((s) => s.type === 'CANCELLATION_SCHEDULED');
+  const signalsAfterUnscheduled = await prisma.relationshipSignal.findMany({
+    where: { profileId: profileIdSignalsKpi },
+  });
+  const cancelScheduledAfterUnschedule = signalsAfterUnscheduled.find(
+    (s) => s.type === 'CANCELLATION_SCHEDULED',
+  );
   check(
     'Un-scheduling cancellation resolves the CANCELLATION_SCHEDULED signal',
     cancelScheduledAfterUnschedule?.state === 'RESOLVED',
@@ -1481,18 +1960,34 @@ async function runApiTests() {
 
   // 5. customer.subscription.deleted -> CANCELLATION_COMPLETED, stays
   // ACTIVE (needs human follow-up, never auto-resolved).
-  await deliverWebhook(synthesizeKpiSubscriptionEvent('customer.subscription.deleted', `evt_kpi_canceled_${kpiSuffix}`, { status: 'canceled' }));
+  await deliverWebhook(
+    synthesizeKpiSubscriptionEvent(
+      'customer.subscription.deleted',
+      `evt_kpi_canceled_${kpiSuffix}`,
+      { status: 'canceled' },
+    ),
+  );
   await new Promise((r) => setTimeout(r, 300));
-  const signalsAfterDeleted = await prisma.relationshipSignal.findMany({ where: { profileId: profileIdSignalsKpi } });
+  const signalsAfterDeleted = await prisma.relationshipSignal.findMany({
+    where: { profileId: profileIdSignalsKpi },
+  });
   check(
     'customer.subscription.deleted creates a CANCELLATION_COMPLETED signal that remains ACTIVE',
-    signalsAfterDeleted.some((s) => s.type === 'CANCELLATION_COMPLETED' && s.state === 'ACTIVE'),
+    signalsAfterDeleted.some(
+      (s) => s.type === 'CANCELLATION_COMPLETED' && s.state === 'ACTIVE',
+    ),
   );
 
   // Teardown.
-  await prisma.billingSubscription.deleteMany({ where: { clientAccountId: clientAccountIdKpi } });
-  await prisma.clientCommercialStateChange.deleteMany({ where: { clientAccountId: clientAccountIdKpi } });
-  await prisma.billingPaymentRecord.deleteMany({ where: { clientAccountId: clientAccountIdKpi } });
+  await prisma.billingSubscription.deleteMany({
+    where: { clientAccountId: clientAccountIdKpi },
+  });
+  await prisma.clientCommercialStateChange.deleteMany({
+    where: { clientAccountId: clientAccountIdKpi },
+  });
+  await prisma.billingPaymentRecord.deleteMany({
+    where: { clientAccountId: clientAccountIdKpi },
+  });
   await prisma.onboardingChecklistItem.deleteMany({
     where: { plan: { clientAccount: { businessUnitId: buKpi.id } } },
   });
@@ -1514,34 +2009,63 @@ async function runApiTests() {
   await prisma.clientHealth.deleteMany({
     where: { clientAccount: { businessUnitId: buKpi.id } },
   });
-  await prisma.memoryAuditEvent.deleteMany({ where: { businessUnitId: buKpi.id } });
+  await prisma.memoryAuditEvent.deleteMany({
+    where: { businessUnitId: buKpi.id },
+  });
   const profilesKpi = await prisma.relationshipProfile.findMany({
     where: { businessUnitId: buKpi.id },
     select: { id: true },
   });
   const profileIdsKpi = profilesKpi.map((p) => p.id);
-  await prisma.briefEvidence.deleteMany({ where: { brief: { profileId: { in: profileIdsKpi } } } });
-  await prisma.relationshipBrief.deleteMany({ where: { profileId: { in: profileIdsKpi } } });
-  await prisma.candidateEvidence.deleteMany({ where: { candidate: { profileId: { in: profileIdsKpi } } } });
-  await prisma.memoryApproval.deleteMany({ where: { candidate: { profileId: { in: profileIdsKpi } } } });
-  await prisma.memoryCandidate.deleteMany({ where: { profileId: { in: profileIdsKpi } } });
+  await prisma.briefEvidence.deleteMany({
+    where: { brief: { profileId: { in: profileIdsKpi } } },
+  });
+  await prisma.relationshipBrief.deleteMany({
+    where: { profileId: { in: profileIdsKpi } },
+  });
+  await prisma.candidateEvidence.deleteMany({
+    where: { candidate: { profileId: { in: profileIdsKpi } } },
+  });
+  await prisma.memoryApproval.deleteMany({
+    where: { candidate: { profileId: { in: profileIdsKpi } } },
+  });
+  await prisma.memoryCandidate.deleteMany({
+    where: { profileId: { in: profileIdsKpi } },
+  });
   const engramEvidenceRowsKpi = await prisma.engramEvidence.findMany({
     where: { engram: { businessUnitId: buKpi.id } },
     select: { sourceId: true },
   });
-  const ownedSourceIdsKpi = [...new Set(engramEvidenceRowsKpi.map((r) => r.sourceId))];
-  await prisma.engramEvidence.deleteMany({ where: { engram: { businessUnitId: buKpi.id } } });
+  const ownedSourceIdsKpi = [
+    ...new Set(engramEvidenceRowsKpi.map((r) => r.sourceId)),
+  ];
+  await prisma.engramEvidence.deleteMany({
+    where: { engram: { businessUnitId: buKpi.id } },
+  });
   await prisma.engram.deleteMany({ where: { businessUnitId: buKpi.id } });
-  await prisma.engramSource.deleteMany({ where: { id: { in: ownedSourceIdsKpi } } });
-  await prisma.relationshipProfile.deleteMany({ where: { businessUnitId: buKpi.id } });
+  await prisma.engramSource.deleteMany({
+    where: { id: { in: ownedSourceIdsKpi } },
+  });
+  await prisma.relationshipProfile.deleteMany({
+    where: { businessUnitId: buKpi.id },
+  });
   await prisma.relationshipSubject.deleteMany({
     where: {
-      OR: [{ contact: { workspaceId: wsKpi.id } }, { company: { workspaceId: wsKpi.id } }],
+      OR: [
+        { contact: { workspaceId: wsKpi.id } },
+        { company: { workspaceId: wsKpi.id } },
+      ],
     },
   });
-  await prisma.clientAccount.deleteMany({ where: { businessUnitId: buKpi.id } });
-  await prisma.offerSnapshot.deleteMany({ where: { offer: { businessUnitId: buKpi.id } } });
-  await prisma.stripePriceMapping.deleteMany({ where: { offerId: offerKpi.id } });
+  await prisma.clientAccount.deleteMany({
+    where: { businessUnitId: buKpi.id },
+  });
+  await prisma.offerSnapshot.deleteMany({
+    where: { offer: { businessUnitId: buKpi.id } },
+  });
+  await prisma.stripePriceMapping.deleteMany({
+    where: { offerId: offerKpi.id },
+  });
   await prisma.offer.deleteMany({ where: { businessUnitId: buKpi.id } });
   await prisma.auditLog.deleteMany({ where: { workspaceId: wsKpi.id } });
   await prisma.task.deleteMany({ where: { workspaceId: wsKpi.id } });
@@ -1556,7 +2080,9 @@ async function runApiTests() {
   await prisma.organization.delete({ where: { id: orgKpi.id } });
 
   // --- StripeProvisioningService (real Stripe test-mode API calls) ---
-  console.log('\n🏭 Testing StripeProvisioningService (real Stripe test-mode API)...');
+  console.log(
+    '\n🏭 Testing StripeProvisioningService (real Stripe test-mode API)...',
+  );
   const provisioning = new StripeProvisioningService(
     prisma as any,
     new StripeEnvironmentGuard(),
@@ -1590,28 +2116,58 @@ async function runApiTests() {
 
   const growthResult = firstRun.find((r) => r.key === 'GROWTH');
   const empireResult = firstRun.find((r) => r.key === 'EMPIRE');
-  check('syncOfferPrices also provisions GROWTH and EMPIRE', !!growthResult && !!empireResult);
+  check(
+    'syncOfferPrices also provisions GROWTH and EMPIRE',
+    !!growthResult && !!empireResult,
+  );
 
   // --- StripeCheckoutService (real Stripe test-mode API calls) ---
-  console.log('\n🛒 Testing StripeCheckoutService (real Stripe test-mode API)...');
+  console.log(
+    '\n🛒 Testing StripeCheckoutService (real Stripe test-mode API)...',
+  );
 
   const checkoutSuffix = Date.now() + '-checkout';
-  const orgCheckout = await prisma.organization.create({ data: { name: `Checkout Test Org ${checkoutSuffix}` } });
+  const orgCheckout = await prisma.organization.create({
+    data: { name: `Checkout Test Org ${checkoutSuffix}` },
+  });
   const buCheckout = await prisma.businessUnit.create({
-    data: { organizationId: orgCheckout.id, key: 'MARKETING', name: 'DEMM Marketing' },
+    data: {
+      organizationId: orgCheckout.id,
+      key: 'MARKETING',
+      name: 'DEMM Marketing',
+    },
   });
   const wsCheckout = await prisma.workspace.create({
-    data: { organizationId: orgCheckout.id, businessUnitId: buCheckout.id, name: 'WS', subdomain: `checkout-${checkoutSuffix}` },
+    data: {
+      organizationId: orgCheckout.id,
+      businessUnitId: buCheckout.id,
+      name: 'WS',
+      subdomain: `checkout-${checkoutSuffix}`,
+    },
   });
   const passwordHashCheckout = await bcrypt.hash('CheckoutTest123!', 10);
   const userCheckout = await prisma.user.create({
-    data: { email: `checkout-${checkoutSuffix}@example.com`, passwordHash: passwordHashCheckout, firstName: 'C', lastName: 'T' },
+    data: {
+      email: `checkout-${checkoutSuffix}@example.com`,
+      passwordHash: passwordHashCheckout,
+      firstName: 'C',
+      lastName: 'T',
+    },
   });
   await prisma.membership.create({
-    data: { userId: userCheckout.id, organizationId: orgCheckout.id, workspaceId: wsCheckout.id, role: 'ORG_ADMIN' },
+    data: {
+      userId: userCheckout.id,
+      organizationId: orgCheckout.id,
+      workspaceId: wsCheckout.id,
+      role: 'ORG_ADMIN',
+    },
   });
-  const pipelineCheckout = await prisma.pipeline.create({ data: { name: 'P', workspaceId: wsCheckout.id } });
-  const stageCheckout = await prisma.stage.create({ data: { name: 'New', order: 1, pipelineId: pipelineCheckout.id } });
+  const pipelineCheckout = await prisma.pipeline.create({
+    data: { name: 'P', workspaceId: wsCheckout.id },
+  });
+  const stageCheckout = await prisma.stage.create({
+    data: { name: 'New', order: 1, pipelineId: pipelineCheckout.id },
+  });
 
   // A throwaway ACTIVE Offer, provisioned for real through
   // StripeProvisioningService so its OfferSnapshot binds to a REAL
@@ -1644,49 +2200,94 @@ async function runApiTests() {
       },
     },
   });
-  check('Throwaway checkout-test Offer got a real StripePriceMapping provisioned', !!checkoutMapping);
+  check(
+    'Throwaway checkout-test Offer got a real StripePriceMapping provisioned',
+    !!checkoutMapping,
+  );
 
   const contactCheckout = await prisma.contact.create({
-    data: { workspaceId: wsCheckout.id, firstName: 'Checkout', lastName: 'Client', emails: [`checkout-client-${checkoutSuffix}@example.com`], phones: [], status: 'LEAD' },
+    data: {
+      workspaceId: wsCheckout.id,
+      firstName: 'Checkout',
+      lastName: 'Client',
+      emails: [`checkout-client-${checkoutSuffix}@example.com`],
+      phones: [],
+      status: 'LEAD',
+    },
   });
   await prisma.opportunity.create({
-    data: { workspaceId: wsCheckout.id, contactId: contactCheckout.id, pipelineId: pipelineCheckout.id, stageId: stageCheckout.id, name: 'Checkout Deal', value: 99, status: 'OPEN' },
+    data: {
+      workspaceId: wsCheckout.id,
+      contactId: contactCheckout.id,
+      pipelineId: pipelineCheckout.id,
+      stageId: stageCheckout.id,
+      name: 'Checkout Deal',
+      value: 99,
+      status: 'OPEN',
+    },
   });
 
   const loginResCheckout = await fetch(`${webhookBase}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: userCheckout.email, passwordPlain: 'CheckoutTest123!' }),
+    body: JSON.stringify({
+      email: userCheckout.email,
+      passwordPlain: 'CheckoutTest123!',
+    }),
   }).then((r) => r.json());
-  const selectResCheckout = await fetch(`${webhookBase}/api/auth/select-workspace`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${loginResCheckout.preAuthToken}` },
-    body: JSON.stringify({ workspaceId: wsCheckout.id }),
-  }).then((r) => r.json());
+  const selectResCheckout = await fetch(
+    `${webhookBase}/api/auth/select-workspace`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${loginResCheckout.preAuthToken}`,
+      },
+      body: JSON.stringify({ workspaceId: wsCheckout.id }),
+    },
+  ).then((r) => r.json());
   const tokenCheckout = selectResCheckout.access_token;
 
-  const convertResCheckout = await fetch(`${webhookBase}/marketing/leads/${contactCheckout.id}/convert`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenCheckout}`,
-      'x-workspace-id': wsCheckout.id,
-      'Idempotency-Key': `checkout-idem-${checkoutSuffix}`,
+  const convertResCheckout = await fetch(
+    `${webhookBase}/marketing/leads/${contactCheckout.id}/convert`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenCheckout}`,
+        'x-workspace-id': wsCheckout.id,
+        'Idempotency-Key': `checkout-idem-${checkoutSuffix}`,
+      },
+      body: JSON.stringify({
+        offerId: offerCheckout.id,
+        contractState: 'SIGNED_MANUAL',
+      }),
     },
-    body: JSON.stringify({ offerId: offerCheckout.id, contractState: 'SIGNED_MANUAL' }),
-  }).then((r) => r.json());
+  ).then((r) => r.json());
   const clientAccountIdCheckout: string = convertResCheckout.id;
 
-  const checkoutService = new StripeCheckoutService(prisma as any, new StripeEnvironmentGuard());
+  const checkoutService = new StripeCheckoutService(
+    prisma as any,
+    new StripeEnvironmentGuard(),
+    new BillingRelationshipSignalService(prisma as any),
+  );
 
-  const checkoutResult = await checkoutService.createSubscriptionCheckout(clientAccountIdCheckout, 1);
+  const checkoutResult = await checkoutService.createSubscriptionCheckout(
+    clientAccountIdCheckout,
+    1,
+  );
   check(
     'createSubscriptionCheckout returns a Stripe-hosted checkout URL',
     checkoutResult.checkoutUrl.startsWith('https://checkout.stripe.com/'),
   );
 
-  const clientAfterCheckout = await prisma.clientAccount.findUnique({ where: { id: clientAccountIdCheckout } });
-  check('ClientAccount.stripeCustomerId is populated', !!clientAfterCheckout?.stripeCustomerId);
+  const clientAfterCheckout = await prisma.clientAccount.findUnique({
+    where: { id: clientAccountIdCheckout },
+  });
+  check(
+    'ClientAccount.stripeCustomerId is populated',
+    !!clientAfterCheckout?.stripeCustomerId,
+  );
 
   const checkoutRow = await prisma.billingCheckoutSession.findFirst({
     where: { clientAccountId: clientAccountIdCheckout },
@@ -1699,14 +2300,18 @@ async function runApiTests() {
 
   // SURVIVOR-style trial: confirm the Checkout Session actually has trial days set.
   const stripeForVerify = createStripeClient();
-  const liveSession = await stripeForVerify.checkout.sessions.retrieve(checkoutResult.sessionId);
+  const liveSession = await stripeForVerify.checkout.sessions.retrieve(
+    checkoutResult.sessionId,
+  );
   check(
     'Checkout Session carries clientAccountId in metadata',
     liveSession.metadata?.clientAccountId === clientAccountIdCheckout,
   );
 
   // Regeneration.
-  const regenerated = await checkoutService.regenerateCheckout(clientAccountIdCheckout);
+  const regenerated = await checkoutService.regenerateCheckout(
+    clientAccountIdCheckout,
+  );
   const regeneratedRow = await prisma.billingCheckoutSession.findFirst({
     where: { clientAccountId: clientAccountIdCheckout },
     orderBy: { createdAt: 'desc' },
@@ -1721,19 +2326,195 @@ async function runApiTests() {
   // the SAME attemptNumber (simulating a retry after local persistence
   // failed, before this row existed) must not create a second Stripe
   // object -- Stripe replays the original response for the same key.
-  const idempotentRetryResult = await checkoutService.createSubscriptionCheckout(clientAccountIdCheckout, 2);
+  const idempotentRetryResult =
+    await checkoutService.createSubscriptionCheckout(
+      clientAccountIdCheckout,
+      2,
+    );
   check(
     'Retrying with the same attemptNumber/idempotency key returns the SAME Stripe session (no duplicate)',
     idempotentRetryResult.sessionId === regenerated.sessionId,
   );
 
+  // --- Task 8: conversion auto-generates checkout, HTTP endpoints ---
+  check(
+    'convert() response includes an auto-generated checkoutUrl (wired into the controller, not just the service)',
+    typeof convertResCheckout.checkoutUrl === 'string' &&
+      convertResCheckout.checkoutUrl.startsWith('https://checkout.stripe.com/'),
+  );
+
+  const getCheckoutRes = await fetch(
+    `${webhookBase}/marketing/clients/${clientAccountIdCheckout}/billing/checkout`,
+    {
+      headers: {
+        Authorization: `Bearer ${tokenCheckout}`,
+        'x-workspace-id': wsCheckout.id,
+      },
+    },
+  ).then((r) => r.json());
+  check(
+    'GET .../billing/checkout returns the latest persisted checkout session with subscriptionStatus',
+    getCheckoutRes.status === 'CREATED' &&
+      'subscriptionStatus' in getCheckoutRes,
+  );
+
+  const regenHttpRes = await fetch(
+    `${webhookBase}/marketing/clients/${clientAccountIdCheckout}/billing/checkout/regenerate`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${tokenCheckout}`,
+        'x-workspace-id': wsCheckout.id,
+      },
+    },
+  );
+  check(
+    'POST .../billing/checkout/regenerate succeeds for an authorized role (ORG_ADMIN)',
+    regenHttpRes.status === 201 || regenHttpRes.status === 200,
+  );
+  const regenHttpBody = await regenHttpRes.json();
+  check(
+    'Regeneration via HTTP returns a checkout URL',
+    typeof regenHttpBody.checkoutUrl === 'string',
+  );
+
+  // DOM26-R: CHECKOUT_PENDING signal exists after successful checkout generation.
+  const subjectCheckout = await prisma.relationshipSubject.findFirst({
+    where: { contactId: contactCheckout.id },
+  });
+  const profileCheckout = subjectCheckout
+    ? await prisma.relationshipProfile.findFirst({
+        where: { subjectId: subjectCheckout.id, businessUnitId: buCheckout.id },
+      })
+    : null;
+  const signalsCheckout = profileCheckout
+    ? await prisma.relationshipSignal.findMany({
+        where: { profileId: profileCheckout.id },
+      })
+    : [];
+  check(
+    'Successful checkout generation creates a CHECKOUT_PENDING signal',
+    signalsCheckout.some((s) => s.type === 'CHECKOUT_PENDING'),
+  );
+
+  // --- Task 9: checkout failure visibility (Task, RelationshipSignal, audit event) ---
+  // A second Offer, deliberately never Stripe-provisioned, so conversion
+  // against it triggers createSubscriptionCheckout's BadRequestException
+  // path -- exercising the full failure-handling chain end-to-end.
+  const offerNoMapping = await prisma.offer.create({
+    data: {
+      businessUnitId: buCheckout.id,
+      key: `checkout-no-mapping-${checkoutSuffix}`,
+      version: 1,
+      name: 'No Mapping Offer',
+      price: 50,
+      includedServices: [],
+      excludedServices: [],
+      onboardingRequirements: [],
+      lifecycleState: 'ACTIVE',
+    },
+  });
+  const contactFail = await prisma.contact.create({
+    data: {
+      workspaceId: wsCheckout.id,
+      firstName: 'Fail',
+      lastName: 'Client',
+      emails: [`checkout-fail-${checkoutSuffix}@example.com`],
+      phones: [],
+      status: 'LEAD',
+    },
+  });
+  await prisma.opportunity.create({
+    data: {
+      workspaceId: wsCheckout.id,
+      contactId: contactFail.id,
+      pipelineId: pipelineCheckout.id,
+      stageId: stageCheckout.id,
+      name: 'Fail Deal',
+      value: 50,
+      status: 'OPEN',
+    },
+  });
+  const convertFailRes = await fetch(
+    `${webhookBase}/marketing/leads/${contactFail.id}/convert`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenCheckout}`,
+        'x-workspace-id': wsCheckout.id,
+        'Idempotency-Key': `checkout-fail-idem-${checkoutSuffix}`,
+      },
+      body: JSON.stringify({ offerId: offerNoMapping.id }),
+    },
+  ).then((r) => r.json());
+  await new Promise((r) => setTimeout(r, 500)); // let the .catch()'d async failure handler finish
+
+  check(
+    'Conversion against an unprovisioned Offer still succeeds (checkout failure never fails conversion)',
+    !!convertFailRes.id && convertFailRes.checkoutUrl === null,
+  );
+
+  // No BillingCheckoutSession row is expected here: the missing-mapping
+  // check in createSubscriptionCheckout throws BEFORE any row is created
+  // (there's no Stripe Price to attempt a session against yet). Failure
+  // visibility instead comes from the Task/signal/audit-event checks below.
+  const failedCheckoutRow = await prisma.billingCheckoutSession.findFirst({
+    where: { clientAccountId: convertFailRes.id },
+    orderBy: { createdAt: 'desc' },
+  });
+  check(
+    'Missing-mapping failure creates no orphaned BillingCheckoutSession row',
+    failedCheckoutRow === null,
+  );
+
+  const failureTask = await prisma.task.findFirst({
+    where: {
+      contactId: contactFail.id,
+      title: { contains: 'Billing setup failed' },
+    },
+  });
+  check('Checkout failure creates an operator Task', !!failureTask);
+
+  const subjectFail = await prisma.relationshipSubject.findFirst({
+    where: { contactId: contactFail.id },
+  });
+  const profileFail = subjectFail
+    ? await prisma.relationshipProfile.findFirst({
+        where: { subjectId: subjectFail.id, businessUnitId: buCheckout.id },
+      })
+    : null;
+  const signalsFail = profileFail
+    ? await prisma.relationshipSignal.findMany({
+        where: { profileId: profileFail.id },
+      })
+    : [];
+  check(
+    'Checkout failure creates an ACTIVE BILLING_SETUP_FAILED signal',
+    signalsFail.some(
+      (s) => s.type === 'BILLING_SETUP_FAILED' && s.state === 'ACTIVE',
+    ),
+  );
+
+  const failureAuditEvent = await prisma.memoryAuditEvent.findFirst({
+    where: { businessUnitId: buCheckout.id, action: 'BILLING_CHECKOUT_FAILED' },
+  });
+  check(
+    'Checkout failure writes a MemoryAuditEvent audit trail entry',
+    !!failureAuditEvent,
+  );
+
   // Teardown.
-  await prisma.billingCheckoutSession.deleteMany({ where: { clientAccountId: clientAccountIdCheckout } });
+  await prisma.billingCheckoutSession.deleteMany({
+    where: { clientAccountId: clientAccountIdCheckout },
+  });
   await prisma.onboardingChecklistItem.deleteMany({
     where: { plan: { clientAccount: { businessUnitId: buCheckout.id } } },
   });
   await prisma.onboardingChecklistItemHistory.deleteMany({
-    where: { item: { plan: { clientAccount: { businessUnitId: buCheckout.id } } } },
+    where: {
+      item: { plan: { clientAccount: { businessUnitId: buCheckout.id } } },
+    },
   });
   await prisma.onboardingPlan.deleteMany({
     where: { clientAccount: { businessUnitId: buCheckout.id } },
@@ -1750,38 +2531,69 @@ async function runApiTests() {
   await prisma.clientHealth.deleteMany({
     where: { clientAccount: { businessUnitId: buCheckout.id } },
   });
-  await prisma.memoryAuditEvent.deleteMany({ where: { businessUnitId: buCheckout.id } });
+  await prisma.memoryAuditEvent.deleteMany({
+    where: { businessUnitId: buCheckout.id },
+  });
   const profilesCheckout = await prisma.relationshipProfile.findMany({
     where: { businessUnitId: buCheckout.id },
     select: { id: true },
   });
   const profileIdsCheckout = profilesCheckout.map((p) => p.id);
-  await prisma.briefEvidence.deleteMany({ where: { brief: { profileId: { in: profileIdsCheckout } } } });
-  await prisma.relationshipBrief.deleteMany({ where: { profileId: { in: profileIdsCheckout } } });
-  await prisma.candidateEvidence.deleteMany({ where: { candidate: { profileId: { in: profileIdsCheckout } } } });
-  await prisma.memoryApproval.deleteMany({ where: { candidate: { profileId: { in: profileIdsCheckout } } } });
-  await prisma.memoryCandidate.deleteMany({ where: { profileId: { in: profileIdsCheckout } } });
+  await prisma.briefEvidence.deleteMany({
+    where: { brief: { profileId: { in: profileIdsCheckout } } },
+  });
+  await prisma.relationshipBrief.deleteMany({
+    where: { profileId: { in: profileIdsCheckout } },
+  });
+  await prisma.candidateEvidence.deleteMany({
+    where: { candidate: { profileId: { in: profileIdsCheckout } } },
+  });
+  await prisma.memoryApproval.deleteMany({
+    where: { candidate: { profileId: { in: profileIdsCheckout } } },
+  });
+  await prisma.memoryCandidate.deleteMany({
+    where: { profileId: { in: profileIdsCheckout } },
+  });
   const engramEvidenceRowsCheckout = await prisma.engramEvidence.findMany({
     where: { engram: { businessUnitId: buCheckout.id } },
     select: { sourceId: true },
   });
-  const ownedSourceIdsCheckout = [...new Set(engramEvidenceRowsCheckout.map((r) => r.sourceId))];
-  await prisma.engramEvidence.deleteMany({ where: { engram: { businessUnitId: buCheckout.id } } });
+  const ownedSourceIdsCheckout = [
+    ...new Set(engramEvidenceRowsCheckout.map((r) => r.sourceId)),
+  ];
+  await prisma.engramEvidence.deleteMany({
+    where: { engram: { businessUnitId: buCheckout.id } },
+  });
   await prisma.engram.deleteMany({ where: { businessUnitId: buCheckout.id } });
-  await prisma.engramSource.deleteMany({ where: { id: { in: ownedSourceIdsCheckout } } });
-  await prisma.relationshipProfile.deleteMany({ where: { businessUnitId: buCheckout.id } });
+  await prisma.engramSource.deleteMany({
+    where: { id: { in: ownedSourceIdsCheckout } },
+  });
+  await prisma.relationshipProfile.deleteMany({
+    where: { businessUnitId: buCheckout.id },
+  });
   await prisma.relationshipSubject.deleteMany({
     where: {
-      OR: [{ contact: { workspaceId: wsCheckout.id } }, { company: { workspaceId: wsCheckout.id } }],
+      OR: [
+        { contact: { workspaceId: wsCheckout.id } },
+        { company: { workspaceId: wsCheckout.id } },
+      ],
     },
   });
-  await prisma.clientAccount.deleteMany({ where: { businessUnitId: buCheckout.id } });
-  await prisma.offerSnapshot.deleteMany({ where: { offer: { businessUnitId: buCheckout.id } } });
-  await prisma.stripePriceMapping.deleteMany({ where: { offerId: offerCheckout.id } });
+  await prisma.clientAccount.deleteMany({
+    where: { businessUnitId: buCheckout.id },
+  });
+  await prisma.offerSnapshot.deleteMany({
+    where: { offer: { businessUnitId: buCheckout.id } },
+  });
+  await prisma.stripePriceMapping.deleteMany({
+    where: { offerId: offerCheckout.id },
+  });
   await prisma.offer.deleteMany({ where: { businessUnitId: buCheckout.id } });
   await prisma.auditLog.deleteMany({ where: { workspaceId: wsCheckout.id } });
   await prisma.task.deleteMany({ where: { workspaceId: wsCheckout.id } });
-  await prisma.opportunity.deleteMany({ where: { workspaceId: wsCheckout.id } });
+  await prisma.opportunity.deleteMany({
+    where: { workspaceId: wsCheckout.id },
+  });
   await prisma.stage.deleteMany({ where: { pipelineId: pipelineCheckout.id } });
   await prisma.pipeline.deleteMany({ where: { id: pipelineCheckout.id } });
   await prisma.contact.deleteMany({ where: { workspaceId: wsCheckout.id } });

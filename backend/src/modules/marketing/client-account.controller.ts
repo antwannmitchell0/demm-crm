@@ -10,6 +10,8 @@ import {
 } from '@nestjs/common';
 import { ClientAccountService } from './client-account.service';
 import { ClientHealthService } from './client-health.service';
+import { StripeCheckoutService } from './stripe-checkout.service';
+import { BillingCheckoutFailureService } from './billing-checkout-failure.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { WorkspaceGuard } from '../../common/guards/workspace.guard';
 import { BusinessUnitGuard } from '../../common/guards/business-unit.guard';
@@ -36,6 +38,8 @@ export class ClientAccountController {
   constructor(
     private clientAccountService: ClientAccountService,
     private clientHealth: ClientHealthService,
+    private stripeCheckout: StripeCheckoutService,
+    private checkoutFailureHandler: BillingCheckoutFailureService,
   ) {}
 
   @Post('marketing/leads/:contactId/convert')
@@ -73,7 +77,42 @@ export class ClientAccountController {
         ),
       );
 
-    return clientAccount;
+    // Auto-generate the Stripe Checkout Session right after conversion.
+    // Never inside convert()'s transaction, never able to fail the
+    // conversion itself -- failures are made visible via
+    // BillingCheckoutSession(FAILED) + Task + RelationshipSignal, not
+    // swallowed silently.
+    let checkoutUrl: string | null = null;
+    try {
+      const checkout = await this.stripeCheckout.createSubscriptionCheckout(
+        clientAccount.id,
+        1,
+      );
+      checkoutUrl = checkout.checkoutUrl;
+    } catch (err) {
+      this.logger.error(
+        `Stripe checkout generation failed for ${clientAccount.id}`,
+        err,
+      );
+      await this.checkoutFailureHandler
+        .handle(
+          businessUnitId,
+          workspaceId,
+          organizationId,
+          user.id,
+          correlationId,
+          clientAccount.id,
+          err,
+        )
+        .catch((e) =>
+          this.logger.error(
+            'Checkout failure visibility handler itself failed',
+            e,
+          ),
+        );
+    }
+
+    return { ...clientAccount, checkoutUrl };
   }
 
   @Get('marketing/clients/:id')
