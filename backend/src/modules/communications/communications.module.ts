@@ -24,6 +24,10 @@ import {
 } from './sms.controller';
 import { TwilioVoiceWebhookController } from './voice.controller';
 import { MessageTemplateController } from './message-template.controller';
+import {
+  EmailOutboundController,
+  ResendWebhookController,
+} from './email.controller';
 
 @Module({
   controllers: [
@@ -31,6 +35,8 @@ import { MessageTemplateController } from './message-template.controller';
     TwilioSmsWebhookController,
     TwilioVoiceWebhookController,
     MessageTemplateController,
+    EmailOutboundController,
+    ResendWebhookController,
   ],
   providers: [
     PrismaService,
