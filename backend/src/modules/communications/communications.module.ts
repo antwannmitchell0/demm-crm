@@ -15,6 +15,7 @@ import {
 import { ChannelConnectionService } from './channel-connection.service';
 import { CommunicationConsentService } from './communication-consent.service';
 import { ConversationService } from './conversation.service';
+import { MessageService } from './message.service';
 
 @Module({
   providers: [
@@ -30,6 +31,7 @@ import { ConversationService } from './conversation.service';
     ChannelConnectionService,
     CommunicationConsentService,
     ConversationService,
+    MessageService,
   ],
   exports: [
     SMS_PROVIDER,
@@ -40,6 +42,7 @@ import { ConversationService } from './conversation.service';
     ChannelConnectionService,
     CommunicationConsentService,
     ConversationService,
+    MessageService,
   ],
 })
 export class CommunicationsModule {}
