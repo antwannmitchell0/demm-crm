@@ -6,11 +6,16 @@ import { ConversationService } from './conversation.service';
 import { CommunicationConsentService } from './communication-consent.service';
 import { SMS_PROVIDER } from './interfaces/sms-provider.interface';
 import { EMAIL_PROVIDER } from './interfaces/email-provider.interface';
-import { ChannelType, ChannelProvider } from '@prisma/client';
+import {
+  ChannelType,
+  ChannelProvider,
+  ConsentChannelType,
+} from '@prisma/client';
 
 describe('CallEventService', () => {
   let service: CallEventService;
   let prisma: PrismaService;
+  let consent: CommunicationConsentService;
   let workspaceId: string;
   let businessUnitId: string;
   let orgId: string;
@@ -33,6 +38,7 @@ describe('CallEventService', () => {
     }).compile();
     service = moduleRef.get(CallEventService);
     prisma = moduleRef.get(PrismaService);
+    consent = moduleRef.get(CommunicationConsentService);
 
     const org = await prisma.organization.create({
       data: { name: 'Call Org' },
@@ -196,5 +202,43 @@ describe('CallEventService', () => {
       where: { providerCallId: 'CAordering1' },
     });
     expect(event?.outcome).toBe('ANSWERED'); // completed with duration implies answered; the stale no-answer must not overwrite it
+  });
+
+  it('a missed call from a contact who has opted out of SMS resolves without throwing and does not send', async () => {
+    fakeSmsProvider.sendSms.mockClear();
+    const optedOutContact = await prisma.contact.create({
+      data: {
+        firstName: 'Opted',
+        lastName: 'Out',
+        emails: [],
+        phones: ['+15555555555'],
+        workspaceId,
+      },
+    });
+    await consent.recordOptOut(
+      optedOutContact.id,
+      ConsentChannelType.SMS,
+      'test opt-out',
+    );
+
+    await expect(
+      service.recordStatusCallback(
+        {
+          providerCallId: 'CAoptedout1',
+          from: '+15555555555',
+          to: '+15555550100',
+          callStatus: 'no-answer',
+          timestamp: new Date(),
+        },
+        channelConnectionId,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(fakeSmsProvider.sendSms).not.toHaveBeenCalled();
+    const event = await prisma.callEvent.findUnique({
+      where: { providerCallId: 'CAoptedout1' },
+    });
+    expect(event?.outcome).toBe('NO_ANSWER');
+    expect(event?.textBackSent).toBe(true);
   });
 });

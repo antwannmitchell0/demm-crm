@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import { MessageService } from './message.service';
 import { VoiceStatusPayload } from './interfaces/voice-provider.interface';
@@ -103,12 +103,25 @@ export class CallEventService {
 
     if (!TEXTBACK_ELIGIBLE.includes(outcome)) return;
 
-    // Atomic check-and-set cooldown: one transaction finds the most recent
-    // text-back for this fromAddress+connection and, only if outside the
-    // cooldown window, marks THIS row textBackSent before sending -- closes
-    // the same rapid-re-dial double-fire race the Stripe webhook dedup
-    // lock closes for concurrent webhook delivery.
+    // Atomic check-and-set cooldown: a pg_advisory_xact_lock keyed on
+    // fromAddress+connection is acquired FIRST, before the findFirst
+    // cooldown check, exactly like StripeWebhookDedupService.claimAndProcess
+    // does for concurrent webhook delivery (see that file's comment for the
+    // full rationale). Read Committed isolation does NOT serialize a
+    // findFirst-then-update against a concurrent transaction touching a
+    // DIFFERENT CallEvent row for the same fromAddress -- two genuinely
+    // simultaneous missed calls (two different providerCallId rows) could
+    // otherwise both pass the findFirst check before either commits, and
+    // both fire a text-back. The advisory lock forces a second concurrent
+    // caller for the same fromAddress+channelConnectionId to block until
+    // the first transaction fully commits, at which point it correctly
+    // observes the first call's textBackSent: true row and skips.
     const sent = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `SELECT pg_advisory_xact_lock(hashtext($1))`,
+        `${payload.from}:${channelConnectionId}`,
+      );
+
       const cutoff = new Date(Date.now() - COOLDOWN_MINUTES * 60_000);
       const recentTextback = await tx.callEvent.findFirst({
         where: {
@@ -148,15 +161,29 @@ export class CallEventService {
     });
     if (!template) return;
 
-    await this.messages.sendSms({
-      workspaceId: connection.workspaceId,
-      businessUnitId: connection.businessUnitId,
-      channelConnectionId: smsConnection.id,
-      contactId: contact?.id,
-      to: payload.from,
-      from: smsConnection.externalAddress,
-      body: template.body,
-      templateId: template.id,
-    });
+    try {
+      await this.messages.sendSms({
+        workspaceId: connection.workspaceId,
+        businessUnitId: connection.businessUnitId,
+        channelConnectionId: smsConnection.id,
+        contactId: contact?.id,
+        to: payload.from,
+        from: smsConnection.externalAddress,
+        body: template.body,
+        templateId: template.id,
+      });
+    } catch (err) {
+      // MessageService.sendSms throws ForbiddenException when the contact
+      // has opted out of SMS -- that is correct, expected behavior there,
+      // but here it is a legitimate "no send needed" business outcome, not
+      // a failure of this webhook handler. Left uncaught it would propagate
+      // through TwilioVoiceWebhookController.handleVoiceStatus and Nest's
+      // default exception filter would return a 403 to Twilio, which
+      // Twilio will likely retry -- a noisy retry storm for a non-error.
+      // The CallEvent row's outcome/textBackSent state is already
+      // correctly recorded regardless; only the SMS send is skipped. Any
+      // other exception (a genuine send failure) must still propagate.
+      if (!(err instanceof ForbiddenException)) throw err;
+    }
   }
 }
