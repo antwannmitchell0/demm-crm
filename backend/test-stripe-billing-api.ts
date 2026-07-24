@@ -1208,6 +1208,132 @@ async function runApiTests() {
     subAfterInvoicePaid?.status === 'ACTIVE',
   );
 
+  // -- API-version drift: under the pinned Stripe API version
+  // (2026-06-24.dahlia), invoice.subscription no longer appears at the
+  // top level -- it moved to parent.subscription_details.subscription.
+  // The old synthetic fixtures above always set the top-level field, so
+  // they never caught this. This is the exact real-world shape that broke
+  // staging (zero BillingPaymentRecord rows ever created there): top-level
+  // subscription is null/absent, but parent.subscription_details.subscription
+  // is populated. extractInvoiceSubscriptionId must fall through to it. --
+  const parentShapeSuffix = paySuffix + '-parentshape';
+  const invIdParentShape = `in_test_${parentShapeSuffix}`;
+  const piIdParentShape = `pi_test_${parentShapeSuffix}`;
+  const invoicePaidParentShapePayload = JSON.stringify({
+    id: `evt_invpaid_${parentShapeSuffix}`,
+    object: 'event',
+    api_version: '2026-06-24.dahlia',
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    type: 'invoice.paid',
+    data: {
+      object: {
+        id: invIdParentShape,
+        object: 'invoice',
+        customer: custForPay,
+        subscription: null,
+        parent: {
+          quote_details: null,
+          subscription_details: {
+            metadata: {},
+            subscription: subForPay,
+          },
+          type: 'subscription_details',
+        },
+        amount_paid: 9900,
+        currency: 'usd',
+        tax: null,
+        period_start: Math.floor(Date.now() / 1000),
+        period_end: Math.floor(Date.now() / 1000) + 2592000,
+        payment_intent: piIdParentShape,
+      },
+    },
+  });
+  const invoicePaidParentShapeRes = await deliverWebhook(
+    invoicePaidParentShapePayload,
+  );
+  check(
+    'invoice.paid with only parent.subscription_details (no top-level subscription) returns 200',
+    invoicePaidParentShapeRes.status === 200,
+  );
+  await new Promise((r) => setTimeout(r, 300));
+  const paymentRecordParentShape =
+    await prisma.billingPaymentRecord.findUnique({
+      where: { stripeInvoiceId: invIdParentShape },
+    });
+  check(
+    'invoice.paid resolves clientAccountId from parent.subscription_details.subscription and creates a BillingPaymentRecord',
+    paymentRecordParentShape?.clientAccountId === clientAccountIdPay &&
+      Number(paymentRecordParentShape?.amountPaid) === 99 &&
+      paymentRecordParentShape?.billingSubscriptionId ===
+        billingSubscriptionPay.id &&
+      paymentRecordParentShape?.stripeSubscriptionId === subForPay,
+  );
+
+  const payFailParentShapeSuffix = paySuffix + '-payfail-parentshape';
+  const invoicePayFailParentShapePayload = JSON.stringify({
+    id: `evt_invpayfail_${payFailParentShapeSuffix}`,
+    object: 'event',
+    api_version: '2026-06-24.dahlia',
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    type: 'invoice.payment_failed',
+    data: {
+      object: {
+        id: `in_test_${payFailParentShapeSuffix}`,
+        object: 'invoice',
+        customer: custForPay,
+        subscription: null,
+        parent: {
+          quote_details: null,
+          subscription_details: {
+            metadata: {},
+            subscription: subForPay,
+          },
+          type: 'subscription_details',
+        },
+      },
+    },
+  });
+  const invoicePayFailParentShapeRes = await deliverWebhook(
+    invoicePayFailParentShapePayload,
+  );
+  check(
+    'invoice.payment_failed with only parent.subscription_details (no top-level subscription) returns 200',
+    invoicePayFailParentShapeRes.status === 200,
+  );
+  await new Promise((r) => setTimeout(r, 300));
+  const subAfterParentShapeFailure =
+    await prisma.billingSubscription.findUnique({
+      where: { id: billingSubscriptionPay.id },
+    });
+  check(
+    'invoice.payment_failed resolves clientAccountId from parent.subscription_details.subscription and marks the BillingSubscription PAST_DUE',
+    subAfterParentShapeFailure?.status === 'PAST_DUE',
+  );
+  const subjectForPay = await prisma.relationshipSubject.findFirst({
+    where: { contactId: contactPay.id },
+  });
+  const profileForPay = subjectForPay
+    ? await prisma.relationshipProfile.findFirst({
+        where: { subjectId: subjectForPay.id, businessUnitId: buPay.id },
+      })
+    : null;
+  const paymentFailureSignalParentShape = profileForPay
+    ? await prisma.relationshipSignal.findFirst({
+        where: {
+          profileId: profileForPay.id,
+          type: 'PAYMENT_FAILURE',
+          state: 'ACTIVE',
+        },
+        orderBy: { createdAt: 'desc' },
+      })
+    : null;
+  check(
+    'invoice.payment_failed (parent.subscription_details shape) creates an ACTIVE PAYMENT_FAILURE signal for the correctly-resolved clientAccountId',
+    !!paymentFailureSignalParentShape,
+  );
+
   // -- Out-of-order: invoice.paid for a subscription ID we have never
   // recorded a BillingSubscription for. resolveClientAccountId (Task 11,
   // already reviewed/approved) has no try/catch around

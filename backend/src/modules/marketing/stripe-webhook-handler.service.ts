@@ -248,21 +248,16 @@ export class StripeWebhookHandlerService {
     return this.resolveClientAccountId(stripeSubscriptionId);
   }
 
+  private extractInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
+    const fromParent = (invoice as any).parent?.subscription_details
+      ?.subscription as string | null | undefined;
+    if (fromParent) return fromParent;
+    return ((invoice as any).subscription as string | null | undefined) ?? null;
+  }
+
   private async onInvoicePaid(event: Stripe.Event): Promise<void> {
     const invoice = event.data.object as Stripe.Invoice;
-    const stripeSubscriptionId = (invoice as any).subscription as string | null;
-    // TEMPORARY diagnostic for a Sub-project 4 Task 4 investigation: zero
-    // BillingPaymentRecord rows have ever been created on staging despite
-    // invoice.paid events showing PROCESSED. Logging the exact runtime
-    // shape to confirm/rule out an api_version-driven field mismatch
-    // before making any behavioral change. Remove once root-caused.
-    this.logger.warn(
-      `[DIAG] invoice.paid event.api_version=${event.api_version} invoice.id=${invoice.id} ` +
-        `typeof(invoice.subscription)=${typeof (invoice as any).subscription} ` +
-        `invoice.subscription=${JSON.stringify((invoice as any).subscription)} ` +
-        `invoice.parent=${JSON.stringify((invoice as any).parent)} ` +
-        `amount_paid=${invoice.amount_paid} customer=${JSON.stringify(invoice.customer)}`,
-    );
+    const stripeSubscriptionId = this.extractInvoiceSubscriptionId(invoice);
     const clientAccountId =
       await this.resolveClientAccountIdBySubscription(stripeSubscriptionId);
     if (!clientAccountId) {
@@ -364,7 +359,7 @@ export class StripeWebhookHandlerService {
 
   private async onInvoicePaymentFailed(event: Stripe.Event): Promise<void> {
     const invoice = event.data.object as Stripe.Invoice;
-    const stripeSubscriptionId = (invoice as any).subscription as string | null;
+    const stripeSubscriptionId = this.extractInvoiceSubscriptionId(invoice);
     if (!stripeSubscriptionId) return;
     await this.prisma.billingSubscription.updateMany({
       where: { stripeSubscriptionId },
