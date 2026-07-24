@@ -1,114 +1,130 @@
 # DEMM Platform Release 1.0 — Technical Handoff Package
 
-Welcome! This document provides all the context, schemas, and verification evidence needed to resume work on **DEMM Platform Release 1.0**. Last updated during **Phase 2 Sub-project 4 (Stripe Founder-Tier Billing)**, mid-Task 20, in worktree `.claude/worktrees/phase-2-lead-to-client-core` on branch `worktree-phase-2-lead-to-client-core`.
+**Last updated:** mid-Task 18 of the **Unified Communications Core** build (Sub-project 5), in worktree `.claude/worktrees/phase-2-lead-to-client-core` on branch `worktree-phase-2-lead-to-client-core`. Handed off because the operator ran out of session budget — pick up exactly where this left off, do not re-derive or re-plan from scratch.
 
 ---
 
-## 1. Project Context & Environment
+## 0. Read this first — how to resume in one command
 
-- **GCP Project**: `gen-lang-client-0096028843`
-- **Staging domains**:
-  - Frontend: `https://demm-crm-frontend-staging-431876670120.us-east1.run.app`
-  - Backend: `https://demm-crm-backend-staging-431876670120.us-east1.run.app`
-- **Staging DB instance**: `demm-crm-staging-db` (region `us-east1`)
-- **Deploy identity**: `antwannmitchell0@gmail.com` — the *only* gcloud account with real access to this project. `scripts/deploy-staging.sh` switches to it automatically; when running ad-hoc `gcloud` commands by hand, run `gcloud config set account antwannmitchell0@gmail.com` first. A different identity (`vertex-express@begreat-app-493417...` or anything authenticated on the `wtae-main` GCE VM) has **zero** access to this project — don't waste time debugging "permission denied" or "not found" errors against this project without first confirming the active account.
-- **Deploy pipeline**: `scripts/deploy-staging.sh deploy --commit=<sha> [--dry-run] [--yes]` — builds from a `git archive` of a named, already-pushed commit (never the working tree), checks/applies pending Prisma migrations against staging before any build step, deploys both services, and verifies the live `/version` commit SHA matches on both before declaring success (auto-rollback on mismatch). See the script's own header comment for the incident that motivated it.
+Everything needed to finish is already written down. Do not re-plan. Do not re-audit providers. Do not re-read the whole codebase from zero.
 
----
-
-## 2. Current Implementation State — Sub-project 4 (Stripe Founder-Tier Billing)
-
-Phase 2 Sub-projects 1–3 (Lead→Client core, Onboarding/Service Delivery, Marketing Dashboard/Health/Reporting) are complete and live on staging from prior sessions.
-
-**Sub-project 4 status: Tasks 0–19 done, full regression + independent review clean, staging deploy live. Task 20 (live walkthrough) is in progress and currently blocked — see §4. Task 21 (final capture/report) not started.**
-
-### 2.1 What shipped (commit `18485d254c6d7ffc626c6349a24ca24bfd4e57d6`, on `main`)
-- 4 new Prisma models: `StripePriceMapping`, `BillingSubscription`, `BillingCheckoutSession`, `BillingPaymentRecord`; expanded `StripeWebhookEvent`; new fields on `Offer`/`OfferSnapshot` (`trialEligible`, `trialDays`, `stripePriceMappingId`) and `ClientAccount`.
-- `StripeEnvironmentGuard` — fail-closed if `STRIPE_SECRET_KEY` missing, or if livemode/environment don't match (`APP_ENVIRONMENT` env var: `local`/`staging`/`production`). **Every Stripe operation is scoped per-environment** — a `StripePriceMapping` row provisioned with `environment: 'local'` is invisible to the staging backend and vice versa. This bit us once already during Task 20 setup (see §4).
-- `StripeProvisioningService.syncOfferPrices()` — idempotent, provisions a real Stripe Product+Price per ACTIVE Offer for the current environment. One-off runner: `backend/scripts/dev-sync-offer-prices.ts` (not part of the app runtime, run manually — see §5 for the exact invocation pattern against staging).
-- `StripeCheckoutService` + `BillingCheckoutSession` — `client-account.controller.ts`'s `convert()` now auto-generates a real Stripe Checkout Session immediately after conversion (never inside `convert()`'s transaction — that transaction body was touched in exactly one reviewed place: two new `OfferSnapshot` fields + one lookup query, nothing else). Failures route through `BillingCheckoutFailureService` (Task/RelationshipSignal/audit-event) without failing the conversion.
-- `StripeCheckoutController` (`/marketing/clients/:id/billing/checkout` GET + `/regenerate` POST, role-gated).
-- `StripeWebhookController` (`/webhooks/stripe`, raw-body, signature-verified, no auth guard — correct, Stripe can't present a JWT) + `StripeWebhookDedupService` (Postgres advisory lock spanning claim→process→mark) + `StripeWebhookHandlerService` (subscription lifecycle, payments, refunds, disputes — 8 event types, see §4 for the exact list).
-- KPI `MIXED_SOURCES` classification + double-counting guard on `recordCommercialStateChange` (the `allowManualAlongsideStripe` flag defaults falsy — a caller can't bypass it by omission).
-- Client Health `COMMERCIAL` factor from live `BillingSubscription` status.
-- DOM26-R `RelationshipSignal` wiring for 6 billing-driven signal types.
-- Frontend `BillingCard` component on the client detail page — status badge, subscription-status badge, checkout link, role-gated regenerate button. Visually verified working in-browser against real data.
-
-### 2.2 Verification already done
-- **Local**: `backend/test-stripe-billing-api.ts`, 75/75 checks passing (twice), real Stripe test-mode API calls throughout (not mocked), webhook signature verification exercised for real via `Stripe.webhooks.generateTestHeaderString` (cryptographically real HMAC, synthetic event payloads).
-- **Independent architecture/security review** (fresh subagent, no prior context): **96/100, READY FOR STAGING**. All 8 required checks passed — `convert()` diff scope, additive-only migration, `StripePriceMapping` uniqueness, webhook auth/signature with no bypass, `payment_method_collection: 'always'` (cards required even during trial), no raw card/PAN/CVC anywhere, double-counting guard can't be bypassed by omission, no secret ever logged. Two non-blocking hardening notes for later: webhook handler doesn't cross-check `event.livemode` against the environment guard explicitly (currently safe because each environment has its own distinct webhook secret); `GET .../billing/checkout` has no extra role check beyond workspace scoping (only `regenerate` is role-gated) — confirm this matches intended RBAC.
-- **Staging deploy** (Task 19): DB backed up first (`gcloud sql backups list --instance=demm-crm-staging-db`, backup ID `1784862865250`), migration `20260723164851_stripe_founder_tier_billing` applied, build+deploy succeeded via the pipeline, live commit SHA verified matching on both services (backend rev `demm-crm-backend-staging-00014-9zj`, frontend rev `demm-crm-frontend-staging-00006-745`, both at 100% traffic). Deploy report: `deploy-reports/18485d254c6d7ffc626c6349a24ca24bfd4e57d6-20260724T032454Z.json`.
-- **Staging smoke test** (Task 20 Step 1): `backend/verify-stripe-billing-staging-smoke.ts`, 10/10 passing against live HTTPS staging. Provisions a throwaway Offer's Stripe Price mapping in-process, then exercises checkout generation/retrieval/regeneration and dashboard classification through the public API. **Does not** attempt synthetic webhook signing — the real `STRIPE_WEBHOOK_SECRET` was entered directly into GCP Secret Manager by Antwann and is never read by any Claude-driven process, so a validly-signed synthetic event can't be constructed. Real webhook delivery is meant to be proven in Task 20 Step 2 instead, via an actual completed Stripe test-mode checkout (Stripe's own infrastructure signs and delivers it — stronger proof than a self-signed synthetic event).
-
-### 2.3 GCP Secret Manager (staging)
-`STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` now exist in Secret Manager and are bound to the `demm-crm-backend-staging` Cloud Run service (via `--update-secrets`), alongside `APP_ENVIRONMENT=staging`. The webhook endpoint is registered in the Stripe Dashboard (test mode) pointing at `https://demm-crm-backend-staging-jn7t4ryyfq-ue.a.run.app/webhooks/stripe` (same service, alternate URL form — both resolve identically), subscribed to exactly these 8 events, matching what `stripe-webhook-handler.service.ts` processes:
-`checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, `charge.refunded`, `charge.dispute.created`. API version pinned to `2026-06-24.dahlia` on both the endpoint and the SDK client (`backend/src/modules/marketing/stripe-config.ts:9`) — **do not let these drift apart**, a mismatch silently changes the webhook payload shape.
-
-**Neither secret's actual value has ever been read, typed, or displayed by Claude** — provisioning them was done by Antwann directly per this session's established credential-handling boundary (see §5).
-
----
-
-## 3. Standing Constraints (still binding — do not relitigate)
-
-1. **No production deployment, no live-mode Stripe activity anywhere.** Test mode / staging only. `StripeEnvironmentGuard` enforces this in code (refuses a live key unless `APP_ENVIRONMENT=production`); this is also a standing human instruction independent of the code guard.
-2. **`ClientAccountService.convert()`'s transaction body** may only be touched in the one already-reviewed way (Task 6's diff: two `OfferSnapshot` fields + one lookup). Never reopen it elsewhere.
-3. **Claude never types, views, or handles real credential values** — passwords, API keys, webhook secrets. This session hit a hard sandbox classifier block on two specific actions: typing into a password-type input field via browser automation, and writing to `localStorage` keys resembling auth tokens (`demm_crm_token`, `demm_crm_user`) via injected JS. Both attempts were refused outright with an explicit instruction not to work around the denial. **Do not retry either approach.** The established pattern instead: create a throwaway local/staging user via direct DB insert with a known test password, tell the human the credentials, and have them log in themselves in the browser pane so Claude can then drive/verify visually. Real secret values (Stripe keys, DB passwords) are only ever piped blind through shell commands (fetched via `gcloud secrets versions access` directly into an env var, never echoed/printed) — never entered into a UI, never displayed in a response.
-4. **`.env` files are local-dev-only** and are never inspected directly (`cat`/`grep` on `.env` has itself triggered sandbox denials in this session) — use `NODE_OPTIONS="-r dotenv/config"` to preload them into a child process blind, or set required vars explicitly on the command line, never read the file's contents.
-5. **Multiple `gcloud` identities exist on this machine** for unrelated infra (BeGreat/empire VM work uses `begreat-app-493417` under a restricted service account). Always confirm `gcloud config get-value account` / `project` before trusting a "not found" or "permission denied" result — it has already produced a false "secret doesn't exist" read once this session (see git history / prior conversation) purely from wrong-identity permission denial, not actual absence.
-
----
-
-## 4. Current Blocker — Task 20 Step 2 (Live Browser Walkthrough)
-
-**Symptom**: A throwaway walkthrough user/workspace was created directly on the staging DB (org `2b5585fe-e8e4-46dd-8647-6dd3421412cf`, workspace `f0ece463-06f4-44d8-bd7b-c0baf1aafcf9`, email `task20-walkthrough-1784864659397@example.com`, password `Task20Walkthrough!`, ORG_ADMIN role) with a properly-provisioned Offer (`d889e84c-f754-4e7a-8e03-e177490dfa14`, Stripe mapping tagged `environment: staging` correctly this time). Backend login for this user was confirmed working via direct `curl` (returns a real `preAuthToken`, correct CORS headers for the staging frontend origin). But **the browser login fails with "Failed to fetch"**, reproduced twice by Antwann.
-
-**Ruled out** (all confirmed clean):
-- Backend health/CORS — `curl` login succeeds, `ALLOWED_ORIGINS` includes the exact staging frontend origin.
-- Live bundle correctness — fetched the actual live JS chunks directly via `curl` (bypassing all browser cache) and confirmed the correct `NEXT_PUBLIC_API_URL` (`https://demm-crm-backend-staging-431876670120.us-east1.run.app`) is baked into chunk `2aif45zne8xgh.js`, not a `localhost:3001` fallback.
-- Cloud Build log for the Task 19 deploy shows `verify-production-config.js` explicitly confirming the correct URL was used at build time.
-- Cloud Run traffic split — 100% on the correct, freshly-built revision (`demm-crm-frontend-staging-00006-745`) for both services.
-- An earlier browser tab in this same session *did* show a stale `localhost:3001` / `ERR_CONNECTION_REFUSED` request, but that tab had been open since before the Task 19 redeploy — its console/network history is stale, not representative of current state. A fresh tab was opened but not yet re-tested end-to-end before this handoff.
-
-**Not yet confirmed**: whether Antwann's actual failing browser session is the Claude Browser pane or his own separate Chrome/Safari; whether a private/incognito window changes anything; whether he's on a VPN/restrictive network that blocks `*.run.app`; the exact request URL his failed attempt actually hit (would immediately confirm or rule out a stale-cache theory). **This is the next diagnostic step** — get that one piece of information before doing anything else.
-
-**Do not re-attempt**: redeploying, re-provisioning, or touching CORS/secrets again without new evidence — everything server-side has been independently verified correct twice now via direct `curl`, bypassing browser cache entirely. The bug (if it's a bug and not environmental) is very likely client-side.
-
-### Remaining Task 20 work once unblocked
-- Step 2: convert a lead via the UI, confirm Billing card shows checkout link, **complete a real Stripe test-mode checkout with a test card** (this is the one piece of end-to-end proof still missing — every webhook exercised so far was synthetically constructed, even though signature verification was cryptographically real; a real Stripe-signed webhook from an actual completed checkout is the strongest remaining proof). Confirm Marketing Dashboard revenue KPIs render with new classification badges. For the Client Health `COMMERCIAL` factor PAST_DUE demonstration, consider using Stripe's published always-fails test card (e.g. `4000 0000 0000 0341`) on a second checkout rather than attempting to forge a synthetic webhook (which this session cannot do — see §3.3).
-- Step 3: screenshot every surface touched (Billing card empty + checkout-link states, Marketing Dashboard revenue section, internal Reports showing new classification values).
-
-### Cleanup owed
-The throwaway walkthrough fixtures above (org/BU/workspace/user/offer/contact + its StripePriceMapping) are **still live on staging** and should be deleted once Task 20 Step 2/3 are done — follow the same cascade-delete pattern used in `verify-stripe-billing-staging-smoke.ts`'s `finally` block (StripePriceMapping before Offer, due to an FK constraint — this ordering bug was hit and fixed once already in that file).
-
----
-
-## 5. How To Resume — Key Commands
-
-**Check which gcloud identity/project is active (do this first, always):**
 ```bash
-gcloud config get-value account
-gcloud config get-value project
+cd "/Users/antwannmitchellsr/Desktop/demm CRM/.claude/worktrees/phase-2-lead-to-client-core"
+git log --oneline -3          # confirm HEAD is 06ee7f1 or later
+cat .superpowers/sdd/progress-communications.md   # exact per-task status, findings, fix commits
 ```
 
-**Query staging DB directly** (Cloud SQL Auth Proxy is usually already running on `:5433` from prior sessions — check with `lsof -i :5433` before starting a new one):
-```bash
-SECRET="$(gcloud secrets versions access latest --secret=DATABASE_URL --project=gen-lang-client-0096028843)"
-DBPASS="$(echo "$SECRET" | sed -E 's#postgresql://demm_staging_user:([^@]+)@.*#\1#')"
-DATABASE_URL="postgresql://demm_staging_user:${DBPASS}@127.0.0.1:5433/demm_crm_staging"
-```
+The full plan (23 tasks, 17 already done) is at:
+`docs/superpowers/plans/2026-07-24-unified-communications-core.md`
 
-**Run a script against staging with the real Stripe key, blind** (never let the value hit a log line or response):
-```bash
-STRIPEKEY="$(gcloud secrets versions access latest --secret=STRIPE_SECRET_KEY --project=gen-lang-client-0096028843)"
-DATABASE_URL="..." STRIPE_SECRET_KEY="$STRIPEKEY" APP_ENVIRONMENT=staging npx ts-node -T <script>.ts
-```
-**`APP_ENVIRONMENT=staging` is easy to forget and silently produces a mapping the real staging backend can't see** (see §4's root-cause story) — always include it explicitly for any staging-targeted provisioning run.
+The full design spec (schema, interfaces, missed-call rule, threading model — reference this for any "why was it built this way" question) is at:
+`docs/superpowers/specs/2026-07-24-unified-communications-core-design.md`
 
-**Deploy**: `./scripts/deploy-staging.sh deploy --commit=<pushed-sha> --yes` (or `--dry-run` first). Requires a clean tree and a commit that's an ancestor of `origin/main`.
+**Resume at Task 18** (frontend Inbox UI — was about to start, zero code written for it yet). Get its brief with:
+```bash
+bash /Users/antwannmitchellsr/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/scripts/task-brief docs/superpowers/plans/2026-07-24-unified-communications-core.md 18
+```
+That prints the exact requirements to `.superpowers/sdd/task-18-brief.md`. Then Tasks 19–22 the same way, in order.
+
+If you're using Claude Code / a Claude-based agent, invoke the skill `superpowers:subagent-driven-development` against the plan file and it will run this loop automatically (fresh implementer subagent per task → `review-package` script → fresh reviewer subagent → fix loop → next task). If you're a different tool ("open code" or similar), just do the equivalent manually: implement the task brief, review it yourself for spec compliance + the recurring bug classes below, commit, move to the next task.
 
 ---
 
-## 6. Remaining Tasks (plan: `docs/superpowers/plans/2026-07-23-stripe-founder-tier-billing.md`)
+## 1. Two sub-projects, two states
 
-- **Task 20** (in progress): unblock the browser login issue above, complete the real checkout walkthrough, screenshot evidence.
-- **Task 21** (not started): capture commit SHAs/migration name/deploy report/test results to DOM26v3 + gbrain page `demm-crm/phase-2-subproject-4-stripe-billing`; final report to Antwann restating the live-mode blockers (10 items from spec §13 — real Stripe live keys, real charges, production `APP_ENVIRONMENT`, etc. — none of this sub-project authorizes any of them) plus a next-slice recommendation, noting this may complete the currently-scoped Release 1.0 marketing operating slice pending Antwann's WTAE/$47-mo pricing decision (needs its own spec before being built).
+### Sub-project 4 — Stripe Founder-Tier Billing: **COMPLETE**, deployed to staging, verified end-to-end with real Stripe test-mode charges. Nothing left to do here. See §5 below for the compressed record if you need it.
+
+### Sub-project 5 — Unified Communications Core: **17 of 23 tasks complete**, all committed to this branch, NOT merged to `main`, NOT deployed anywhere, no real Twilio/Resend account exists. This is the active work. Details below.
+
+---
+
+## 2. Communications Core — what's built (Tasks 1–17, all done)
+
+Provider decision, locked by Antwann: **Twilio** (SMS + voice), **Resend** (outbound + inbound via Resend Receiving). No Postmark/Mailgun.
+
+- Prisma schema: `ChannelConnection`, `Conversation`, `Message`, `DeliveryAttempt`, `CommunicationEvent`, `CommunicationConsent`, `MessageTemplate`, `CallEvent` — additive-only migration.
+- 5 provider-neutral interfaces (`SmsProvider`, `VoiceProvider`, `EmailProvider`, `InboundEmailProvider`, `DeliveryStatusProvider`) + DI tokens. Zero provider-specific logic leaks outside the adapter files — this was checked in every review.
+- Null providers (zero-credential safe default — app builds and Stage 1 tests pass with no Twilio/Resend secrets present anywhere).
+- `CommunicationsModule` wired into `AppModule`, config-driven provider binding.
+- Raw-body middleware for `/webhooks/twilio` and `/webhooks/resend` in `main.ts` (needed for real signature verification — see the recurring-bug list below).
+- `ChannelConnectionService`, `CommunicationConsentService` (TCPA STOP/START/HELP), `ConversationService` (reply-token email threading), `MessageService` (consent-gated send, idempotent inbound dedup).
+- `TwilioAdapter` (real SMS/voice/delivery-status, real HMAC signature verification via the `twilio` SDK).
+- SMS controllers: outbound send, inbound webhook (STOP/START handling), delivery-status callback.
+- `CallEventService` + missed-call text-back: terminal-status classification, out-of-order-callback guard, **`pg_advisory_xact_lock`-based cooldown** (real atomicity, not a bare transaction — see recurring bugs).
+- `ResendAdapter` (real email send/inbound/delivery-status, Svix signature verification).
+- `MessageTemplateService` (token substitution).
+- Email controllers: outbound, reply-token-threaded inbound, delivery/bounce/complaint events.
+- `CommunicationRelationshipSignalService` (DOM26-R signal wiring, correctly scoped by `businessUnitId` after a real fix — see below).
+- Stage 1 comprehensive test suite (`backend/test-communications-provider-neutral.ts`, 45/45 passing, opus-reviewed) — proves message creation, send state, inbound ingestion, consent blocking, conversation threading, genuine two-tenant Business Unit isolation, and correctly-scoped DOM26-R signals, all against deterministic fakes (no real network calls).
+- `InboxController` (list conversations, get thread) — backend only, no frontend yet.
+
+**Test count as of last commit:** 12 Jest suites / 34 unit tests, 14 SMS integration checks, 14 email integration checks, 45 Stage-1 checks, 12 Inbox checks. All passing. `tsc --noEmit` and `eslint` clean except one pre-existing, unrelated error in `verify-stripe-billing-staging-smoke.ts` (predates this entire project, not yours to fix).
+
+---
+
+## 3. Recurring real bugs found across this build — READ BEFORE REVIEWING ANY NEW TASK
+
+Every one of these was found by actually reading the code and running tests, not by trusting a report. They recurred because the plan's own sample code had these bugs baked in — later tasks may still hit variants.
+
+1. **IDOR: unscoped `clientAccount.findUnique({ where: { id: clientAccountId } })`** in a controller that takes `clientAccountId` as a client-supplied route param. Found in the SMS controller (Task 10), the MessageTemplate controller (Task 13), preemptively fixed in the Email controller's plan text (Task 14). The fix pattern every time: use `@CurrentBusinessUnitId()` (a real, existing, guard-sourced decorator — never trust client input for scope) and `findFirst({ where: { id, businessUnitId } })` instead of `findUnique({ where: { id } })`. **If Task 18's frontend calls any new backend endpoint you have to add, check this pattern first.**
+2. **Raw-body signature verification bypassed by NestJS's auto body-parsing.** Twilio's HMAC and Resend's Svix signatures are computed over the exact original bytes. A `@Body()` DTO decorator gives you a re-parsed JS object, not the original bytes — signature verification silently breaks. Fix: `main.ts` mounts `express.raw()` on the webhook route prefixes ahead of the global JSON parser (already done, Task 4.5); webhook controller methods use `(req.body as Buffer).toString('utf-8')`, never `@Body()`.
+3. **Bare `prisma.$transaction` is not a real concurrency lock.** Postgres Read Committed doesn't serialize a `findFirst`-then-`update` across different rows in concurrent transactions. Fixed for the missed-call cooldown using `pg_advisory_xact_lock(hashtext($1))` as the *first* statement inside the transaction — mirrors the exact pattern already proven in `backend/src/modules/marketing/stripe-webhook-dedup.service.ts`. If any new concurrency-sensitive check-and-set logic gets added, use this same pattern, not a bare transaction.
+4. **DOM26-R cross-Business-Unit relationship data leakage.** `RelationshipProfile` has `@@unique([subjectId, businessUnitId])` specifically so one person's data never blends across businesses. Any new code resolving a `RelationshipProfile` from a `contactId` must filter by `businessUnitId` too (see `communication-relationship-signal.service.ts`'s `findProfileForContact` for the fixed reference implementation).
+5. **Test fixture cleanup not exception-safe.** Cleanup inline after assertions (not `beforeAll`/`afterAll`, or not in a `try/finally`) skips on any thrown error, leaking rows into the shared dev Postgres database on every crashed run. Found and fixed twice (Task 5, Task 16). Any new integration test must wrap its body in `try { ... } finally { cleanup(); }` or use `beforeAll`/`afterAll` hooks — verify this explicitly in review, it's the single most-repeated defect in this series after IDOR.
+6. **Brief sample code doesn't always match the real external SDK.** Resend's actual `email.received` webhook nests fields under `data`, `to` is an array not a string, and there's no body content in the webhook at all (fixed in Task 12 against the real installed `resend` package's `.d.ts` files, not assumed). If Task 19 needs real Twilio/Resend behavior, check the installed SDK's type definitions directly, don't trust memory or an older brief draft.
+
+---
+
+## 4. Remaining work — Tasks 18–22
+
+### Task 18 — Inbox frontend UI (IN PROGRESS, not started, resume here)
+
+Files: `frontend/src/app/marketing/communications/page.tsx` (conversation list + provider-status banner), `frontend/src/app/marketing/communications/[conversationId]/page.tsx` (thread view + send box), additions to `frontend/src/lib/api.ts` (`listConversations`, `getConversationThread`, `sendSms`, `sendEmail`).
+
+Before writing code: read `frontend/src/lib/api.ts` for the existing fetch/auth pattern, read `frontend/src/app/marketing/leads/page.tsx` or `contacts/page.tsx` for layout/styling convention, read `frontend/src/app/marketing/clients/[id]/page.tsx` for how the Billing card renders status badges (mirror that for `ChannelConnectionStatus`).
+
+**Expected state when you test it:** zero real `ChannelConnection` rows will show `ACTIVE` status anywhere (no real Twilio/Resend account exists yet) — the empty/not-connected state is the CORRECT thing to see, not a bug. Verify no console errors when navigating to `/marketing/communications` with an empty inbox.
+
+Full task text: run the `task-brief` command in §0, task number 18.
+
+### Task 19 — Stage 2 adapter contract tests
+
+Needs real Twilio test-mode credentials (`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` — Twilio issues these free on every account including a trial one, no purchase needed) and a Resend test-mode API key in the environment. **If neither exists, this task should honestly report BLOCKED/NEEDS_CONTEXT, not fabricate a pass.** That's an acceptable, expected outcome per the plan — don't force it.
+
+### Task 20 — Full regression suite
+Run every test suite (communications + pre-existing marketing/Stripe suites), confirm zero regressions against the baseline documented in `.superpowers/sdd/progress-communications.md`.
+
+### Task 21 — Chairman external-setup package
+Doc only: exact Twilio + Resend account-creation steps, required secret **names** (never values), DNS records needed on `send.demmmarketing.com`/`reply.demmmarketing.com`, webhook URLs, costs, risks. No account gets created by this task — informational only.
+
+### Task 22 — Final capture + report
+Dom26v3 + gbrain capture (see §6), rubric scoring, final report using the exact completion language: **"COMMUNICATION FOUNDATION COMPLETE — PROVIDER ACTIVATION PENDING."** Never say "OPERATIONAL" — that's reserved for after Stage 3 (real provider accounts, real end-to-end message), which is explicitly out of scope for this whole plan and gated on Antwann's separate authorization.
+
+---
+
+## 5. Sub-project 4 (Stripe Billing) — compressed record, complete, nothing to do
+
+Deployed to staging, commit `d0d0b26ae849c1b1449dd29a251fabf5434ca674`, backend rev `demm-crm-backend-staging-00016-9d2`. Real Stripe test-mode checkout proven end-to-end (real charge → real webhook → `BillingPaymentRecord` created → dashboard shows `Collected(90D)` with `Verified` badge). Two real bugs found and fixed during the live walkthrough: (1) `invoice.subscription` moved to `invoice.parent.subscription_details.subscription` under the pinned Stripe API version, silently dropping every payment record — fixed with a dual-path extraction helper; (2) missing `FRONTEND_BASE_URL` env var breaking checkout redirects — fixed via `gcloud run services update`. PAST_DUE live-UI demo was descoped (needs Stripe Test Clocks, not buildable without a real account) — the code path itself is proven via test coverage. 10 live-mode blockers from the original spec §13 remain the hard gate before any real charge (Customer Portal, dunning workflow, tax decision, legal review, etc. — full list in the design spec).
+
+---
+
+## 6. Standing constraints — apply to ALL remaining work, no exceptions
+
+- **No production deployment, no real Twilio number purchase, no paid-plan upgrade, no production DNS change, no real customer message, anywhere in Tasks 18–22.** Everything targets local dev / staging test-mode only.
+- **Never type, view, or handle a real credential value** — passwords, API keys, webhook signing secrets. If a task needs a real secret to proceed (Task 19 might), check the environment for it; if absent, report the gap honestly rather than fabricating a test or a passing result.
+- **`.env` files are never inspected directly** (`cat`/`grep` on any `.env*` file, even `.env.example`, has been permission-denied all session — don't retry, use `process.env.X` checks or Secret Manager instead).
+- Multiple `gcloud` identities exist on this machine. Before any `gcloud` command against this project, confirm: `gcloud config get-value account` should be `antwannmitchell0@gmail.com`, project `gen-lang-client-0096028843`. It silently reverts to a wrong service account between commands sometimes — always re-check, don't trust a "permission denied" as proof something doesn't exist without first confirming identity.
+- **Capture every meaningful decision to Dom26v3 as you go** (not batched at the end):
+  ```bash
+  curl -s -X POST https://intelligence.demmmarketing.com/engrams/capture \
+    -H "Content-Type: application/json" \
+    -d '{"summary": "...", "domain": "DEMM", "salience_score": 0.6, "source": "council", "confidence": 0.9}'
+  ```
+- **Update the gbrain page** `demm-crm/communications-core-provider-audit` as tasks complete (via whatever gbrain MCP tool your environment exposes — `put_page` with the same slug updates it in place).
+- **Completion language discipline** (§4, Task 22) is not optional — Antwann explicitly specified this exact phrasing and explicitly said not to claim "OPERATIONAL" prematurely.
+
+---
+
+## 7. What comes after this plan (do not start without Antwann's explicit go-ahead)
+
+Per Antwann's stated priority order: Communications Core (this plan) → already-complete Stripe Billing → **WTAE/$47-mo pricing and creator-network product spec** (not started, needs its own spec, explicitly told to wait until Communications Core and Billing are both done). Do not begin that work as part of finishing this plan.
