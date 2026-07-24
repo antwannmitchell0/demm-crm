@@ -194,8 +194,137 @@ async function runApiTests() {
     return { bu, ws, user, pipeline, stage, offer, contact };
   }
 
-  const bu1 = await createBuFixture('BU1', sharedPhone);
-  const bu2 = await createBuFixture('BU2', sharedPhone); // same phone number as BU1's contact -- deliberate collision
+  // Declared here (function scope, not inside the try block below) so the
+  // `finally` block can see whatever got created even if a throw happens
+  // partway through fixture setup or the test body -- e.g. bu1 succeeds
+  // but bu2's createBuFixture call throws, or a findUniqueOrThrow/non-null
+  // assertion/fetch failure happens deep in the test body.
+  let bu1: Awaited<ReturnType<typeof createBuFixture>> | undefined;
+  let bu2: Awaited<ReturnType<typeof createBuFixture>> | undefined;
+
+  // Fixture teardown for a single Business Unit's full fixture graph.
+  // Defined here (before the try block) rather than at the bottom of the
+  // function so it is reachable from the `finally` block below regardless
+  // of where in the try body a throw happens. Respects RESTRICT/Cascade
+  // FKs -- delete children before parents, same teardown discipline as
+  // test-communications-sms-api.ts / test-communications-email-api.ts.
+  async function cleanupBu(bu: {
+    bu: { id: string };
+    ws: { id: string };
+    user: { id: string };
+    pipeline: { id: string };
+    offer: { id: string };
+    contact: { id: string };
+  }) {
+    await prisma.deliveryAttempt.deleteMany({
+      where: { message: { conversation: { businessUnitId: bu.bu.id } } },
+    });
+    await prisma.message.deleteMany({
+      where: { conversation: { businessUnitId: bu.bu.id } },
+    });
+    await prisma.communicationConsent.deleteMany({ where: { workspaceId: bu.ws.id } });
+    await prisma.conversation.deleteMany({ where: { businessUnitId: bu.bu.id } });
+    await prisma.channelConnection.deleteMany({ where: { businessUnitId: bu.bu.id } });
+
+    await prisma.launchGateOverride.deleteMany({
+      where: { plan: { clientAccount: { businessUnitId: bu.bu.id } } },
+    });
+    await prisma.onboardingChecklistItemHistory.deleteMany({
+      where: { item: { plan: { clientAccount: { businessUnitId: bu.bu.id } } } },
+    });
+    await prisma.onboardingChecklistItem.deleteMany({
+      where: { plan: { clientAccount: { businessUnitId: bu.bu.id } } },
+    });
+    await prisma.onboardingPlan.deleteMany({
+      where: { clientAccount: { businessUnitId: bu.bu.id } },
+    });
+    await prisma.serviceDeliverableHistory.deleteMany({
+      where: { deliverable: { clientAccount: { businessUnitId: bu.bu.id } } },
+    });
+    await prisma.serviceDeliverable.deleteMany({
+      where: { clientAccount: { businessUnitId: bu.bu.id } },
+    });
+
+    await prisma.memoryAuditEvent.deleteMany({ where: { businessUnitId: bu.bu.id } });
+    await prisma.briefEvidence.deleteMany({
+      where: { brief: { profile: { businessUnitId: bu.bu.id } } },
+    });
+    await prisma.relationshipBrief.deleteMany({
+      where: { profile: { businessUnitId: bu.bu.id } },
+    });
+    const candidateEvidenceRows = await prisma.candidateEvidence.findMany({
+      where: { candidate: { profile: { businessUnitId: bu.bu.id } } },
+      select: { sourceId: true },
+    });
+    const engramEvidenceRows = await prisma.engramEvidence.findMany({
+      where: { engram: { businessUnitId: bu.bu.id } },
+      select: { sourceId: true },
+    });
+    const ownedSourceIds = [
+      ...new Set([
+        ...candidateEvidenceRows.map((r) => r.sourceId),
+        ...engramEvidenceRows.map((r) => r.sourceId),
+      ]),
+    ];
+    await prisma.candidateEvidence.deleteMany({
+      where: { candidate: { profile: { businessUnitId: bu.bu.id } } },
+    });
+    await prisma.memoryApproval.deleteMany({
+      where: { candidate: { profile: { businessUnitId: bu.bu.id } } },
+    });
+    await prisma.memoryCandidate.deleteMany({
+      where: { profile: { businessUnitId: bu.bu.id } },
+    });
+    await prisma.engramEvidence.deleteMany({
+      where: { engram: { businessUnitId: bu.bu.id } },
+    });
+    await prisma.engram.deleteMany({ where: { businessUnitId: bu.bu.id } });
+    await prisma.engramSource.deleteMany({ where: { id: { in: ownedSourceIds } } });
+    await prisma.relationshipProfile.deleteMany({ where: { businessUnitId: bu.bu.id } });
+    await prisma.relationshipSubject.deleteMany({
+      where: {
+        OR: [
+          { contact: { workspaceId: bu.ws.id } },
+          { company: { workspaceId: bu.ws.id } },
+        ],
+      },
+    });
+    await prisma.clientCommercialStateChange.deleteMany({
+      where: { clientAccount: { businessUnitId: bu.bu.id } },
+    });
+    await prisma.conversionIdempotencyKey.deleteMany({
+      where: { clientAccount: { businessUnitId: bu.bu.id } },
+    });
+    await prisma.clientAccount.deleteMany({ where: { businessUnitId: bu.bu.id } });
+    await prisma.offerSnapshot.deleteMany({ where: { offer: { businessUnitId: bu.bu.id } } });
+    await prisma.stripePriceMapping.deleteMany({ where: { offerId: bu.offer.id } });
+    await prisma.offer.deleteMany({ where: { businessUnitId: bu.bu.id } });
+    await prisma.auditLog.deleteMany({ where: { workspaceId: bu.ws.id } });
+    await prisma.task.deleteMany({ where: { workspaceId: bu.ws.id } });
+    await prisma.opportunity.deleteMany({ where: { workspaceId: bu.ws.id } });
+    await prisma.stage.deleteMany({ where: { pipelineId: bu.pipeline.id } });
+    await prisma.pipeline.deleteMany({ where: { id: bu.pipeline.id } });
+    await prisma.contact.deleteMany({ where: { workspaceId: bu.ws.id } });
+    await prisma.membership.deleteMany({ where: { userId: bu.user.id } });
+    await prisma.user.delete({ where: { id: bu.user.id } });
+    await prisma.workspace.delete({ where: { id: bu.ws.id } });
+    await prisma.businessUnit.delete({ where: { id: bu.bu.id } });
+  }
+
+  // Everything below that touches the fixtures created above runs inside
+  // this try block. If ANY operation throws before reaching the normal
+  // end-of-suite cleanup call (a findUniqueOrThrow failing, a non-null
+  // assertion failing, a fetch error, an assertion helper throwing, etc.),
+  // the `finally` block still tears down whatever fixtures got created --
+  // otherwise the entire fixture graph (org/2 BusinessUnits/workspaces/
+  // users/contacts/channelConnections/conversations/messages/signals) is
+  // orphaned in the shared dev database, exactly the "stale leftover row
+  // from a prior crashed run" failure mode this suite's own
+  // sharedPhone/bu1Number/bu2Number suffixing comments document having
+  // been hit in practice.
+  try {
+    bu1 = await createBuFixture('BU1', sharedPhone);
+    bu2 = await createBuFixture('BU2', sharedPhone); // same phone number as BU1's contact -- deliberate collision
 
   // --- Boot the main JSON app (auth + convert + outbound-send endpoint
   // testing) with SMS_PROVIDER/EMAIL_PROVIDER overridden to the fakes. ---
@@ -840,121 +969,44 @@ async function runApiTests() {
   );
 
   await webhookApp2.close();
-
-  // ---------------------------------------------------------------------
-  // Cleanup: respect RESTRICT/Cascade FKs -- delete children before
-  // parents, same teardown discipline as test-communications-sms-api.ts /
-  // test-communications-email-api.ts, run once per Business Unit.
-  // ---------------------------------------------------------------------
-  console.log('\n🧹 Cleaning up provider-neutral suite records...');
-
-  async function cleanupBu(bu: {
-    bu: { id: string };
-    ws: { id: string };
-    user: { id: string };
-    pipeline: { id: string };
-    offer: { id: string };
-    contact: { id: string };
-  }) {
-    await prisma.deliveryAttempt.deleteMany({
-      where: { message: { conversation: { businessUnitId: bu.bu.id } } },
-    });
-    await prisma.message.deleteMany({
-      where: { conversation: { businessUnitId: bu.bu.id } },
-    });
-    await prisma.communicationConsent.deleteMany({ where: { workspaceId: bu.ws.id } });
-    await prisma.conversation.deleteMany({ where: { businessUnitId: bu.bu.id } });
-    await prisma.channelConnection.deleteMany({ where: { businessUnitId: bu.bu.id } });
-
-    await prisma.launchGateOverride.deleteMany({
-      where: { plan: { clientAccount: { businessUnitId: bu.bu.id } } },
-    });
-    await prisma.onboardingChecklistItemHistory.deleteMany({
-      where: { item: { plan: { clientAccount: { businessUnitId: bu.bu.id } } } },
-    });
-    await prisma.onboardingChecklistItem.deleteMany({
-      where: { plan: { clientAccount: { businessUnitId: bu.bu.id } } },
-    });
-    await prisma.onboardingPlan.deleteMany({
-      where: { clientAccount: { businessUnitId: bu.bu.id } },
-    });
-    await prisma.serviceDeliverableHistory.deleteMany({
-      where: { deliverable: { clientAccount: { businessUnitId: bu.bu.id } } },
-    });
-    await prisma.serviceDeliverable.deleteMany({
-      where: { clientAccount: { businessUnitId: bu.bu.id } },
-    });
-
-    await prisma.memoryAuditEvent.deleteMany({ where: { businessUnitId: bu.bu.id } });
-    await prisma.briefEvidence.deleteMany({
-      where: { brief: { profile: { businessUnitId: bu.bu.id } } },
-    });
-    await prisma.relationshipBrief.deleteMany({
-      where: { profile: { businessUnitId: bu.bu.id } },
-    });
-    const candidateEvidenceRows = await prisma.candidateEvidence.findMany({
-      where: { candidate: { profile: { businessUnitId: bu.bu.id } } },
-      select: { sourceId: true },
-    });
-    const engramEvidenceRows = await prisma.engramEvidence.findMany({
-      where: { engram: { businessUnitId: bu.bu.id } },
-      select: { sourceId: true },
-    });
-    const ownedSourceIds = [
-      ...new Set([
-        ...candidateEvidenceRows.map((r) => r.sourceId),
-        ...engramEvidenceRows.map((r) => r.sourceId),
-      ]),
-    ];
-    await prisma.candidateEvidence.deleteMany({
-      where: { candidate: { profile: { businessUnitId: bu.bu.id } } },
-    });
-    await prisma.memoryApproval.deleteMany({
-      where: { candidate: { profile: { businessUnitId: bu.bu.id } } },
-    });
-    await prisma.memoryCandidate.deleteMany({
-      where: { profile: { businessUnitId: bu.bu.id } },
-    });
-    await prisma.engramEvidence.deleteMany({
-      where: { engram: { businessUnitId: bu.bu.id } },
-    });
-    await prisma.engram.deleteMany({ where: { businessUnitId: bu.bu.id } });
-    await prisma.engramSource.deleteMany({ where: { id: { in: ownedSourceIds } } });
-    await prisma.relationshipProfile.deleteMany({ where: { businessUnitId: bu.bu.id } });
-    await prisma.relationshipSubject.deleteMany({
-      where: {
-        OR: [
-          { contact: { workspaceId: bu.ws.id } },
-          { company: { workspaceId: bu.ws.id } },
-        ],
-      },
-    });
-    await prisma.clientCommercialStateChange.deleteMany({
-      where: { clientAccount: { businessUnitId: bu.bu.id } },
-    });
-    await prisma.conversionIdempotencyKey.deleteMany({
-      where: { clientAccount: { businessUnitId: bu.bu.id } },
-    });
-    await prisma.clientAccount.deleteMany({ where: { businessUnitId: bu.bu.id } });
-    await prisma.offerSnapshot.deleteMany({ where: { offer: { businessUnitId: bu.bu.id } } });
-    await prisma.stripePriceMapping.deleteMany({ where: { offerId: bu.offer.id } });
-    await prisma.offer.deleteMany({ where: { businessUnitId: bu.bu.id } });
-    await prisma.auditLog.deleteMany({ where: { workspaceId: bu.ws.id } });
-    await prisma.task.deleteMany({ where: { workspaceId: bu.ws.id } });
-    await prisma.opportunity.deleteMany({ where: { workspaceId: bu.ws.id } });
-    await prisma.stage.deleteMany({ where: { pipelineId: bu.pipeline.id } });
-    await prisma.pipeline.deleteMany({ where: { id: bu.pipeline.id } });
-    await prisma.contact.deleteMany({ where: { workspaceId: bu.ws.id } });
-    await prisma.membership.deleteMany({ where: { userId: bu.user.id } });
-    await prisma.user.delete({ where: { id: bu.user.id } });
-    await prisma.workspace.delete({ where: { id: bu.ws.id } });
-    await prisma.businessUnit.delete({ where: { id: bu.bu.id } });
+  } finally {
+    // Safety net: this ALWAYS runs, whether the try block above completed
+    // successfully or threw partway through. Cleanup is intentionally
+    // guarded per-fixture (bu1/bu2 may be undefined if createBuFixture
+    // itself threw) and each delete sequence is wrapped so a cleanup
+    // failure is logged, never thrown -- throwing from `finally` would
+    // replace/mask whatever error (or successful completion) got us here,
+    // and could also stomp the exit code the outer .catch sets.
+    console.log('\n🧹 Cleaning up provider-neutral suite records...');
+    const cleanupErrors: unknown[] = [];
+    if (bu1) {
+      try {
+        await cleanupBu(bu1);
+      } catch (cleanupErr) {
+        cleanupErrors.push(cleanupErr);
+      }
+    }
+    if (bu2) {
+      try {
+        await cleanupBu(bu2);
+      } catch (cleanupErr) {
+        cleanupErrors.push(cleanupErr);
+      }
+    }
+    try {
+      await prisma.organization.delete({ where: { id: org.id } });
+    } catch (cleanupErr) {
+      cleanupErrors.push(cleanupErr);
+    }
+    if (cleanupErrors.length > 0) {
+      console.error(
+        '⚠️  Cleanup encountered error(s) -- fixtures may be partially orphaned:',
+        cleanupErrors,
+      );
+    } else {
+      console.log('✅ Cleanup complete.');
+    }
   }
-
-  await cleanupBu(bu1);
-  await cleanupBu(bu2);
-  await prisma.organization.delete({ where: { id: org.id } });
-  console.log('✅ Cleanup complete.');
 
   console.log('=============================================================');
   console.log(
