@@ -16,8 +16,13 @@ import { ChannelConnectionService } from './channel-connection.service';
 import { CommunicationConsentService } from './communication-consent.service';
 import { ConversationService } from './conversation.service';
 import { MessageService } from './message.service';
+import {
+  SmsOutboundController,
+  TwilioSmsWebhookController,
+} from './sms.controller';
 
 @Module({
+  controllers: [SmsOutboundController, TwilioSmsWebhookController],
   providers: [
     PrismaService,
     { provide: SMS_PROVIDER, useFactory: bindSmsProvider },
