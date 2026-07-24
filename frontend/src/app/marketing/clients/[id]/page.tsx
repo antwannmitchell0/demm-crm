@@ -15,6 +15,8 @@ import {
   ShieldAlert,
   FileText,
   Sparkles,
+  CreditCard,
+  ExternalLink,
 } from 'lucide-react';
 
 const OVERRIDE_ALLOWED_ROLES = [
@@ -202,6 +204,139 @@ function DeliverableRow({
           {saving ? '...' : 'Save'}
         </button>
       </div>
+    </div>
+  );
+}
+
+const BILLING_STATUS_TONE: Record<string, string> = {
+  CREATED: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
+  PENDING: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+  FAILED: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
+  NONE: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
+};
+
+const SUBSCRIPTION_STATUS_TONE: Record<string, string> = {
+  ACTIVE: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+  TRIALING: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
+  PAST_DUE: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+  UNPAID: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
+  CANCELED: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
+  INCOMPLETE: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
+};
+
+function BillingCard({
+  clientAccountId,
+  canRegenerate,
+}: {
+  clientAccountId: string;
+  canRegenerate: boolean;
+}) {
+  const [billing, setBilling] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [regenerating, setRegenerating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api.getBillingCheckout(clientAccountId);
+      setBilling(res);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load billing status.');
+    } finally {
+      setLoading(false);
+    }
+  }, [clientAccountId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleRegenerate = async () => {
+    setRegenerating(true);
+    setError(null);
+    try {
+      await api.regenerateBillingCheckout(clientAccountId);
+      await load();
+    } catch (err: any) {
+      setError(err.message || 'Failed to regenerate checkout link.');
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
+  const status = billing?.status || 'NONE';
+  const subscriptionStatus = billing?.subscriptionStatus;
+
+  return (
+    <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-2xl">
+      <div className="flex items-center justify-between mb-2">
+        <h4 className="text-[9px] font-mono font-bold tracking-wider text-slate-500 uppercase flex items-center gap-1">
+          <CreditCard className="w-3 h-3" /> Billing
+        </h4>
+        {!loading && (
+          <span
+            className={`px-2 py-0.5 rounded-full text-[9px] font-bold border ${
+              BILLING_STATUS_TONE[status] || BILLING_STATUS_TONE.NONE
+            }`}
+          >
+            {status.replace(/_/g, ' ')}
+          </span>
+        )}
+      </div>
+
+      {loading ? (
+        <p className="text-xs text-slate-600">Loading billing status...</p>
+      ) : (
+        <div className="space-y-2">
+          {subscriptionStatus && (
+            <p className="text-xs text-slate-300 flex items-center gap-2">
+              Subscription:
+              <span
+                className={`px-2 py-0.5 rounded-full text-[9px] font-bold border ${
+                  SUBSCRIPTION_STATUS_TONE[subscriptionStatus] ||
+                  SUBSCRIPTION_STATUS_TONE.INCOMPLETE
+                }`}
+              >
+                {subscriptionStatus.replace(/_/g, ' ')}
+              </span>
+            </p>
+          )}
+
+          {status === 'CREATED' && billing?.checkoutUrl && (
+            <a
+              href={billing.checkoutUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-xs font-bold text-cyan-400 hover:text-cyan-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400 rounded"
+            >
+              Open Checkout Link <ExternalLink className="w-3 h-3" />
+            </a>
+          )}
+
+          {status === 'FAILED' && (
+            <p className="text-xs text-rose-400">
+              Checkout setup failed{billing?.lastError ? `: ${billing.lastError}` : '.'} See the
+              operator task and audit trail for details.
+            </p>
+          )}
+
+          {status === 'NONE' && (
+            <p className="text-xs text-slate-600">No checkout has been generated yet.</p>
+          )}
+
+          {canRegenerate && (
+            <button
+              onClick={handleRegenerate}
+              disabled={regenerating}
+              className="mt-1 px-3 py-1.5 bg-indigo-600 rounded-lg text-[10px] font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+            >
+              {regenerating ? 'Regenerating...' : 'Regenerate Checkout Link'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {error && <p className="mt-2 text-[10px] text-rose-400">{error}</p>}
     </div>
   );
 }
@@ -475,6 +610,8 @@ export default function ClientDetailPage() {
                   Actual: {onboarding?.actualLaunchDate ? new Date(onboarding.actualLaunchDate).toLocaleDateString() : 'Not yet launched'}
                 </p>
               </div>
+
+              <BillingCard clientAccountId={clientId} canRegenerate={!!canOverride} />
             </div>
 
             {onboarding && (

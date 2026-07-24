@@ -378,4 +378,15 @@ export const api = {
       body: JSON.stringify(data),
     });
   },
+
+  // Marketing: Billing (Stripe Checkout)
+  getBillingCheckout: async (clientAccountId: string) => {
+    return request(`marketing/clients/${clientAccountId}/billing/checkout`);
+  },
+
+  regenerateBillingCheckout: async (clientAccountId: string) => {
+    return request(`marketing/clients/${clientAccountId}/billing/checkout/regenerate`, {
+      method: 'POST',
+    });
+  },
 };
