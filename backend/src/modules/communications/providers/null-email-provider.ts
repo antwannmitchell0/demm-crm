@@ -1,14 +1,27 @@
 import { Injectable } from '@nestjs/common';
-import { EmailProvider } from '../interfaces/email-provider.interface';
+import {
+  EmailProvider,
+  SecureAttachmentRef,
+} from '../interfaces/email-provider.interface';
 import { ProviderNotConfiguredError } from '../errors/provider-not-configured.error';
 
 @Injectable()
 export class NullEmailProvider implements EmailProvider {
-  async sendEmail(): Promise<{ providerMessageId: string }> {
-    throw new ProviderNotConfiguredError('Resend Email');
+  sendEmail(_params: {
+    to: string;
+    from: string;
+    replyTo?: string;
+    subject: string;
+    html: string;
+    attachments?: SecureAttachmentRef[];
+  }): Promise<{ providerMessageId: string }> {
+    return Promise.reject(new ProviderNotConfiguredError('Resend Email'));
   }
 
-  verifyOutboundWebhookSignature(): boolean {
+  verifyOutboundWebhookSignature(
+    _rawBody: string,
+    _signatureHeader: string,
+  ): boolean {
     return false;
   }
 }

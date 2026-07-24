@@ -36,4 +36,17 @@ export default tseslint.config(
       'prettier/prettier': ['error', { endOfLine: 'auto' }],
     },
   },
+  {
+    // Null-object provider implementations intentionally keep the full
+    // interface parameter list (for type-safety when called through the
+    // concrete class, e.g. in tests) even though every method ignores its
+    // inputs. Underscore-prefixed params document that intent.
+    files: ['src/modules/communications/providers/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_' },
+      ],
+    },
+  },
 );

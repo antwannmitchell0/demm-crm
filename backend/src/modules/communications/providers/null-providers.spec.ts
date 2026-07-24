@@ -6,7 +6,11 @@ describe('Null providers', () => {
   it('NullSmsProvider throws ProviderNotConfiguredError on send', async () => {
     const provider = new NullSmsProvider();
     await expect(
-      provider.sendSms({ to: '+15550001111', from: '+15550002222', body: 'hi' }),
+      provider.sendSms({
+        to: '+15550001111',
+        from: '+15550002222',
+        body: 'hi',
+      }),
     ).rejects.toThrow(ProviderNotConfiguredError);
   });
 

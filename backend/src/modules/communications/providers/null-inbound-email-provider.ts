@@ -7,11 +7,14 @@ import { ProviderNotConfiguredError } from '../errors/provider-not-configured.er
 
 @Injectable()
 export class NullInboundEmailProvider implements InboundEmailProvider {
-  verifyInboundWebhookSignature(): boolean {
+  verifyInboundWebhookSignature(
+    _rawBody: string,
+    _signatureHeader: string,
+  ): boolean {
     return false;
   }
 
-  parseInboundEmail(): InboundEmailPayload {
+  parseInboundEmail(_rawBody: Record<string, unknown>): InboundEmailPayload {
     throw new ProviderNotConfiguredError('Resend Receiving');
   }
 }
