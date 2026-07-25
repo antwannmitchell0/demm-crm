@@ -56,12 +56,19 @@ export class InboxController {
   ) {
     const conversation = await this.prisma.conversation.findUnique({
       where: { id: conversationId },
-      include: {
+      select: {
+        id: true,
+        clientAccountId: true,
+        channel: true,
+        counterpartyAddress: true,
+        workspaceId: true,
+        lastMessageAt: true,
+        contact: { select: { id: true, firstName: true, lastName: true } },
+        channelConnection: { select: { status: true, type: true } },
         messages: {
           orderBy: { createdAt: 'asc' },
           include: { deliveryAttempts: true },
         },
-        channelConnection: { select: { status: true, type: true } },
       },
     });
     if (!conversation || conversation.workspaceId !== req.workspaceId) {

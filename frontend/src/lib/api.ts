@@ -360,6 +360,51 @@ export const api = {
     });
   },
 
+  // Marketing: Communications Core
+  listConversations: async (workspaceId: string) => {
+    return request(`marketing/communications/inbox`, {
+      headers: { 'x-workspace-id': workspaceId },
+    });
+  },
+
+  getConversationThread: async (conversationId: string, workspaceId: string) => {
+    return request(`marketing/communications/inbox/${conversationId}`, {
+      headers: { 'x-workspace-id': workspaceId },
+    });
+  },
+
+  sendSms: async (
+    clientAccountId: string,
+    data: { body: string },
+    workspaceId: string,
+    businessUnitId: string,
+  ) => {
+    return request(`marketing/clients/${clientAccountId}/communications/sms`, {
+      method: 'POST',
+      headers: {
+        'x-workspace-id': workspaceId,
+        'x-business-unit-id': businessUnitId,
+      },
+      body: JSON.stringify(data),
+    });
+  },
+
+  sendEmail: async (
+    clientAccountId: string,
+    data: { subject: string; html: string },
+    workspaceId: string,
+    businessUnitId: string,
+  ) => {
+    return request(`marketing/clients/${clientAccountId}/communications/email`, {
+      method: 'POST',
+      headers: {
+        'x-workspace-id': workspaceId,
+        'x-business-unit-id': businessUnitId,
+      },
+      body: JSON.stringify(data),
+    });
+  },
+
   // Marketing: Reporting
   getInternalReport: async () => {
     return request('marketing/reports/internal');
