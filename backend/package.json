@@ -27,7 +27,8 @@
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
     "test:agent-contract": "npx ts-node test-agent-contract.ts",
-    "test:workspace-switching": "npx ts-node test-workspace-switching.ts"
+    "test:workspace-switching": "npx ts-node test-workspace-switching.ts",
+    "test:team": "npx ts-node test-team-management.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

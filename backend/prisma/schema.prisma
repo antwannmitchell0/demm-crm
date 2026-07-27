@@ -41,6 +41,10 @@ enum InvitationStatus {
   PENDING
   ACCEPTED
   EXPIRED
+  // Withdrawn by an administrator before it was used. Distinct from EXPIRED:
+  // expiry is the passage of time, revocation is a decision, and an audit
+  // cannot tell them apart if both collapse to one value.
+  REVOKED
 }
 
 enum ApprovalStatus {
@@ -760,6 +764,8 @@ model User {
   checklistItemsOwned    OnboardingChecklistItem[]     @relation("ChecklistItemOwner")
   checklistItemsApproved OnboardingChecklistItem[]     @relation("ChecklistItemApprover")
   deliverablesOwned      ServiceDeliverable[]          @relation("ServiceDeliverableOwner")
+  invitationsSent        Invitation[]                  @relation("InvitationsSent")
+  invitationsAccepted    Invitation[]                  @relation("InvitationsAccepted")
 }
 
 model RefreshToken {
@@ -1411,8 +1417,29 @@ model Invitation {
   workspace      Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   organizationId String
   organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  token          String           @unique
+
+  /// SHA-256 of the invitation token, never the token itself.
+  ///
+  /// The token is a bearer credential: whoever holds it can join a workspace.
+  /// Storing it in plaintext would mean any read of this table -- a backup, a
+  /// support query, a log of a query -- hands over every pending invitation.
+  /// The raw value is returned to the inviter exactly once, at creation, and is
+  /// not recoverable afterwards. This mirrors how RefreshToken.hashedToken is
+  /// handled.
+  tokenHash      String           @unique
+
   status         InvitationStatus @default(PENDING)
   expiresAt      DateTime
   createdAt      DateTime         @default(now())
+
+  /// Who issued it, and who consumed it. Without these an invitation that
+  /// granted access leaves no record of who authorised it.
+  invitedById    String?
+  invitedBy      User?            @relation("InvitationsSent", fields: [invitedById], references: [id], onDelete: SetNull)
+  acceptedById   String?
+  acceptedBy     User?            @relation("InvitationsAccepted", fields: [acceptedById], references: [id], onDelete: SetNull)
+  acceptedAt     DateTime?
+
+  @@index([workspaceId, status])
+  @@index([email])
 }

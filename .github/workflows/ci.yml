@@ -140,6 +140,17 @@ jobs:
           JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
           ALLOW_DESTRUCTIVE_TESTS: "true"
 
+      - name: Team Management Suite
+        # Phase 2. Invitations, member listing, role changes, removal, and the
+        # last-owner rule. Includes a genuine concurrency check: three
+        # simultaneous owner removals must leave an owner behind. Without the
+        # SELECT ... FOR UPDATE serialisation all three succeed and the
+        # workspace is orphaned -- verified by removing the lock.
+        run: cd backend && npm run test:team
+        env:
+          JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+          ALLOW_DESTRUCTIVE_TESTS: "true"
+
       - name: Focused Security Suites
         # Previously these ran only on a developer's machine. `npm run verify`
         # covers the comprehensive and HTTP suites but NOT approval governance,
