@@ -224,16 +224,107 @@ export class AuthService {
     };
   }
 
+  /**
+   * Handles a refresh token that is KNOWN to this system but was already
+   * revoked -- i.e. someone presented a token that rotation had retired.
+   *
+   * The legitimate holder discards a token the moment it is exchanged, so a
+   * replay is evidence that a copy exists somewhere it should not. The response
+   * is to end every live session for that account, forcing re-authentication.
+   *
+   * Ordering is deliberate and security-first: revocation is committed BEFORE
+   * the audit write and independently of it. If auditing were bundled into the
+   * same transaction, a failed audit would roll back the revocation and leave a
+   * suspected-stolen session alive -- trading a real security action for a
+   * bookkeeping one. The audit is therefore best-effort, consistent with the
+   * Phase 0 position already documented in agent.service.ts, and Phase 5's
+   * transactional outbox is what makes the pair atomic.
+   */
+  private async handleSuspectedTokenReuse(stored: {
+    userId: string;
+    workspaceId: string | null;
+  }) {
+    // Same shape as logoutAll(): scoped to THIS user only. An unknown token can
+    // never reach here, so no caller can revoke a stranger's sessions.
+    const revocation = await this.prisma.refreshToken.updateMany({
+      where: { userId: stored.userId, revoked: false },
+      data: { revoked: true },
+    });
+
+    // AuditLog.workspaceId is a required FK, while RefreshToken.workspaceId is
+    // nullable. A token minted by issueTokensForMembership always carries one,
+    // but if it is somehow absent the event is skipped rather than attributed
+    // to a fabricated workspace.
+    if (!stored.workspaceId) return;
+
+    try {
+      await this.prisma.auditLog.create({
+        data: {
+          // SYSTEM, not USER: the system detected this. We cannot know whether
+          // the legitimate account holder or a thief presented the token, so
+          // the account is recorded as AFFECTED, never as the actor-in-fault.
+          actorType: 'SYSTEM',
+          actorId: stored.userId,
+          action: 'REFRESH_TOKEN_REUSE_DETECTED',
+          // No token, no token hash, no credentials, no secrets, no
+          // infrastructure detail -- only the security outcome.
+          payload: redactAuditPayload({
+            reason: 'ROTATED_REFRESH_TOKEN_REPLAYED',
+            outcome: 'ALL_ACTIVE_SESSIONS_REVOKED',
+            affectedUserId: stored.userId,
+            revokedActiveTokenCount: revocation.count,
+          }),
+          workspaceId: stored.workspaceId,
+          userId: stored.userId,
+        },
+      });
+    } catch (error: unknown) {
+      // Never let an audit failure undo or mask the revocation above, and never
+      // let it change the 401 the caller receives. Surface it instead of
+      // swallowing it silently.
+      console.error(
+        'REFRESH_TOKEN_REUSE_DETECTED audit write failed; sessions were still revoked:',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
   // 3. Rotate Refresh Token
   async refreshToken(rawRefreshToken: string) {
     const hashedToken = this.hashToken(rawRefreshToken);
+    // Deliberately NOT filtered by `revoked`/`expiresAt`. The row must be read
+    // in whatever state it is in, because telling "this token never existed"
+    // apart from "this token existed and was rotated away" is the entire basis
+    // of replay detection. Lookup stays keyed on the SHA-256 hash; no plaintext
+    // token is ever stored or queried.
     const stored = await this.prisma.refreshToken.findUnique({
       where: { hashedToken },
     });
 
-    if (!stored || stored.revoked || stored.expiresAt < new Date()) {
+    // Every branch below returns the SAME message. Distinguishing them to the
+    // caller would turn this endpoint into an oracle for which tokens once
+    // existed.
+
+    // STATE 1 -- UNKNOWN. No owner can be established, so no user-scoped action
+    // is safe: reacting here would let anyone revoke a victim's sessions by
+    // posting random strings.
+    if (!stored) {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
+
+    // STATE 2 -- KNOWN but already REVOKED: suspected reuse after rotation.
+    if (stored.revoked) {
+      await this.handleSuspectedTokenReuse(stored);
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
+
+    // STATE 3 -- KNOWN and unrevoked but EXPIRED: ordinary lifecycle end, not
+    // evidence of theft. Existing behaviour is preserved unchanged.
+    if (stored.expiresAt < new Date()) {
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
+
+    // STATE 4 -- valid: rotate below.
 
     // Revoke old refresh token (rotation)
     await this.prisma.refreshToken.update({

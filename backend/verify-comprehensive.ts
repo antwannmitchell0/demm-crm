@@ -21,6 +21,7 @@ import { PrismaService } from './src/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import { redactAuditPayload } from './src/common/utils/audit-redactor';
 import { validateEnvironmentConfig } from './src/common/utils/config.validator';
+import { assertDisposableTestDatabase } from './test-db-guard';
 
 const prisma = new PrismaService();
 const jwtService = new JwtService({ secret: process.env.JWT_SECRET! });
@@ -42,6 +43,21 @@ const agentService = new AgentService(
 );
 
 async function main() {
+  // T13 GUARD -- FIRST STATEMENT, before anything reads or writes data.
+  //
+  // This suite begins by deleting every row in ~20 tables with unscoped
+  // `deleteMany()`. Pointed at the development database that is a total data
+  // loss, which is exactly what the T3.3 incident was. The guard requires a
+  // provably disposable database name (from a live `SELECT current_database()`)
+  // AND an explicit ALLOW_DESTRUCTIVE_TESTS=true, and exits before the first
+  // delete otherwise.
+  //
+  // KNOWN LIMITATION, accepted for Phase 0: the global cleanup below is
+  // retained rather than rewritten to scoped deletes. Converting a 20-table
+  // dependency-ordered wipe into per-test-owned deletion is a larger change
+  // than this task authorises, so the guard is the control that makes it safe.
+  await assertDisposableTestDatabase('verify-comprehensive.ts');
+
   const startTime = Date.now();
   console.log('🧪 RUNNING FULL AUDIT REMEDIATION TEST SUITE (RELEASE 0.1.1)');
   console.log('===========================================================');

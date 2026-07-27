@@ -5,8 +5,63 @@ import { AppModule } from './src/app.module';
 import { PrismaService } from './src/prisma.service';
 import helmet from 'helmet';
 import * as http from 'http';
+import { assertDisposableTestDatabase } from './test-db-guard';
+
+/**
+ * T13 cleanup discipline.
+ *
+ * This suite previously had NO teardown: every run permanently added two users,
+ * two organizations, two workspaces, and their refresh tokens to the target
+ * database. Ids of everything it creates are now collected here and removed
+ * afterwards, scoped to those ids only -- never a global `deleteMany()`.
+ *
+ * Module scope so both the normal exit path and the exception path can reach it.
+ */
+const createdFixtures = {
+  userIds: [] as string[],
+  workspaceIds: [] as string[],
+  organizationIds: [] as string[],
+};
+let prismaForTeardown: { [key: string]: any } | null = null;
+
+async function teardownFixtures(): Promise<void> {
+  const prisma = prismaForTeardown;
+  if (!prisma) return;
+  const { userIds, workspaceIds, organizationIds } = createdFixtures;
+  if (userIds.length === 0 && organizationIds.length === 0) return;
+  try {
+    // Dependency order. Deleting the Organization cascades to its Workspaces
+    // and Memberships; Users are not organization-scoped, so they are removed
+    // explicitly. Every filter is bounded by ids this run created.
+    await prisma.refreshToken.deleteMany({ where: { userId: { in: userIds } } });
+    await prisma.membership.deleteMany({ where: { userId: { in: userIds } } });
+    await prisma.workspace.deleteMany({ where: { id: { in: workspaceIds } } });
+    await prisma.organization.deleteMany({
+      where: { id: { in: organizationIds } },
+    });
+    await prisma.user.deleteMany({ where: { id: { in: userIds } } });
+    console.log(
+      `[cleanup] removed ${userIds.length} test user(s) and ${organizationIds.length} test organization(s) created by this run.`,
+    );
+  } catch (error: unknown) {
+    // Never let cleanup failure mask the suite's own result.
+    console.error(
+      '[cleanup] fixture teardown failed; records may remain:',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
 
 async function main() {
+  // T13 GUARD -- FIRST STATEMENT, before the Nest application is even built.
+  //
+  // This suite registers real users and workspaces over HTTP and has no
+  // teardown, so every run permanently adds rows to whatever database it is
+  // pointed at. Bootstrapping the app first would open a Prisma connection to
+  // that database before anything had checked which database it is, so the
+  // guard runs ahead of `createTestingModule`.
+  await assertDisposableTestDatabase('verify-http-staging.ts');
+
   const startTime = Date.now();
   console.log('🧪 RUNNING RIGOROUS STAGING REAL HTTP TEST SUITE (RELEASE 0.1.2)');
   console.log('=================================================================');
@@ -62,6 +117,7 @@ async function main() {
   const port = address.port;
   const baseUrl = `http://127.0.0.1:${port}`;
   const prisma = app.get(PrismaService);
+  prismaForTeardown = prisma as unknown as { [key: string]: any };
 
   // Helper HTTP request function
   function makeRequest(
@@ -182,25 +238,62 @@ async function main() {
     subdomain: `sub_a_${Date.now()}`,
   });
   assert(regA.statusCode === 201 && !!regA.body.id, 'HTTP POST /api/auth/register: Registered User A successfully.');
+  if (regA.body?.id) createdFixtures.userIds.push(regA.body.id);
+  if (regA.body?.workspaceId) createdFixtures.workspaceIds.push(regA.body.workspaceId);
+  if (regA.body?.organizationId) createdFixtures.organizationIds.push(regA.body.organizationId);
 
+  // A second, unrelated account. Used in Part 4b to prove that the caller's
+  // identity is derived from the pre-auth token and never from a body field.
+  const emailB = `user_b_${Date.now()}@example.com`;
+  const regB = await makeRequest('POST', '/api/auth/register', {
+    email: emailB,
+    passwordPlain: 'super-secure-password-456',
+    firstName: 'UserB',
+    lastName: 'Tester',
+    workspaceName: 'Workspace B',
+    subdomain: `sub_b_${Date.now()}`,
+  });
+  assert(regB.statusCode === 201 && !!regB.body.id, 'HTTP POST /api/auth/register: Registered User B successfully.');
+  if (regB.body?.id) createdFixtures.userIds.push(regB.body.id);
+  if (regB.body?.workspaceId) createdFixtures.workspaceIds.push(regB.body.workspaceId);
+  if (regB.body?.organizationId) createdFixtures.organizationIds.push(regB.body.organizationId);
+
+  // Login is step ONE of two. It proves the password and returns a short-lived,
+  // single-purpose preAuthToken plus the accessible workspace list. It must NOT
+  // hand out a usable access token by itself.
   const loginA = await makeRequest('POST', '/api/auth/login', {
     email: emailA,
     passwordPlain: 'super-secure-password-123',
   });
+  assert(
+    loginA.statusCode === 201 && !!loginA.body.preAuthToken && !loginA.body.access_token,
+    'HTTP Session: Login issues a preAuthToken and no access token (two-step contract).',
+  );
   const wsAId = loginA.body.workspaces[0].workspaceId;
 
-  const selectA = await makeRequest('POST', '/api/auth/select-workspace', {
-    userId: loginA.body.user.id,
-    workspaceId: wsAId,
-  });
-  assert(!!selectA.body.access_token, 'HTTP Session: Workspace selection issued Access Token and Refresh Token.');
+  // Step TWO: workspace selection. Identity comes from the preAuthToken in the
+  // Authorization header; the body carries ONLY the workspaceId that
+  // SelectWorkspaceDto accepts. Sending a userId here is the obsolete,
+  // insecure contract and is asserted dead in Part 4b below.
+  const selectA = await makeRequest(
+    'POST',
+    '/api/auth/select-workspace',
+    { workspaceId: wsAId },
+    { Authorization: `Bearer ${loginA.body.preAuthToken}` },
+  );
+  assert(
+    selectA.statusCode === 201 && !!selectA.body.access_token && !!selectA.body.refresh_token,
+    'HTTP Session: Workspace selection issued Access Token and Refresh Token.',
+  );
 
   // Token rotation over HTTP
   const refreshA = await makeRequest('POST', '/api/auth/refresh', {
     refreshToken: selectA.body.refresh_token,
   });
   assert(
-    refreshA.statusCode === 201 && refreshA.body.refresh_token !== selectA.body.refresh_token,
+    refreshA.statusCode === 201 &&
+      !!refreshA.body.refresh_token &&
+      refreshA.body.refresh_token !== selectA.body.refresh_token,
     'HTTP Session: Refresh token rotated successfully.',
   );
 
@@ -209,6 +302,91 @@ async function main() {
     refreshToken: selectA.body.refresh_token,
   });
   assert(reuseA.statusCode === 401, 'HTTP Session Security: Reused old refresh token rejected with HTTP 401 Unauthorized.');
+
+  // T6 DELIBERATELY INVERTED THIS ASSERTION. Until T6, replaying a rotated
+  // token rejected only the presented token and the newest token stayed valid;
+  // this suite recorded that as the live contract. T6 treats a replayed rotated
+  // token as suspected theft and revokes every active refresh token for that
+  // user, so the newest token must now be dead too.
+  const refreshAfterReuse = await makeRequest('POST', '/api/auth/refresh', {
+    refreshToken: refreshA.body.refresh_token,
+  });
+  assert(
+    refreshAfterReuse.statusCode === 401 &&
+      !refreshAfterReuse.body.access_token &&
+      !refreshAfterReuse.body.refresh_token,
+    'HTTP Session Security: Replaying a rotated token revokes the session family, so the newest token is now rejected with 401.',
+  );
+
+  // Detection must not lock the account out permanently -- re-authentication
+  // still establishes a clean session.
+  const reLoginA = await makeRequest('POST', '/api/auth/login', {
+    email: emailA,
+    passwordPlain: 'super-secure-password-123',
+  });
+  const reSelectA = await makeRequest(
+    'POST',
+    '/api/auth/select-workspace',
+    { workspaceId: wsAId },
+    { Authorization: `Bearer ${reLoginA.body.preAuthToken}` },
+  );
+  assert(
+    reSelectA.statusCode === 201 &&
+      !!reSelectA.body.access_token &&
+      !!reSelectA.body.refresh_token,
+    'HTTP Session: A fresh login establishes a new working session after replay detection.',
+  );
+
+  // 4b. Security regression: the obsolete insecure contract must stay dead.
+  console.log('\n--- Part 4b: Obsolete Insecure Workspace-Selection Contract Rejected ---');
+  const loginB = await makeRequest('POST', '/api/auth/login', {
+    email: emailB,
+    passwordPlain: 'super-secure-password-456',
+  });
+  const wsBId = loginB.body.workspaces[0].workspaceId;
+
+  // The original exploit shape: no pre-auth header, identity asserted by a
+  // client-supplied userId. `userId` is not a member of SelectWorkspaceDto, so
+  // the global ValidationPipe whitelist rejects the request (400) before the
+  // handler ever runs. This is the hole that allowed account takeover for
+  // anyone who learned another user's id.
+  const legacyExploit = await makeRequest('POST', '/api/auth/select-workspace', {
+    userId: regB.body.id,
+    workspaceId: wsBId,
+  });
+  assert(
+    legacyExploit.statusCode === 400 &&
+      !legacyExploit.body.access_token &&
+      !legacyExploit.body.refresh_token,
+    'HTTP Session Security: Obsolete userId-in-body workspace selection rejected (400) and issued no tokens.',
+  );
+
+  // The same request without the illegal field: now the missing pre-auth token
+  // is what stops it.
+  const noPreAuth = await makeRequest('POST', '/api/auth/select-workspace', {
+    workspaceId: wsBId,
+  });
+  assert(
+    noPreAuth.statusCode === 401 &&
+      !noPreAuth.body.access_token &&
+      !noPreAuth.body.refresh_token,
+    'HTTP Session Security: Workspace selection without a pre-auth token rejected (401) and issued no tokens.',
+  );
+
+  // Identity comes from the token, never the body: User A's own valid
+  // preAuthToken still cannot select User B's workspace.
+  const crossUser = await makeRequest(
+    'POST',
+    '/api/auth/select-workspace',
+    { workspaceId: wsBId },
+    { Authorization: `Bearer ${loginA.body.preAuthToken}` },
+  );
+  assert(
+    (crossUser.statusCode === 403 || crossUser.statusCode === 401) &&
+      !crossUser.body.access_token &&
+      !crossUser.body.refresh_token,
+    "HTTP Session Security: A valid pre-auth token cannot select another user's workspace.",
+  );
 
   // 5. Tenant Isolation Attacks over HTTP
   console.log('\n--- Part 5: Real HTTP Cross-Tenant Isolation Attacks ---');
@@ -221,6 +399,9 @@ async function main() {
     'HTTP Tenant Isolation: Cross-workspace resource read rejected with HTTP 401/403/404.',
   );
 
+  // Teardown BEFORE the app closes -- this covers both the all-passed exit and
+  // the failed-assertion exit below, since both fall through here.
+  await teardownFixtures();
   await app.close();
 
   const duration = Date.now() - startTime;
@@ -234,7 +415,12 @@ async function main() {
   }
 }
 
-main().catch((e) => {
+// The exception path. Together with the call before `app.close()`, this gives
+// the same coverage a `finally` would: fixtures are removed whether the suite
+// passes, fails an assertion, or throws. A real `finally` is not usable here
+// because `main()` exits the process itself.
+main().catch(async (e) => {
   console.error(e);
+  await teardownFixtures();
   process.exit(1);
 });

@@ -5,6 +5,7 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import * as dotenv from 'dotenv';
+import * as crypto from 'crypto';
 
 dotenv.config();
 
@@ -214,6 +215,163 @@ async function runAuthSecurityTests() {
     "User A's own refresh token IS revoked after their own logout-all",
     refreshAAfterOwnLogoutAll.status === 401,
   );
+
+  // --- 7. T6: refresh-token replay detection and user-scoped family revocation ---
+  const selectWorkspace = async (preAuthToken: string, workspaceId: string) =>
+    fetch(`${base}/api/auth/select-workspace`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${preAuthToken}`,
+      },
+      body: JSON.stringify({ workspaceId }),
+    });
+  const doRefresh = (refreshToken: string) =>
+    fetch(`${base}/api/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    });
+  const activeTokens = (userId: string) =>
+    prisma.refreshToken.count({ where: { userId, revoked: false } });
+  const sha256 = (t: string) =>
+    crypto.createHash('sha256').update(t).digest('hex');
+
+  // Fresh sessions for both users (earlier sections revoked User A's).
+  const freshLoginA = await login(base, userA.email);
+  const sessA = await (
+    await selectWorkspace(freshLoginA.preAuthToken, userA.workspaceId)
+  ).json();
+  const freshLoginB = await login(base, userB.email);
+  const sessB = await (
+    await selectWorkspace(freshLoginB.preAuthToken, userB.workspaceId)
+  ).json();
+  check(
+    'T6: login + workspace selection issue a usable refresh token for both users',
+    !!sessA.refresh_token && !!sessB.refresh_token,
+  );
+
+  // Rotate A1 -> A2.
+  const rotateRes = await doRefresh(sessA.refresh_token);
+  const rotated = await rotateRes.json();
+  check(
+    'T6: refresh rotates token A into a different token B',
+    rotateRes.status < 300 &&
+      !!rotated.refresh_token &&
+      rotated.refresh_token !== sessA.refresh_token,
+  );
+
+  const reuseAuditsBefore = await prisma.auditLog.count({
+    where: { action: 'REFRESH_TOKEN_REUSE_DETECTED', userId: userA.id },
+  });
+
+  // Replay the already-rotated token A1.
+  const replayRes = await doRefresh(sessA.refresh_token);
+  check(
+    'T6: replaying the already-rotated token A is rejected with 401',
+    replayRes.status === 401,
+  );
+
+  // The newest token B must now be dead too -- this is the T6 behaviour change.
+  const useBAfterReplay = await doRefresh(rotated.refresh_token);
+  check(
+    'T6: replaying token A revokes token B, so token B is rejected with 401',
+    useBAfterReplay.status === 401,
+  );
+  check(
+    'T6: no active refresh tokens remain for the affected user after replay detection',
+    (await activeTokens(userA.id)) === 0,
+  );
+
+  // Blast radius must stop at the affected account.
+  const useBUserAfterReplay = await doRefresh(sessB.refresh_token);
+  check(
+    "T6: a second user's active refresh token is unaffected by the first user's replay event",
+    useBUserAfterReplay.status < 300,
+  );
+  const sessB2 = await useBUserAfterReplay.json();
+
+  // Re-authentication must still work for the affected account.
+  const reLoginA = await login(base, userA.email);
+  const sessA2 = await (
+    await selectWorkspace(reLoginA.preAuthToken, userA.workspaceId)
+  ).json();
+  check(
+    'T6: the affected user can establish a brand-new session by logging in again',
+    !!sessA2.access_token && !!sessA2.refresh_token,
+  );
+
+  // An UNKNOWN token has no identifiable owner, so it must revoke nothing --
+  // otherwise anyone could log a victim out by posting random strings.
+  const activeABeforeUnknown = await activeTokens(userA.id);
+  const activeBBeforeUnknown = await activeTokens(userB.id);
+  const unknownRes = await doRefresh(crypto.randomBytes(40).toString('hex'));
+  check(
+    'T6: an unknown random token returns 401 and revokes nobody',
+    unknownRes.status === 401 &&
+      (await activeTokens(userA.id)) === activeABeforeUnknown &&
+      (await activeTokens(userB.id)) === activeBBeforeUnknown,
+  );
+
+  // An EXPIRED but never-revoked token is ordinary lifecycle end, NOT theft:
+  // it must 401 without triggering family revocation. Seeded directly because
+  // the API cannot mint a pre-expired token.
+  const rawExpired = crypto.randomBytes(40).toString('hex');
+  await prisma.refreshToken.create({
+    data: {
+      hashedToken: sha256(rawExpired),
+      userId: userA.id,
+      workspaceId: userA.workspaceId,
+      expiresAt: new Date(Date.now() - 60_000),
+      revoked: false,
+    },
+  });
+  const activeABeforeExpired = await activeTokens(userA.id);
+  const expiredRes = await doRefresh(rawExpired);
+  check(
+    'T6: an expired (never-revoked) token returns 401 and does NOT revoke the session family',
+    expiredRes.status === 401 &&
+      // the expired row itself is still counted as unrevoked; the live session
+      // token minted above must also survive
+      (await activeTokens(userA.id)) === activeABeforeExpired,
+  );
+
+  // Audit evidence.
+  const reuseAudits = await prisma.auditLog.findMany({
+    where: { action: 'REFRESH_TOKEN_REUSE_DETECTED', userId: userA.id },
+    orderBy: { createdAt: 'asc' },
+  });
+  // TWO events are expected here, and that is correct rather than a
+  // double-count: EVERY presentation of a known-revoked token is a replay
+  // signal. This section presents two of them -- the deliberate replay of
+  // token A, and the check above that token B is now dead (token B having just
+  // been revoked by that first event). Only unknown and expired tokens are
+  // silent.
+  const reuseAuditDelta = reuseAudits.length - reuseAuditsBefore;
+  const latestReuseAudit = reuseAudits[reuseAudits.length - 1];
+  check(
+    `T6: each presentation of a revoked token writes a REFRESH_TOKEN_REUSE_DETECTED record (delta=${reuseAuditDelta}, expected 2)`,
+    reuseAuditDelta === 2 &&
+      latestReuseAudit.actorType === 'SYSTEM' &&
+      latestReuseAudit.actorId === userA.id &&
+      (latestReuseAudit.payload as any)?.outcome ===
+        'ALL_ACTIVE_SESSIONS_REVOKED' &&
+      (latestReuseAudit.payload as any)?.reason ===
+        'ROTATED_REFRESH_TOKEN_REPLAYED',
+  );
+  const auditJson = JSON.stringify(reuseAudits.map((r) => r.payload));
+  check(
+    'T6: no refresh token or token hash appears in any reuse audit payload',
+    !auditJson.includes(sessA.refresh_token) &&
+      !auditJson.includes(rotated.refresh_token) &&
+      !auditJson.includes(sha256(sessA.refresh_token)) &&
+      !auditJson.includes(sha256(rotated.refresh_token)) &&
+      !auditJson.includes(sessB.refresh_token),
+  );
+
+  // Keep User B's newest token usable for nothing further; recorded only so the
+  // variable is meaningful to a reader of the cleanup below.
+  void sessB2;
 
   await app.close();
 

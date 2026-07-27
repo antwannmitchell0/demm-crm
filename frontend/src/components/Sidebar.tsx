@@ -16,16 +16,25 @@ import {
   TrendingUp,
   FileBarChart,
 } from 'lucide-react';
-import { removeAuthToken, removeActiveUser, getActiveUser } from '../lib/api';
+import { logoutSession, logoutEverywhere, getActiveUser } from '../lib/api';
+import WorkspaceSwitcher from './WorkspaceSwitcher';
 
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const user = getActiveUser();
 
-  const handleLogout = () => {
-    removeAuthToken();
-    removeActiveUser();
+  // Now a real logout: revokes the refresh token backend-side, clears the
+  // httpOnly cookie, drops the in-memory access token, and broadcasts to every
+  // other open tab so none is left holding a live session.
+  const handleLogout = async () => {
+    await logoutSession();
+    router.push('/');
+  };
+
+  // Ends the account's sessions on every device, not only this browser.
+  const handleLogoutEverywhere = async () => {
+    await logoutEverywhere();
     router.push('/');
   };
 
@@ -92,12 +101,19 @@ export default function Sidebar() {
             </div>
           </div>
         )}
+        <WorkspaceSwitcher />
         <button
           onClick={handleLogout}
           className="w-full flex items-center space-x-3 px-4 py-3 text-slate-400 hover:bg-rose-950/20 hover:text-rose-400 rounded-xl transition-all duration-150"
         >
           <LogOut className="w-5 h-5" />
           <span className="font-medium text-sm">Logout</span>
+        </button>
+        <button
+          onClick={handleLogoutEverywhere}
+          className="w-full text-center px-4 py-2 text-[11px] text-slate-600 hover:text-rose-400 transition-colors duration-150"
+        >
+          Sign out on all my devices
         </button>
       </div>
     </aside>

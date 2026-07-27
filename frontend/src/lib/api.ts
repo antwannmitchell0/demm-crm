@@ -9,6 +9,8 @@
 // backend's real (inconsistent) shape, or every request 404s when
 // NEXT_PUBLIC_API_URL isn't explicitly set -- auth calls below are
 // prefixed with 'api/' individually to match.
+import * as sessionClient from './session/client';
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 export interface User {
@@ -20,37 +22,87 @@ export interface User {
   workspaceId: string;
 }
 
+/**
+ * T8: these accessors are now backed by the in-memory session client, NOT
+ * localStorage. The names and signatures are kept because nine page components
+ * gate themselves with `if (!getAuthToken()) router.push('/')`; SessionProvider
+ * withholds those pages until session restoration finishes, so a memory-only
+ * token no longer bounces every reload to the login screen.
+ *
+ * No token is written to localStorage, sessionStorage, IndexedDB, a URL, or a
+ * browser-readable cookie. The refresh token exists only in the T7 httpOnly
+ * cookie and is unreachable from this file.
+ */
 export function getAuthToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem('demm_crm_token');
-}
-
-export function setAuthToken(token: string) {
-  localStorage.setItem('demm_crm_token', token);
-}
-
-export function removeAuthToken() {
-  localStorage.removeItem('demm_crm_token');
+  return sessionClient.getAccessToken();
 }
 
 export function getActiveUser(): User | null {
-  if (typeof window === 'undefined') return null;
-  const user = localStorage.getItem('demm_crm_user');
-  return user ? JSON.parse(user) : null;
+  return sessionClient.getSessionUser() as User | null;
 }
 
-export function setActiveUser(user: User) {
-  localStorage.setItem('demm_crm_user', JSON.stringify(user));
+/** Ends the session everywhere (backend + cookie + every open tab). */
+export async function logoutSession(): Promise<void> {
+  await sessionClient.logout();
+}
+
+/**
+ * Ends every session for this account on every device, not just this browser.
+ * Uses the same backend URL as every other call so no second configuration
+ * source (and no second localhost literal) enters the bundle.
+ */
+export async function logoutEverywhere(): Promise<void> {
+  await sessionClient.logoutAll(API_URL);
+}
+
+/**
+ * Kept for source compatibility with the pre-T8 logout control. Clearing local
+ * state alone is not a real logout, so both delegate to the full flow.
+ */
+export function removeAuthToken() {
+  void sessionClient.logout();
 }
 
 export function removeActiveUser() {
-  localStorage.removeItem('demm_crm_user');
+  /* No separate stored user exists any more; logout clears everything. */
 }
 
-async function request(endpoint: string, options: RequestInit = {}) {
+/**
+ * T10: carries the HTTP status alongside the message so a caller can tell
+ * "you are not allowed to see this" (403) apart from "the server is down"
+ * (5xx/0). Without it the dashboard could only show one generic failure, which
+ * is how a permission problem used to look identical to an outage.
+ *
+ * `message` is unchanged, so the nine pages that read `err.message` and the
+ * existing test suites behave exactly as before.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+/**
+ * Authentication endpoints must never be intercepted or retried by the 401
+ * handler. A prefix rule rather than an enumeration: a 401 from ANY auth route
+ * means the credentials themselves were rejected, so refreshing and replaying
+ * is meaningless at best and, for refresh itself, recursive at worst. An
+ * enumeration silently omitted `register` until a test caught it.
+ */
+const NON_RETRYABLE_PREFIX = 'api/auth/';
+
+async function request(
+  endpoint: string,
+  options: RequestInit = {},
+  hasRetried = false,
+): Promise<any> {
   const token = getAuthToken();
   const user = getActiveUser();
-  
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
@@ -69,9 +121,30 @@ async function request(endpoint: string, options: RequestInit = {}) {
     headers,
   });
 
+  // A 401 means the access token expired. Refresh ONCE through the coordinated
+  // single-flight path and replay the original request ONCE. `hasRetried`
+  // guarantees termination: a second 401 falls through to the normal error path
+  // instead of looping. Auth endpoints are excluded so a refresh can never
+  // recursively trigger another refresh.
+  if (
+    response.status === 401 &&
+    !hasRetried &&
+    !endpoint.startsWith(NON_RETRYABLE_PREFIX)
+  ) {
+    const refreshed = await sessionClient.refreshSession();
+    if (refreshed) {
+      return request(endpoint, options, true);
+    }
+    // Refresh failed: the session client has already cleared state and told the
+    // other tabs. Surface the original 401 rather than inventing an error.
+  }
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.message || `Request failed: ${response.status}`);
+    throw new ApiError(
+      errorData.message || `Request failed: ${response.status}`,
+      response.status,
+    );
   }
 
   return response.json();
@@ -79,34 +152,23 @@ async function request(endpoint: string, options: RequestInit = {}) {
 
 export const api = {
   // Auth
-  login: async (email: string, passwordPlain: string) => {
-    // Login is two steps: verify credentials (returns a short-lived
-    // preAuthToken + the accessible workspace list, but no real access
-    // token yet), then select a workspace (requires the preAuthToken,
-    // returns the actual access/refresh tokens). This matches the backend
-    // contract in auth.service.ts -- login() never issues a usable token
-    // by itself.
-    const loginRes = await request('api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, passwordPlain }),
-    });
-
-    if (!loginRes.workspaces || loginRes.workspaces.length === 0) {
-      throw new Error('No accessible workspace for this account.');
-    }
-    // TODO: surface a workspace picker for multi-workspace accounts.
-    // Defaulting to the first entry for now, matching the current
-    // single-workspace-per-account signup flow (see register()).
-    const workspaceId = loginRes.workspaces[0].workspaceId;
-
-    const res = await request('api/auth/select-workspace', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${loginRes.preAuthToken}` },
-      body: JSON.stringify({ workspaceId }),
-    });
-    setAuthToken(res.access_token);
-    setActiveUser(res.user);
-    return res;
+  /**
+   * Two-step login, routed entirely through the first-party T7 session routes:
+   * credentials and the pre-auth token go to same-origin handlers that talk to
+   * the backend server-side, and the refresh token is captured into an httpOnly
+   * cookie this code cannot read. Only the access token comes back, and it
+   * stays in memory.
+   *
+   * T9 removed the temporary bridge that silently entered the first workspace.
+   * This call now REPORTS what the account looks like and lets the caller act:
+   * one workspace is entered automatically, several require a choice, none is
+   * stated honestly. It no longer decides on the user's behalf.
+   */
+  login: async (
+    email: string,
+    passwordPlain: string,
+  ): Promise<sessionClient.LoginOutcome> => {
+    return sessionClient.beginLogin(email, passwordPlain);
   },
 
   register: async (data: {

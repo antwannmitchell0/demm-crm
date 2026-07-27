@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "prisma:validate": "npx prisma validate",
     "prisma:status": "npx prisma migrate status",
+    "test:repo-safety": "npx ts-node test-repo-safety.ts",
     "test:e2e": "npx ts-node verify-comprehensive.ts",
     "test:http": "npx ts-node verify-http-staging.ts",
     "test:gcp": "npx ts-node verify-gcp-staging.ts",
