@@ -119,6 +119,31 @@ jobs:
         # repository hygiene fixes from T12R/T14R are still in place.
         run: cd backend && npm run test:repo-safety
 
+      - name: Atomic Refresh Rotation Suite
+        # Phase 0C-R. Proves one refresh token cannot be amplified into several
+        # live sessions by concurrent callers. Needs a real PostgreSQL instance
+        # -- the race cannot be exhibited against a mock -- which is why it runs
+        # here rather than in a unit runner.
+        run: cd backend && npm run test:refresh-concurrency
+        env:
+          JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+          ALLOW_DESTRUCTIVE_TESTS: "true"
+
+      - name: Focused Security Suites
+        # Previously these ran only on a developer's machine. `npm run verify`
+        # covers the comprehensive and HTTP suites but NOT approval governance,
+        # auth-security, or either workspace-isolation suite, so a regression in
+        # any of them could have reached main with CI green.
+        run: |
+          cd backend
+          npm run test:approval
+          npm run test:auth-security
+          npm run test:workspace-guard
+          npm run test:workspace-controller
+        env:
+          JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+          ALLOW_DESTRUCTIVE_TESTS: "true"
+
       - name: Execute Verification Suite
         # The ONLY step permitted to authorise destructive tests, and only
         # because the two steps above proved the target is the ephemeral CI
@@ -127,3 +152,63 @@ jobs:
         env:
           JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
           ALLOW_DESTRUCTIVE_TESTS: "true"
+
+  # ---------------------------------------------------------------------------
+  # FRONTEND
+  #
+  # The frontend had NO continuous integration at all: the session BFF routes,
+  # multi-tab orchestration, workspace selection, and the honest-UI guarantees
+  # were only ever verified locally. A regression in any of them could reach
+  # main with CI green. This job needs no database -- every suite runs against
+  # the built standalone output and stub backends.
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: Frontend Quality & Session Security
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Dependencies
+        run: cd frontend && npm ci
+
+      - name: Install backend toolchain for the TypeScript test runner
+        # The frontend suites are executed with the backend's ts-node, matching
+        # how they are invoked locally, so that toolchain must exist here too.
+        run: cd backend && npm ci
+
+      - name: Lint
+        run: cd frontend && npm run lint
+
+      - name: Typecheck
+        run: cd frontend && npm run typecheck
+
+      - name: Production Build (with config and bundle guards)
+        # `prebuild` runs verify-production-config and `postbuild` runs
+        # verify-no-localhost-in-bundle, so this single step exercises both
+        # release guards. A missing or loopback API URL fails the build.
+        run: cd frontend && npm run build
+        env:
+          NODE_ENV: production
+          NEXT_PUBLIC_API_URL: "https://api.ci.invalid"
+
+      - name: Session Route Suite (T7)
+        # Requires the standalone build produced by the previous step.
+        run: cd frontend && npm run test:session-routes
+
+      - name: Session Orchestration Suite (T8)
+        run: cd frontend && npm run test:session-orchestration
+
+      - name: Workspace Selection Suite (T9)
+        run: cd frontend && npm run test:workspace-selection
+
+      - name: Honest Frontend Suite (T10/T11)
+        run: cd frontend && npm run test:honest-frontend
