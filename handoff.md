@@ -670,3 +670,85 @@ cookie, email, or client name before sending.**
 
 Check 7 matters most today: before this build, two tabs refreshing at the same moment
 could each mint a session from one token. Now exactly one wins and the other retries.
+
+---
+
+## 18. Phase 2 — the gaps that made the product unusable for a team
+
+Branch `phase2/agent-contract-and-honesty`, PR #5, CI run `30295741309` (both jobs green,
+all 15 suites present in the log). Not merged at time of writing.
+
+### Fabrications removed
+
+- `POST /agent/plan/preview` **deleted**, not hidden. It advertised a planner and
+  keyword-matched the description: "wedding" returned two hard-coded steps, one of which
+  created a contact ("Sarah Wedding-Lead", sarah@wed.com) the user had never mentioned.
+  It was reachable by any token holder and had no route to becoming correct.
+- The dashboard brief no longer asserts **"No automations failed today."** There is no
+  automation engine; the line reported the absence of failures in a system that cannot
+  fail. A comment in `dashboard.service.ts` says why it must not return.
+
+### Closed defects
+
+| Was | Now |
+|---|---|
+| `execute` / `execute/cancel` bound raw body properties, bypassing the ValidationPipe. Missing `toolName` → `404 Tool undefined not found`; missing `sessionId` → `201 CANCELLED` having cancelled nothing | Whole-body DTOs; `whitelist` + `forbidNonWhitelisted` apply |
+| `GET /agent/tools` published no parameter schemas | Every tool publishes name/type/required/description per parameter, plus `canRequireApproval` |
+| Workspace switching required the password again | `GET /api/auth/memberships` + `POST /api/auth/switch-workspace` |
+| Session payload carried `workspaceId` and role only | Also carries `workspaceName` and `organizationName`; the sidebar shows the active workspace |
+| `Invitation` model existed with **zero** code referencing it | Six `/team` endpoints + `POST /team/invitations/accept`; token hashed at rest, returned once |
+| No endpoint listed approvals | `GET /agent/approvals`, member-readable, PENDING first, DTO-validated status filter |
+| A requester could not withdraw their own request | `POST /agent/approvals/:id/cancel`; `CANCELLED` is a distinct terminal state |
+| No UI for any of the above | `/approvals`, `/team`, `/invite` |
+
+### Last-owner protection needed a lock
+
+Removing or demoting the final `ORG_OWNER` orphans a workspace. The rule is a
+check-then-act, and under READ COMMITTED two transactions removing *different* owners
+each see the other's row still present, both count two, and both commit. Same shape as
+the Phase 0C-R refresh-token amplification, same answer: `SELECT ... FOR UPDATE` on the
+Workspace row.
+
+**Proven by mutation:** with the lock removed, three concurrent removals all succeed and
+the workspace is left with **zero owners**. With it, one always remains.
+
+### Migrations
+
+- `20260727180000_invitation_token_hash_and_provenance` — replaces plaintext `token` with
+  `tokenHash`, adds `invitedById` / `acceptedById` / `acceptedAt`, adds `REVOKED`.
+  **Deletes existing Invitation rows**: a plaintext token cannot become a hash and stay
+  verifiable. Safe because nothing had ever created one.
+- `20260727190000_approval_cancelled_status` — additive enum value.
+
+Both ship rollbacks stating what they cannot restore. Applied only to
+`demm_crm_phase2_test`; **`demm_crm` is untouched at `applied=12 tables=73`**.
+
+### Also fixed in passing
+
+- `test-refresh-concurrency.ts` used fixed subdomains and deleted nothing, so it could
+  only ever run **once** against a given database. Invisible on CI, where the database
+  dies with the job. Now run-scoped with teardown, verified by running it twice.
+- `test-workspace-selection.ts` called `teardownSession()` at the end of `main()` rather
+  than in a `finally`, so any throw left the refresh timer pending and the suite **hung
+  instead of failing**.
+- `start:prod` ran `node dist/main`, which does not exist. Because the root-level
+  `test-*.ts` / `verify-*.ts` files are inside the compile, TypeScript's common source
+  root is `.` and the entry is `dist/src/main.js` — which the Dockerfile has always used,
+  so deploys were unaffected and only the npm script was dead.
+
+### Known limitations carried out of Phase 2
+
+- **The three new pages have not been exercised in a browser.** They are type-checked and
+  production-built, and their data contracts are covered by 77 backend assertions against
+  a real PostgreSQL instance, but that is not the same as proving the React renders. The
+  preview tooling in the authoring session was pinned to the quarantined Desktop checkout
+  (§9), not to the release clone, so no click-through was possible.
+- **No email delivery.** An invitation produces a link the administrator sends themselves.
+  The `/team` page says so rather than implying a message was sent.
+- **A brand-new person must create an account before accepting.** `register` always
+  creates a new Organization and Workspace, so an invitee ends up with a spare workspace
+  alongside the one they were invited to. Acceptance itself works; the tidy path
+  (`register` with an invitation token) is not built.
+- **Approval expiry is still lazy** — evaluated on the next resolve attempt, not swept.
+- Phases 3–11 of the finishing plan are untouched. The workflow engine still does not
+  exist, and no launch pack exists.
