@@ -1312,6 +1312,104 @@ the Phase 0C gate, the 25-step roadmap, a confirmed core-file map, and takeover 
 
 ---
 
+## Phase 0C — Baseline seal — BLOCKED (reconciliation and containment complete)
+
+### Reconciliation (Checkpoint 1) — COMPLETE
+
+The believed state was wrong in one important way: `origin/main` was **28 Stripe billing
+commits** ahead of the local baseline, and those commits were never part of the Phase 0
+preservation branch. Ancestry turned out to be strictly linear, not divergent:
+
+```
+24808c4 (local main / preservation base)
+  -> 28 Stripe commits -> d0d0b26 (origin/main)
+  -> 28 Communications commits -> 2ddac5f (origin/worktree-phase-2-...)
+  -> 2 local commits -> 1a251ad (local worktree tip)
+```
+
+`phase0/seal-candidate-2026-07-26` was cut from `origin/main` and the preservation branch was
+merged into it with a normal reviewable merge (`49f80d6`). **0 commits lost from either side**;
+all 8 preservation commits and all 28 origin/main commits are reachable. 11 migrations now.
+
+Two conflicts, both resolved deliberately rather than by side preference:
+- `schema.prisma` — whitespace realignment plus one real field (`checkoutSessions`) present only
+  on origin/main. Took origin/main; then verified `AgentApproval.requesterRole`,
+  `AgentApproval.expiresAt`, and `ApprovalStatus.EXPIRED` all survived.
+- `handoff.md` — origin/main carried a **newer** handoff than the one Phase 0B replaced,
+  documenting real deployment tooling. Neither side taken wholesale; operational truth merged in
+  and re-verified live.
+
+### Host duplication (Checkpoint 2) — ROOT CAUSE IDENTIFIED, CONTAINED
+
+Evidence, not inference:
+- `FXICloudDriveDesktop = 1` — iCloud "Desktop & Documents" sync is enabled.
+- `~/Library/Mobile Documents/com~apple~CloudDocs/Desktop/demm CRM` exists — **the repository is
+  inside the iCloud container**.
+- `bird`, `cloudd`, `fileproviderd`, and the iCloudDrive FileProvider are all running.
+- iCloud resolves collisions by appending `" 2"`, `" 3"` — exactly the observed pattern, and Git
+  rewrites `.git/index` and `refs/*` constantly via write-then-rename.
+
+During this phase the mechanism **escalated to source files**: 16 untracked duplicates appeared
+in the original checkout, including `client 2.ts`, `coordination 2.ts`, `WorkspacePicker 2.tsx`,
+`resolve-approval.dto 2.ts`, and every new test file. They were visible to Git as `??` and would
+have been swept in by `git add .` — which retroactively justifies Phase 0A's explicit-path
+staging. The committed tree contains **0**.
+
+**Containment:** a clean clone at `/private/tmp/demm-crm-clean-candidate` (outside the synced
+path) has **0 duplicates** anywhere, clean `fsck`, and is now the release vehicle. The original
+checkout is **quarantined from release operations**. This is *containment*, not a root-cause fix:
+the sync setting is still on and only the user can change it.
+
+### Dispositions (Checkpoint 3)
+
+- `demm_crm_restoration_test` — dependency scan found only the guard deny-list, string-literal
+  test assertions, and historical docs. Final evidence recorded (18 tables, 1 migration, 30
+  non-migration rows), then **dropped and confirmed gone**. No other database touched.
+- Historical dump blob — retained in history by standing decision; residual exposure recorded.
+- Communications worktree dump copy — untouched; belongs to Phase 1.
+- External malformed-ref backups — retained.
+- Seven inert `.git` duplicates — left in the quarantined checkout as evidence; **not** copied
+  into the clean clone.
+
+### Local verification (Checkpoint 4) — GREEN in the clean clone
+
+Backend on disposable `demm_crm_verify_phase0_p0c2_1785126714`: repo-safety 43/0, approval 46/0,
+workspace guard 12/0, workspace controller 12/0, auth 21/0, HTTP 22/0, comprehensive 19/0, full
+`npm run verify` exit 0, lint 0, typecheck 0. Frontend: T7 25/0, T8 15/0, T9 44/0, T10+T11 36/0,
+lint 0, typecheck 0, production build 0 with both guards. `dev-db-integrity UNCHANGED=true`.
+
+**Two release blockers found and fixed (`04257e6`), neither introduced by the merge:**
+1. `verify-stripe-billing-staging-smoke.ts` filtered `RelationshipSignal` by a non-existent
+   `clientAccount` relation. It is a compile error, so **`origin/main` does not currently
+   typecheck** and its `npm run verify` chain fails. Corrected to `profile.businessUnitId`.
+2. `test-repo-safety.ts` assertion 10f asserted exactly seven inert `.git` duplicates — an
+   environment-specific fact that fails on every clean checkout, CI included. Replaced with a
+   portable invariant: no duplicate-suffixed artifact inside `refs/` or `logs/refs/`.
+
+### Staging discovery (Checkpoint 6) — VERIFIED
+
+Contrary to the earlier Phase 0B write-up, a real staging environment exists and was verified
+live: both Cloud Run services return HTTP 200 serving `d0d0b26`, Cloud SQL `demm-crm-staging-db`
+is RUNNABLE, four secrets are configured (names only), and the deploy identity has access.
+
+### THE BLOCKER (Checkpoint 7)
+
+`scripts/deploy-staging.sh` enforces, with no bypass flag:
+
+```
+git merge-base --is-ancestor "$COMMIT_SHA" origin/main
+  || fail "... not an ancestor of origin/main -- Refusing to deploy an unreviewed commit."
+```
+
+The seal candidate is a merge **ahead of** `origin/main`, so it can never satisfy that guard.
+Deploying it requires merging to `main` first — which Phase 0C explicitly withheld pending
+independent approval. A second blocker sits behind the same gate: deployed-browser verification
+needs a login, and the standing constraint forbids Claude from typing real credentials.
+
+**Consequently `v0.1.4-phase0-baseline` was NOT created, and Phase 1 was NOT started.**
+
+---
+
 ## Remaining Phase 0 tasks (not started — approved scope, unchanged)
 
 - [x] **T4 — COMPLETE** (full record in the "T4 — Approval authority" section above).
