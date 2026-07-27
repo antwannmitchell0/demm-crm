@@ -582,54 +582,91 @@ found" result — that has already produced a false negative once.
 
 ---
 
-## 17. Phase 0C status — deployed and verified; awaiting two human-gated items
+## 17. Phase 0C-R status — foundation remediated; one human gate remains
 
-The blocker recorded here previously (the deploy pipeline refusing a commit that was not an
-ancestor of `origin/main`) is **resolved**. The Product Manager approved PR #1, it was merged with
-a normal merge commit, and the merged commit was deployed through the pipeline unmodified.
+### Fixed since the last handoff
 
-| Item | State |
-|---|---|
-| PR #1 | **MERGED** — normal merge commit, 2 parents, reviewed ancestry preserved |
-| `origin/main` | `51ed1f60c8fe616f9109c594efaa5b1d4a0eb3ab` |
-| Preservation commits | **8/8 reachable** from `origin/main` |
-| Real CI | **green** on the merged content |
-| Staging deployment | **SUCCESS** — backend `demm-crm-backend-staging-00017-l2z`, frontend `demm-crm-frontend-staging-00008-n7v`, both 100% traffic |
-| Deployed commit proof | both `/version` endpoints return `51ed1f6…` |
-| Migrations applied | 11, via `prisma migrate deploy` (no `db push`) |
-| Non-credentialed staging verification | **green** (see below) |
-| Contacts-page crash | **resolved** — was a local harness artifact, not product code |
-| Staging log review | **clean** — zero credential/token/secret matches, zero errors |
-| Development database | **unchanged** |
-| Baseline tag | **NOT created** |
+**Refresh-token amplification (security).** `refreshToken()` read the row, checked
+`revoked`, then wrote `revoked = true` as a separate unconditional UPDATE keyed only on
+`id`. Concurrent requests with the same token all passed the read and all minted a
+session. Measured against real PostgreSQL with 8 concurrent callers:
 
-### Verified live on staging without credentials
+| | before | after |
+|---|---|---|
+| requests that succeeded | **8** | **1** |
+| unrevoked tokens afterwards | **8** | **1** |
 
-Origin rejection (cross-site **and** missing Origin) → 403 · wrong content-type → 415 · refresh
-with no cookie → 401 · refresh with a synthetic cookie → 401 · no token in any BFF response body ·
-no internal backend URL in errors · zero `localhost` in served chunks · login page renders ·
-`/contacts` unauthenticated redirects cleanly with no console errors · exactly **one** refresh
-request on load (no refresh loop) · browser storage and cookies empty.
+Rotation is now a conditional claim (`WHERE id = ? AND revoked = false`). Losing the
+claim returns a generic 401 and is deliberately *not* treated as theft — a thief has no
+reason to race the victim, and revoking would log out a legitimate second tab. Genuine
+replay (an already-rotated token) still triggers full user-scoped family revocation.
 
-Backend contract: bad credentials → 401 · missing pre-auth token → 401 · invalid pre-auth token →
-401 · unknown refresh token → 401 with the same message (no oracle) · protected routes → 401 ·
-approval resolve without auth → 401 (not 500) · no stack traces or internal detail in responses.
+**Refresh oracle removed.** A refresh whose membership had been revoked answered "User
+is not a member of this workspace", confirming the token was otherwise valid. It now
+returns the same generic 401 as every other refusal.
 
-### The two remaining gates — both need a human
+**CI coverage.** Previously CI ran only `npm run verify`. It now also runs the
+atomic-refresh, approval, auth-security, workspace-guard, and workspace-controller
+suites, plus an entire **frontend job**: lint, typecheck, production build with both
+release guards, and T7/T8/T9/T10-T11. All 15 were verified present in the run log, not
+assumed.
 
-1. **Credentialed browser verification.** A standing constraint forbids Claude typing real
-   credentials, and this was previously enforced by a hard sandbox refusal. The 17-point checklist
-   is in the Phase 0C report and must be run by the Product Manager against
-   commit `51ed1f6…`.
-2. **Independent security and architecture review.** A separate session must supply it. The
-   implementation session must not grade its own work.
+**Vercel.** Was failing on every commit including main (`next build` at the monorepo
+root → "Couldn't find any `pages` or `app` directory"). `vercel.json` now sets
+`git.deploymentEnabled: false`. This repo deploys to Cloud Run; a Vercel build would
+create an unmanaged duplicate frontend. **Owner action still available:** fully
+disconnecting the integration in the Vercel dashboard.
 
-Until both are returned, `v0.1.4-phase0-baseline` must not be created.
+**A CI-only defect the new frontend job caught immediately.** `test:session-routes` was
+the only frontend suite invoked without `TS_NODE_COMPILER_OPTIONS`. Locally Node
+reparsed it as ESM with a warning and it passed; on CI's Node 20 it was a hard
+`ERR_UNKNOWN_FILE_EXTENSION`. Fixed.
 
-### Note on the pre-existing staging login failure
+### The one remaining gate — credentialed browser verification
 
-The previously reported "Failed to fetch" browser login failure occurred on `d0d0b26`, which
-predates the Phase 0 session architecture. That build posted login **cross-origin** to the backend;
-this build posts **same-origin** to `/api/session/login`. The deployed page was observed making
-exactly one same-origin refresh call with no console errors. Whether that removes the failure can
-only be confirmed by the credentialed login in gate 1 — it is a hypothesis, not a finding.
+Claude must not type real credentials; this was enforced by a hard sandbox refusal in an
+earlier session. The 17-point checklist below must be run by a person. Everything else
+in Phase 0C-R is complete and verified.
+
+
+### Credentialed browser checklist — for the Product Manager
+
+**Commit under test:** `bfa7449e36c7b851fa03d2ee771ff95060698af9`. Confirm at
+`/api/version` on the staging frontend before starting (URL in §16).
+**Revisions:** backend `…-00018-5d5`, frontend `…-00009-jkw`, both 100% traffic.
+**Setup:** Chrome or Safari, **two tabs, same profile** (not incognito for the cross-tab
+checks). Keep **Console**, **Network** (preserve log on), and **Application → Storage**
+open the whole time.
+
+**Safe:** logging in, navigating, switching workspace, logging out, reloading, opening a
+second tab, running a low-risk Agent action.
+**Do not:** approve anything against real client records, convert or delete real records,
+or run destructive Agent actions. If the only account available holds real client data,
+do 12–15 read-only and mark the rest N/A rather than mutating anything.
+
+| # | Check | Pass/Fail |
+|---|---|---|
+| 1 | Login succeeds | |
+| 2 | One-workspace account enters directly | |
+| 3 | Multi-workspace account shows the picker (N/A if none) | |
+| 4 | The workspace you chose becomes active — not the first listed | |
+| 5 | Reload restores the session | |
+| 6 | Second tab restores the session | |
+| 7 | **Use both tabs actively for ~2 minutes — no unexpected logout.** This is the one that exercises today's atomic-rotation fix | |
+| 8 | Workspace switch works (it asks for your password — expected) | |
+| 9 | The other tab follows the switch | |
+| 10 | Logout in one tab logs out the other | |
+| 11 | Storage: no access/refresh token in localStorage, sessionStorage, or Cookies; none in any URL | |
+| 12 | Dashboard shows real values; honest empty state if you can reach a zero-data workspace; honest unavailable state with DevTools offline — **never zeros for an error** | |
+| 13 | Agent Console lists only real tools, offers no plan preview, shows approval-required as **not executed**, shows errors as errors | |
+| 14 | Contacts page navigation does not crash | |
+| 15 | Agent history shows detail **names** only, never values | |
+| 16 | Console has no unhandled auth or cross-tab errors | |
+| 17 | Network shows no repeating refresh loop | |
+
+**Return:** date/time, browser, the commit SHA, 17 pass/fail lines, and redacted
+screenshots or console/network excerpts for anything that fails. **Redact any token,
+cookie, email, or client name before sending.**
+
+Check 7 matters most today: before this build, two tabs refreshing at the same moment
+could each mint a session from one token. Now exactly one wins and the other retries.

@@ -1,0 +1,11 @@
+{
+  "repository": "demm-crm",
+  "branch": "phase0cr/evidence-and-browser-packet",
+  "commit": "bfa7449e36c7b851fa03d2ee771ff95060698af9",
+  "cloudBuildId": "267747-8a0b2340627d4f99b9fa353f94939",
+  "backendRevision": "demm-crm-backend-staging-00018-5d5",
+  "frontendRevision": "demm-crm-frontend-staging-00009-jkw",
+  "migrations": ["20260721051848_release_0_1_1_security_and_enums","20260721184919_phase_1a_business_unit_foundation","20260722062737_fix_consent_directive_subject_restrict","20260722141426_dom26r_essential_indexes","20260722165835_phase_2_marketing_lead_to_client","20260722170740_fix_offer_business_unit_restrict","20260723053752_offer_optional_operational_fields","20260723064102_onboarding_service_delivery","20260723113536_client_health_and_revenue_amount","20260723164851_stripe_founder_tier_billing","20260726134103_approval_requester_role_and_expiry"],
+  "deployedAtUtc": "2026-07-27T17:21:43Z",
+  "deployedBy": "antwannmitchell0@gmail.com"
+}
