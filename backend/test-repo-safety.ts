@@ -328,23 +328,32 @@ async function main() {
     !fs.existsSync(path.join(REPO_ROOT, '.git/refs/stash 2')) &&
       !fs.existsSync(path.join(REPO_ROOT, '.git/logs/refs/stash 2')),
   );
-  // The seven inert duplicates were explicitly out of scope.
-  const dupes = git([
-    'rev-parse',
-    '--git-dir',
-  ]).out.trim();
-  const inert = [
-    'index 2',
-    'index 3',
-    'index 4',
-    'worktrees/phase-2-lead-to-client-core/AUTO_MERGE 2',
-    'worktrees/phase-2-lead-to-client-core/AUTO_MERGE 3',
-    'worktrees/phase-2-lead-to-client-core/index 2',
-    'worktrees/phase-2-lead-to-client-core/index 3',
-  ].filter((f) => fs.existsSync(path.join(REPO_ROOT, dupes, f)));
+  // Duplicate-suffixed artifacts (" 2", " 3") come from the host's file sync,
+  // not from this repository. Only copies inside refs/ and logs/refs/ ever broke
+  // Git, because those are the directories Git enumerates; copies of `index` or
+  // `AUTO_MERGE` are inert since Git opens those paths literally.
+  //
+  // This asserts the invariant that actually matters and holds everywhere: a
+  // clean clone, CI, and a contaminated developer checkout alike. An earlier
+  // version asserted a count of exactly seven inert artifacts, which encoded a
+  // fact about one machine and failed on every clean checkout, CI included.
+  const gitDirRel = git(['rev-parse', '--git-dir']).out.trim();
+  const breakingDuplicates: string[] = [];
+  for (const dir of ['refs', 'logs/refs']) {
+    const abs = path.resolve(REPO_ROOT, gitDirRel, dir);
+    if (!fs.existsSync(abs)) continue;
+    const walk = (d: string) => {
+      for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+        const full = path.join(d, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/ \d+$/.test(entry.name)) breakingDuplicates.push(full);
+      }
+    };
+    walk(abs);
+  }
   check(
-    `10f. The seven inert duplicate .git artifacts were retained (found ${inert.length})`,
-    inert.length === 7,
+    `10f. No duplicate-suffixed artifact exists in a Git-enumerated ref directory (found ${breakingDuplicates.length})`,
+    breakingDuplicates.length === 0,
   );
 
   console.log('==================================================');

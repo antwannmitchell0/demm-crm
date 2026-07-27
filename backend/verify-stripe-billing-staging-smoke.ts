@@ -323,7 +323,11 @@ async function main() {
     await prisma.task.deleteMany({ where: { workspaceId: wsMktg.id } });
     await prisma.relationshipSignal
       .deleteMany({
-        where: { clientAccount: { businessUnitId: buMktg.id } },
+        // RelationshipSignal has no clientAccount relation; it reaches a
+        // business unit through its RelationshipProfile. The original path
+        // did not compile, which broke `npm run typecheck` and therefore
+        // the whole `npm run verify` chain.
+        where: { profile: { businessUnitId: buMktg.id } },
       })
       .catch(() => {
         /* model name may differ; non-fatal for cleanup */
