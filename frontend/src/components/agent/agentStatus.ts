@@ -166,12 +166,12 @@ export function summarizeArgumentFields(args: unknown): string[] {
 /**
  * Why the console offers no "preview the steps" button.
  *
- * The backend does expose `POST /agent/plan/preview`, but it is not a real
- * plan: it keyword-matches the description and returns hard-coded steps that
- * invent a contact ("Sarah Wedding-Lead", "sarah@wed.com") unrelated to the
- * workspace. Showing that as a preview of what the system is about to do would
- * be exactly the fabrication this work removes, so the capability is reported
- * as unavailable until the backend can produce a real plan.
+ * There is no planner. The backend used to expose `POST /agent/plan/preview`,
+ * but it keyword-matched the description and returned hard-coded steps that
+ * invented a contact unrelated to the workspace; that endpoint has since been
+ * deleted rather than merely hidden. Multi-step planning belongs to the AI
+ * workflow phase, so until it exists the console says so plainly instead of
+ * offering a button that would show a guess.
  */
 export const STEP_PREVIEW_COPY = {
   heading: 'Step preview is not available yet.',

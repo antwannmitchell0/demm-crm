@@ -25,7 +25,8 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main"
+    "start:prod": "node dist/main",
+    "test:agent-contract": "npx ts-node test-agent-contract.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

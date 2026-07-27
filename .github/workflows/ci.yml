@@ -129,6 +129,17 @@ jobs:
           JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
           ALLOW_DESTRUCTIVE_TESTS: "true"
 
+      - name: Agent Contract Suite
+        # Phase 2. Proves the two fabrications stay deleted (the canned
+        # plan/preview and the unconditional "no automations failed" claim),
+        # that every agent endpoint validates its body at the boundary instead
+        # of binding raw properties past the ValidationPipe, and that the tool
+        # registry publishes parameter schemas.
+        run: cd backend && npm run test:agent-contract
+        env:
+          JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+          ALLOW_DESTRUCTIVE_TESTS: "true"
+
       - name: Focused Security Suites
         # Previously these ran only on a developer's machine. `npm run verify`
         # covers the comprehensive and HTTP suites but NOT approval governance,
