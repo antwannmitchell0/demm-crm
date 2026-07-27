@@ -31,6 +31,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import * as jwt from 'jsonwebtoken';
 import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
@@ -73,6 +74,10 @@ async function teardown() {
 }
 
 const PASSWORD = 'Correct-Horse-Battery-9!';
+
+/** Mirrors AuthService.hashToken -- lookups are keyed on the hash, never the raw token. */
+const hash = (t: string) =>
+  crypto.createHash('sha256').update(t).digest('hex');
 
 /**
  * Tolerates either a bare array or a `{ memberships: [...] }` envelope, and
@@ -320,7 +325,7 @@ async function main() {
 
     // The old refresh token must be spent, exactly like a rotation.
     const oldRow = await prisma.refreshToken.findUnique({
-      where: { hashedToken: require('crypto').createHash('sha256').update(session.refresh_token).digest('hex') },
+      where: { hashedToken: hash(session.refresh_token) },
     });
     check('14. The refresh token used to switch is revoked', oldRow?.revoked === true);
 
@@ -419,7 +424,10 @@ async function main() {
       live === 1,
     );
 
-    // Replaying the spent token is theft, and is answered like theft.
+    // Replaying the spent token IMMEDIATELY is indistinguishable from the
+    // racing tab above -- same token, same instant -- so it is refused without
+    // being treated as theft. Revoking the family here is exactly what used to
+    // sign a real user out for the crime of having two tabs open.
     const replay = await post('/api/auth/switch-workspace', {
       refreshToken: session.refresh_token,
       workspaceId: wsA.id,
@@ -429,8 +437,57 @@ async function main() {
     });
     check(`22. Replaying a spent token is refused (got ${replay.status})`, replay.status === 401);
     check(
-      `23. Replaying a spent token revokes the whole family (live=${liveAfterReplay})`,
-      liveAfterReplay === 0,
+      `23. An IMMEDIATE replay does not revoke the family -- concurrency, not theft (live=${liveAfterReplay})`,
+      liveAfterReplay === 1,
+    );
+
+    // Push the revocation outside the grace window and present it again. Now
+    // there is no innocent explanation and the whole family must go. Backdated
+    // rather than slept through, so the suite stays fast and deterministic.
+    await prisma.refreshToken.updateMany({
+      where: { hashedToken: hash(session.refresh_token) },
+      data: { revokedAt: new Date(Date.now() - 60_000) },
+    });
+    const lateReplay = await post('/api/auth/switch-workspace', {
+      refreshToken: session.refresh_token,
+      workspaceId: wsA.id,
+    });
+    const liveAfterLateReplay = await prisma.refreshToken.count({
+      where: { userId: user.id, revoked: false },
+    });
+    check(
+      `23a. A replay OUTSIDE the grace window is refused (got ${lateReplay.status})`,
+      lateReplay.status === 401,
+    );
+    check(
+      `23b. A replay outside the window still revokes the whole family (live=${liveAfterLateReplay})`,
+      liveAfterLateReplay === 0,
+    );
+
+    // A token revoked before `revokedAt` existed carries no timestamp at all.
+    // That must fail CLOSED -- treated as theft, the pre-existing behaviour.
+    const legacySession = await authService.selectWorkspace(
+      jwt.sign(
+        { sub: user.id, purpose: 'workspace-selection' },
+        process.env.JWT_SECRET!,
+        { expiresIn: '5m' },
+      ),
+      wsA.id,
+    );
+    await prisma.refreshToken.updateMany({
+      where: { hashedToken: hash(legacySession.refresh_token) },
+      data: { revoked: true, revokedAt: null },
+    });
+    await post('/api/auth/switch-workspace', {
+      refreshToken: legacySession.refresh_token,
+      workspaceId: wsB.id,
+    });
+    const liveAfterLegacy = await prisma.refreshToken.count({
+      where: { userId: user.id, revoked: false },
+    });
+    check(
+      `23c. A revoked token with NO revokedAt fails closed -- still theft (live=${liveAfterLegacy})`,
+      liveAfterLegacy === 0,
     );
 
     const outsiderLive = await prisma.refreshToken.count({

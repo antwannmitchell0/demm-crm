@@ -159,6 +159,32 @@ jobs:
           JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
           ALLOW_DESTRUCTIVE_TESTS: "true"
 
+      - name: Team Authorization Boundary Suite
+        # GATE A. Proves a lower rank cannot demote or remove a higher one.
+        # Before this, canGrant() was the only check and demoting is
+        # mechanically "granting a lower role", so a WORKSPACE_ADMIN could
+        # rewrite an ORG_OWNER to USER (measured: HTTP 200).
+        run: cd backend && npm run test:team-authz
+        env:
+          JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+          ALLOW_DESTRUCTIVE_TESTS: "true"
+
+      - name: Invitation Migration Data-Preservation Suite
+        # GATE B. Builds a database at the PRE-migration schema, seeds real
+        # invitations, migrates forward, and accepts one over HTTP with the
+        # token issued beforehand. Fails if the migration ever becomes
+        # destructive again. Also covers migrate-from-zero.
+        #
+        # Creates and drops its OWN disposable databases, so it needs createdb
+        # rights but not the job's DATABASE_URL.
+        run: cd backend && npm run test:invitation-migration
+        env:
+          JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+          PGHOST: localhost
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgrespassword
+
       - name: Team Management Suite
         # Phase 2. Invitations, member listing, role changes, removal, and the
         # last-owner rule. Includes a genuine concurrency check: three

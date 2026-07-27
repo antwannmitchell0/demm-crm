@@ -782,6 +782,22 @@ model RefreshToken {
   workspaceId String?
   expiresAt   DateTime
   revoked     Boolean  @default(false)
+
+  /// When this token was revoked, used to tell a CONCURRENT presentation apart
+  /// from a REPLAY.
+  ///
+  /// Rotation revokes a token and issues a successor. A second browser tab
+  /// sharing the same cookie can present the old token milliseconds later --
+  /// legitimately. Without a timestamp that is indistinguishable from a thief
+  /// replaying a stolen token, and the account is signed out everywhere.
+  /// Observed intermittently in the workspace-switching suite: eight concurrent
+  /// switches occasionally ended with ZERO live tokens, because one late
+  /// arrival read the already-revoked row and triggered family revocation.
+  ///
+  /// NULL means "revoked before this column existed". Those are still treated
+  /// as theft -- the previous behaviour -- so the change fails closed.
+  revokedAt   DateTime?
+
   createdAt   DateTime @default(now())
 }
 

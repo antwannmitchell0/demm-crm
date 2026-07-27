@@ -29,7 +29,9 @@
     "test:agent-contract": "npx ts-node test-agent-contract.ts",
     "test:workspace-switching": "npx ts-node test-workspace-switching.ts",
     "test:team": "npx ts-node test-team-management.ts",
-    "test:approval-inbox": "npx ts-node test-approval-inbox.ts"
+    "test:approval-inbox": "npx ts-node test-approval-inbox.ts",
+    "test:team-authz": "npx ts-node test-team-authorization.ts",
+    "test:invitation-migration": "npx ts-node test-invitation-migration.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

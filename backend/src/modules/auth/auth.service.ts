@@ -253,7 +253,7 @@ export class AuthService {
     // never reach here, so no caller can revoke a stranger's sessions.
     const revocation = await this.prisma.refreshToken.updateMany({
       where: { userId: stored.userId, revoked: false },
-      data: { revoked: true },
+      data: { revoked: true, revokedAt: new Date() },
     });
 
     // AuditLog.workspaceId is a required FK, while RefreshToken.workspaceId is
@@ -304,6 +304,60 @@ export class AuthService {
    * claim. Two copies of this logic would drift, and the half that drifted
    * would be the one an attacker uses.
    */
+  /**
+   * True when an already-revoked token was revoked SO RECENTLY that the caller
+   * is almost certainly a legitimate second tab, not a thief.
+   *
+   * THE PROBLEM. Rotation revokes a token and issues a successor. The refresh
+   * cookie is shared by every tab in the browser, so two tabs can present the
+   * same token milliseconds apart. The first wins the claim; the second reads a
+   * row that is now revoked and -- before this existed -- was answered with
+   * full family revocation, signing the account out of every device. Measured:
+   * eight concurrent workspace switches intermittently ended with ZERO live
+   * tokens, the winner's brand-new session included.
+   *
+   * WHY A TIME WINDOW IS A SOUND DISCRIMINATOR, not just a convenient one.
+   * To actually USE a stolen token an attacker must present it while it is
+   * still live -- and that is STATE 4, where the atomic claim already decides a
+   * single winner. Presenting an ALREADY-SPENT token gains an attacker nothing
+   * whatever the response is; they get a 401 either way. So the only thing
+   * suppressed inside this window is the family revocation, and the only
+   * attacker it helps is one who has already failed. Meanwhile the case it
+   * protects -- a legitimate racing tab -- is real, common, and otherwise
+   * produces an unexplained logout.
+   *
+   * Outside the window, replay is still treated as theft and still revokes the
+   * whole family. A `revokedAt` of NULL means the row predates this column, and
+   * is treated as theft, so the change fails closed.
+   */
+  private isBenignConcurrentPresentation(stored: {
+    revokedAt: Date | null;
+  }): boolean {
+    if (!stored.revokedAt) return false;
+    const age = Date.now() - stored.revokedAt.getTime();
+    return age >= 0 && age <= AuthService.CONCURRENT_PRESENTATION_GRACE_MS;
+  }
+
+  /**
+   * How long after revocation a presentation is still treated as concurrency
+   * rather than theft.
+   *
+   * SIZED SMALL ON PURPOSE, and here is the exposure it buys down. Suppose an
+   * attacker steals a live token and WINS the claim -- they hold a session and
+   * the victim's copy is now spent. The victim's next refresh presenting that
+   * spent token is the signal that detects the theft and kills every session.
+   * Inside this window that signal is suppressed, so the attacker keeps their
+   * session. The window is therefore a direct trade of detection latency
+   * against spurious logouts, and every extra second is real exposure.
+   *
+   * Two seconds covers a browser's two tabs racing across a normal network --
+   * the case measured in the workspace-switching suite -- while leaving almost
+   * no room for a stolen token to be used and then covered. This mirrors the
+   * "leeway" that OAuth refresh-rotation implementations expose for exactly
+   * this problem; the value is deliberately at the low end of that range.
+   */
+  private static readonly CONCURRENT_PRESENTATION_GRACE_MS = 2_000;
+
   private async claimRefreshToken(rawRefreshToken: string) {
     const hashedToken = this.hashToken(rawRefreshToken);
     // Deliberately NOT filtered by `revoked`/`expiresAt`. The row must be read
@@ -326,8 +380,17 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
-    // STATE 2 -- KNOWN but already REVOKED: suspected reuse after rotation.
+    // STATE 2 -- KNOWN but already REVOKED. Either a replay, or a legitimate
+    // second tab that lost a race by a few milliseconds. Those two look
+    // identical without a timestamp, and treating them alike signs a real user
+    // out of every device for the crime of using two tabs.
     if (stored.revoked) {
+      if (this.isBenignConcurrentPresentation(stored)) {
+        // Refused, but NOT treated as theft: no family revocation. The caller
+        // still receives the same generic 401 as every other failure, so this
+        // branch is invisible from outside and cannot be probed.
+        throw new UnauthorizedException('Invalid or expired refresh token');
+      }
       await this.handleSuspectedTokenReuse(stored);
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
@@ -353,7 +416,7 @@ export class AuthService {
     // we were that caller.
     const claim = await this.prisma.refreshToken.updateMany({
       where: { id: stored.id, revoked: false },
-      data: { revoked: true },
+      data: { revoked: true, revokedAt: new Date() },
     });
 
     if (claim.count !== 1) {
@@ -480,7 +543,7 @@ export class AuthService {
     const hashedToken = this.hashToken(rawRefreshToken);
     await this.prisma.refreshToken.updateMany({
       where: { hashedToken },
-      data: { revoked: true },
+      data: { revoked: true, revokedAt: new Date() },
     });
     return { status: 'SUCCESS', message: 'Logged out successfully.' };
   }
@@ -489,7 +552,7 @@ export class AuthService {
   async logoutAll(userId: string) {
     await this.prisma.refreshToken.updateMany({
       where: { userId, revoked: false },
-      data: { revoked: true },
+      data: { revoked: true, revokedAt: new Date() },
     });
     return { status: 'SUCCESS', message: 'Logged out of all sessions.' };
   }

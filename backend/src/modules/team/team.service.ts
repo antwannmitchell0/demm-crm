@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { Role, InvitationStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma.service';
-import { canGrant } from './role-hierarchy';
+import { canGrant, canManage, canRemove } from './role-hierarchy';
 import * as crypto from 'crypto';
 
 /** How long an unaccepted invitation stays usable. */
@@ -345,6 +345,21 @@ export class TeamService {
         );
       }
 
+      // SECOND, INDEPENDENT QUESTION. canGrant above only asked whether the
+      // PROPOSED role may be handed out. It says nothing about whether this
+      // actor may touch this particular person -- and demoting is mechanically
+      // "granting a lower role", so canGrant alone waved every downward change
+      // through. A WORKSPACE_ADMIN rewriting an ORG_OWNER to USER returned 200.
+      //
+      // Evaluated inside the transaction, after the workspace row is locked, so
+      // the decision is made against the role the target holds NOW rather than
+      // one read before another administrator changed it.
+      if (!canManage(actorRole, membership.role)) {
+        throw new ForbiddenException(
+          'You cannot change the role of someone whose authority is greater than your own.',
+        );
+      }
+
       if (membership.role !== newRole) {
         // Demoting the final owner orphans the workspace exactly as removing
         // them would, so it is refused by the same rule.
@@ -378,6 +393,12 @@ export class TeamService {
   async removeMember(
     workspaceId: string,
     actorUserId: string,
+    // `actorRole` was ABSENT from this signature, which is precisely why
+    // removal had no rank check: the information needed to make the decision
+    // never reached the method. Any administrator could delete an ORG_OWNER as
+    // long as a second owner existed to satisfy the last-owner rule. Measured
+    // before the fix: HTTP 200.
+    actorRole: Role,
     targetUserId: string,
   ) {
     return this.withWorkspaceLock(workspaceId, async (tx) => {
@@ -390,6 +411,15 @@ export class TeamService {
         );
       }
 
+      // Distinct from canManage: an AGENT membership may be REVOKED (a
+      // compromised machine identity must be removable) even though its role
+      // may not be edited. SUPERADMIN is refused in both directions.
+      if (!canRemove(actorRole, membership.role)) {
+        throw new ForbiddenException(
+          'You cannot remove someone whose authority is greater than your own.',
+        );
+      }
+
       await this.assertNotLastOwner(tx, workspaceId, membership.role);
 
       await tx.membership.delete({ where: { id: membership.id } });
@@ -399,7 +429,7 @@ export class TeamService {
       // out of unrelated workspaces they are still legitimately a member of.
       await tx.refreshToken.updateMany({
         where: { userId: targetUserId, workspaceId, revoked: false },
-        data: { revoked: true },
+        data: { revoked: true, revokedAt: new Date() },
       });
 
       await tx.auditLog.create({

@@ -113,6 +113,14 @@ export class TeamController {
     @CurrentUser() user: any,
     @Param('userId', ParseUUIDPipe) targetUserId: string,
   ) {
-    return this.teamService.removeMember(workspaceId, user.id, targetUserId);
+    // `user.role` is assigned by WorkspaceGuard from the caller's CURRENT
+    // membership, not from the JWT -- so a demoted administrator loses this
+    // authority immediately rather than at token expiry.
+    return this.teamService.removeMember(
+      workspaceId,
+      user.id,
+      user.role,
+      targetUserId,
+    );
   }
 }
