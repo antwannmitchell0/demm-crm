@@ -5,6 +5,7 @@ import { PipelineService } from './src/modules/pipeline/pipeline.service';
 import { OpportunityService } from './src/modules/opportunity/opportunity.service';
 import { DashboardService } from './src/modules/dashboard/dashboard.service';
 import { AgentService } from './src/modules/agent/agent.service';
+import { assertDisposableTestDatabase } from './test-db-guard';
 
 const prisma = new PrismaService();
 
@@ -22,6 +23,10 @@ const agentService = new AgentService(
 );
 
 async function runScenarios() {
+  // T13 GUARD -- first statement. This suite performs 19 unscoped deleteMany()
+  // calls, so it must never reach a database that holds anything real.
+  await assertDisposableTestDatabase('verify-scenarios.ts');
+
   console.log('🏁 Starting Release 0.1 Governing Scenarios test run...');
 
   // Reset database for a clean run.

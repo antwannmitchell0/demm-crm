@@ -6,6 +6,27 @@ on:
   pull_request:
     branches: [ main ]
 
+# T13 DATABASE ISOLATION POLICY
+#
+# The verification suites are destructive: verify-comprehensive.ts opens with 21
+# unscoped deleteMany() calls, and verify-http-staging.ts registers real users.
+# They may therefore only ever run against a throwaway database.
+#
+# Three things enforce that here:
+#   1. The Postgres service database is named `demm_crm_ci` -- NOT `demm_crm`.
+#      It previously matched the developer's database name exactly, which meant a
+#      misconfigured DATABASE_URL pointed a wiping suite at a real database with
+#      nothing to stop it.
+#   2. DATABASE_URL is set per step and only ever points at that service.
+#   3. ALLOW_DESTRUCTIVE_TESTS=true is set ONLY on the verification step, so the
+#      backend's live database-name guard (backend/test-db-guard.ts) authorises
+#      the run. Without both the name and the opt-in the suites refuse to start.
+#
+# The service container is created for this job and destroyed with it, so the
+# database is ephemeral by construction -- there is nothing to drop.
+#
+# Staging and production credentials are never referenced by this workflow.
+
 jobs:
   verify:
     name: Build & Security Audit
@@ -17,7 +38,9 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgrespassword
-          POSTGRES_DB: demm_crm
+          # Ephemeral CI database. The `_ci` suffix is what the backend guard
+          # recognises as disposable; `demm_crm` is on its deny list.
+          POSTGRES_DB: demm_crm_ci
         ports:
           - 5432:5432
         options: >-
@@ -25,6 +48,9 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+
+    env:
+      DATABASE_URL: "postgresql://postgres:postgrespassword@localhost:5432/demm_crm_ci?schema=public"
 
     steps:
       - name: Checkout Repository
@@ -40,23 +66,64 @@ jobs:
       - name: Install Dependencies
         run: cd backend && npm ci
 
+      - name: Confirm CI is pointed at the ephemeral database
+        # Fails the job before anything else runs if the live database is not the
+        # isolated CI one. Asks the server via `SELECT current_database()` rather
+        # than trusting the URL string.
+        #
+        # Credentials are passed as PG* environment variables so no connection
+        # string ever appears on a command line or in the job log; only the
+        # resolved database NAME is printed.
+        env:
+          PGHOST: localhost
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgrespassword
+          PGDATABASE: demm_crm_ci
+        run: |
+          DB=$(psql -tAc "SELECT current_database()")
+          echo "Connected database: $DB"
+          if [ "$DB" != "demm_crm_ci" ]; then
+            echo "REFUSING: CI is connected to '$DB', not the ephemeral 'demm_crm_ci'."
+            exit 1
+          fi
+
       - name: Prisma Validate & Generate
         run: cd backend && npx prisma validate && npx prisma generate
-        env:
-          DATABASE_URL: "postgresql://postgres:postgrespassword@localhost:5432/demm_crm?schema=public"
 
-      - name: Sync Database Schema
-        run: cd backend && npx prisma db push
-        env:
-          DATABASE_URL: "postgresql://postgres:postgrespassword@localhost:5432/demm_crm?schema=public"
+      - name: Apply Migrations (migrate deploy)
+        # `prisma migrate deploy` applies committed migrations and nothing else.
+        # `db push` was removed: it silently reshapes the database to match the
+        # schema without recording a migration, so CI could pass against a shape
+        # that no migration produces. `migrate dev` and `migrate reset` are also
+        # never used here -- both can drop data and prompt.
+        run: cd backend && npx prisma migrate deploy
+
+      - name: Report Migration Status
+        # DRIFT TRUTHFULNESS: this confirms the migrations THIS repository knows
+        # about are applied. It does NOT prove that no extra migrations were
+        # applied from elsewhere (verified in T3.1: a database carrying two
+        # unmerged branch migrations still reported "up to date"), and it says
+        # nothing about whether the target is safe to destroy. It is reporting,
+        # not a safety control. The live database-name guard is the safety
+        # control.
+        run: cd backend && npx prisma migrate status
 
       - name: Build Backend
         run: cd backend && npm run build
         env:
           JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
 
+      - name: Repository & Destructive-Test Safety Suite
+        # Read-only: proves the guard refuses unsafe databases and that the
+        # repository hygiene fixes from T12R/T14R are still in place.
+        run: cd backend && npm run test:repo-safety
+
       - name: Execute Verification Suite
+        # The ONLY step permitted to authorise destructive tests, and only
+        # because the two steps above proved the target is the ephemeral CI
+        # database.
         run: cd backend && npm run verify
         env:
-          DATABASE_URL: "postgresql://postgres:postgrespassword@localhost:5432/demm_crm?schema=public"
           JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+          ALLOW_DESTRUCTIVE_TESTS: "true"
