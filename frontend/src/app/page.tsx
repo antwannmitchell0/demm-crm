@@ -4,12 +4,25 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Sparkles, ArrowRight, Lock, Mail, User, Building, Globe } from 'lucide-react';
 import { api, getAuthToken } from '../lib/api';
+import { switchWorkspace, type WorkspaceChoice } from '../lib/session/client';
+import WorkspacePicker from '../components/WorkspacePicker';
+
+/** What the sign-in screen is showing right now. */
+type Step = 'FORM' | 'CHOOSE_WORKSPACE' | 'NO_WORKSPACE';
 
 export default function AuthPage() {
   const router = useRouter();
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // T9: sign-in no longer always ends at the dashboard. It can also end at a
+  // workspace choice, or at an honest "no workspace" message.
+  const [step, setStep] = useState<Step>('FORM');
+  const [choices, setChoices] = useState<WorkspaceChoice[]>([]);
+  const [openingWorkspaceId, setOpeningWorkspaceId] = useState<string | null>(
+    null,
+  );
 
   // Form Fields
   const [email, setEmail] = useState('');
@@ -26,6 +39,19 @@ export default function AuthPage() {
     }
   }, [router]);
 
+  /** Opens the workspace the person picked. */
+  const handleChooseWorkspace = async (workspaceId: string) => {
+    setError('');
+    setOpeningWorkspaceId(workspaceId);
+    try {
+      await switchWorkspace(workspaceId);
+      router.push('/dashboard');
+    } catch (err: any) {
+      setError(err.message || 'Could not open that workspace.');
+      setOpeningWorkspaceId(null);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -33,8 +59,20 @@ export default function AuthPage() {
 
     try {
       if (isLogin) {
-        await api.login(email, password);
-        router.push('/dashboard');
+        const result = await api.login(email, password);
+
+        // One workspace: already opened, nothing to ask.
+        if (result.outcome === 'ENTERED') {
+          router.push('/dashboard');
+        } else if (result.outcome === 'SELECTION_REQUIRED') {
+          // Several workspaces: the person chooses. Nothing is opened yet.
+          setChoices(result.choices);
+          setStep('CHOOSE_WORKSPACE');
+        } else {
+          // The password was right, but this account is not in any workspace.
+          // Say so plainly instead of inventing one.
+          setStep('NO_WORKSPACE');
+        }
       } else {
         await api.register({
           email,
@@ -71,11 +109,17 @@ export default function AuthPage() {
             DEMM CRM
           </h2>
           <p className="text-xs text-slate-500 mt-1 font-mono tracking-wider">
-            {isLogin ? 'WELCOME BACK TO THE FUTURE' : 'INITIALIZE YOUR ORG WORKSPACE'}
+            {step === 'CHOOSE_WORKSPACE'
+              ? 'ONE MORE STEP'
+              : step === 'NO_WORKSPACE'
+                ? 'NOTHING TO OPEN YET'
+                : isLogin
+                  ? 'WELCOME BACK TO THE FUTURE'
+                  : 'INITIALIZE YOUR ORG WORKSPACE'}
           </p>
         </div>
 
-        {error && (
+        {error && step !== 'CHOOSE_WORKSPACE' && (
           <div className={`p-4 mb-6 rounded-xl border text-sm ${
             error.includes('successfully')
               ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-400'
@@ -85,6 +129,49 @@ export default function AuthPage() {
           </div>
         )}
 
+        {/* Several workspaces -- the person picks. Nothing was opened for them. */}
+        {step === 'CHOOSE_WORKSPACE' && (
+          <WorkspacePicker
+            choices={choices}
+            onChoose={handleChooseWorkspace}
+            busyWorkspaceId={openingWorkspaceId}
+            error={error || null}
+          />
+        )}
+
+        {/* No workspace at all. Said plainly, with the path that already exists. */}
+        {step === 'NO_WORKSPACE' && (
+          <div className="text-center">
+            <p className="text-sm text-slate-300 leading-relaxed">
+              You signed in, but this account is not part of any workspace yet.
+            </p>
+            <p className="text-sm text-slate-500 mt-3 leading-relaxed">
+              Ask someone on your team to add you, or set up your own workspace
+              below.
+            </p>
+            <button
+              onClick={() => {
+                setStep('FORM');
+                setIsLogin(false);
+                setError('');
+              }}
+              className="mt-6 w-full py-3 bg-gradient-to-r from-cyan-500 to-indigo-600 rounded-xl font-semibold text-sm hover:from-cyan-400 hover:to-indigo-500 transition-all duration-300 text-white"
+            >
+              Set up a workspace
+            </button>
+            <button
+              onClick={() => {
+                setStep('FORM');
+                setError('');
+              }}
+              className="mt-3 text-sm text-cyan-400 hover:underline transition"
+            >
+              Use a different account
+            </button>
+          </div>
+        )}
+
+        {step === 'FORM' && (
         <form onSubmit={handleSubmit} className="space-y-4">
           {!isLogin && (
             <div className="grid grid-cols-2 gap-4">
@@ -191,17 +278,20 @@ export default function AuthPage() {
             )}
           </button>
         </form>
+        )}
 
-        <div className="mt-6 text-center text-sm">
-          <button
-            onClick={() => setIsLogin(!isLogin)}
-            className="text-cyan-400 hover:underline transition"
-          >
-            {isLogin
-              ? "Don't have a workspace? Spin up one here"
-              : 'Already registered? Log in here'}
-          </button>
-        </div>
+        {step === 'FORM' && (
+          <div className="mt-6 text-center text-sm">
+            <button
+              onClick={() => setIsLogin(!isLogin)}
+              className="text-cyan-400 hover:underline transition"
+            >
+              {isLogin
+                ? "Don't have a workspace? Spin up one here"
+                : 'Already registered? Log in here'}
+            </button>
+          </div>
+        )}
       </div>
     </main>
   );
