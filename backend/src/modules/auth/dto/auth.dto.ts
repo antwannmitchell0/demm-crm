@@ -47,3 +47,21 @@ export class RefreshTokenDto {
   @IsNotEmpty()
   refreshToken: string;
 }
+
+/**
+ * Body of `POST /api/auth/switch-workspace`.
+ *
+ * Both fields are required. `workspaceId` is the workspace to move INTO and is
+ * untrusted: the service resolves it against the caller's memberships and
+ * answers a non-member with the same generic 401 as any other failure, so this
+ * cannot be used to probe which workspace ids exist.
+ */
+export class SwitchWorkspaceDto {
+  @IsString()
+  @IsNotEmpty()
+  refreshToken: string;
+
+  @IsString()
+  @IsNotEmpty()
+  workspaceId: string;
+}

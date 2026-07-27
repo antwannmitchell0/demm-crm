@@ -101,6 +101,23 @@ export default function Sidebar() {
             </div>
           </div>
         )}
+        {/* The active workspace, named. The session payload used to carry
+            workspaceId and role only, so a person with two workspaces had no
+            way to tell which one they were looking at -- the switcher said
+            "Switch workspace" and nothing said where they already were.
+            Rendered only when a name is actually present: a session
+            established before the backend sent one must show nothing rather
+            than "undefined". */}
+        {user?.workspaceName ? (
+          <div className="px-2 mb-3">
+            <p className="text-[10px] uppercase tracking-wider text-slate-600 font-medium">
+              Workspace
+            </p>
+            <p className="text-xs text-slate-300 truncate" title={user.workspaceName}>
+              {user.workspaceName}
+            </p>
+          </div>
+        ) : null}
         <WorkspaceSwitcher />
         <button
           onClick={handleLogout}

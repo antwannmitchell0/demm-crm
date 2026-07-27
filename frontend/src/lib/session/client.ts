@@ -54,17 +54,23 @@ export type LoginOutcome =
   | { outcome: 'NO_WORKSPACE'; choices: WorkspaceChoice[] };
 
 /**
- * An authorization to enter a workspace that has NOT been used yet.
+ * A workspace choice that is pending, and how it will be entered.
  *
- * `preAuthToken` is a credential: it is held in memory for the seconds between
- * proving a password and picking a workspace, is never returned to the UI,
- * never broadcast to another tab, and never written to storage. It is dropped
- * the moment it is spent, so the only way to enter another workspace later is
- * to prove the password again.
+ * The two reasons authenticate differently, which is why `preAuthToken` is
+ * optional:
+ *
+ *  - LOGIN carries one. It is a credential, held in memory for the seconds
+ *    between proving a password and picking a workspace, never returned to the
+ *    UI, never broadcast, never written to storage, and dropped the moment it
+ *    is spent.
+ *  - SWITCH carries none. An already-established session moves workspace by
+ *    spending its httpOnly refresh cookie, which browser JavaScript cannot
+ *    read; the BFF supplies it server-side. Nothing sensitive is held here at
+ *    all, so an abandoned switch leaves nothing behind to expire.
  */
 interface PendingWorkspaceSelection {
   reason: 'LOGIN' | 'SWITCH';
-  preAuthToken: string;
+  preAuthToken?: string;
   choices: WorkspaceChoice[];
 }
 
@@ -411,49 +417,57 @@ export function cancelPendingWorkspaceSelection(): void {
 }
 
 /**
- * Re-authenticates so an already-signed-in user can move to another workspace.
+ * Lists the workspaces this signed-in account may move to.
  *
- * WHY A PASSWORD IS REQUIRED HERE: the backend has exactly one way to mint a
- * workspace-bound session -- `select-workspace`, which demands a `preAuthToken`
- * carrying `purpose: 'workspace-selection'`. An access token is not that token,
- * a refresh token only ever renews the workspace it was issued for, and no
- * authenticated endpoint lists the account's workspaces. So a fresh login is
- * the only mechanism that exists today to obtain BOTH a server-verified
- * workspace list and the authorization to enter one. The alternative would be
- * keeping a reusable credential alive across the whole session, which is worse.
- * The T9 report records the backend capability that would remove this prompt.
+ * This used to take the user's password and perform a full re-login. That was
+ * never a security decision -- it was the only mechanism that existed. The
+ * backend could mint a workspace-bound session exactly one way
+ * (`select-workspace`, needing the pre-auth token only a password produces),
+ * and nothing exposed the account's workspace list to an authenticated caller,
+ * so re-authenticating was the only way to learn where the user could go.
  *
- * The live session is left completely untouched until a workspace is chosen: a
- * cancelled or failed switch costs the user nothing.
+ * Both halves now exist: `GET api/auth/memberships` returns the list for the
+ * bearer token, and `switch-workspace` spends the session's refresh token to
+ * enter one. Re-typing a password bought nothing and put the credential back on
+ * the wire on every switch.
+ *
+ * The live session is left completely untouched until a workspace is actually
+ * chosen, so cancelling costs the user nothing.
  */
+// `backendBaseUrl` is passed in rather than read here, matching logoutAll()
+// below. This module deliberately holds no knowledge of the API host: it is the
+// credential boundary, and everything it does must be inspectable without also
+// reasoning about environment configuration.
 export async function beginWorkspaceSwitch(
-  passwordPlain: string,
+  backendBaseUrl: string,
 ): Promise<WorkspaceChoice[]> {
-  const email = currentUser?.email;
-  if (!email) {
+  if (!accessToken) {
     throw new Error('You need to be signed in to change workspaces.');
   }
 
-  const { status, data } = await postSessionRoute('/api/session/login', {
-    email,
-    passwordPlain,
+  const response = await fetch(`${backendBaseUrl}/api/auth/memberships`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
   });
 
-  if (status !== 200 || typeof data.preAuthToken !== 'string') {
-    throw new Error(
-      typeof data.error === 'string'
-        ? data.error
-        : 'That password did not match. Please try again.',
-    );
+  if (!response.ok) {
+    throw new Error('Could not load your workspaces. Please try again.');
   }
 
-  const choices: WorkspaceChoice[] = Array.isArray(data.workspaces)
-    ? (data.workspaces as WorkspaceChoice[]).filter(
+  const data = (await response.json().catch(() => ({}))) as {
+    memberships?: unknown;
+  };
+  const choices: WorkspaceChoice[] = Array.isArray(data.memberships)
+    ? (data.memberships as WorkspaceChoice[]).filter(
         (choice) => choice && typeof choice.workspaceId === 'string',
       )
     : [];
 
-  pendingSelection = { reason: 'SWITCH', preAuthToken: data.preAuthToken, choices };
+  // No preAuthToken: entering one of these spends the refresh cookie instead.
+  pendingSelection = { reason: 'SWITCH', choices };
   return choices;
 }
 
@@ -471,7 +485,7 @@ export async function beginWorkspaceSwitch(
 export async function switchWorkspace(workspaceId: string): Promise<void> {
   if (!pendingSelection) {
     throw new Error(
-      'Your sign-in has expired. Please enter your password again to change workspaces.',
+      'Your sign-in has expired. Please sign in again to change workspaces.',
     );
   }
 
@@ -485,14 +499,29 @@ export async function switchWorkspace(workspaceId: string): Promise<void> {
     throw new Error('That workspace is not available on this account.');
   }
 
-  const { status, data } = await postSessionRoute(
-    '/api/session/select-workspace',
-    { preAuthToken: pendingSelection.preAuthToken, workspaceId },
-  );
+  // Two routes, because the two situations authenticate differently and only
+  // one of them has a credential to spend:
+  //
+  //  - LOGIN completes with the pre-auth token the password produced. There is
+  //    no session yet, so there is no refresh cookie to trade in.
+  //  - SWITCH has a live session and no pre-auth token. The BFF reads the
+  //    httpOnly refresh cookie -- unreadable from here -- and the backend
+  //    SPENDS it, which is what keeps one live refresh token per browser
+  //    instead of one per workspace ever visited.
+  const { status, data } =
+    pendingSelection.reason === 'LOGIN'
+      ? await postSessionRoute('/api/session/select-workspace', {
+          preAuthToken: pendingSelection.preAuthToken,
+          workspaceId,
+        })
+      : await postSessionRoute('/api/session/switch-workspace', {
+          workspaceId,
+        });
 
   if (status !== 200 || typeof data.access_token !== 'string') {
-    // The authorization is kept so the user can pick a different workspace
-    // without re-typing their password; it expires on its own shortly.
+    // The pending choice is kept so the user can try a different workspace
+    // without starting over. For LOGIN the pre-auth token expires on its own
+    // shortly; for SWITCH nothing sensitive is being held at all.
     throw new Error(
       typeof data.error === 'string'
         ? data.error
@@ -500,9 +529,8 @@ export async function switchWorkspace(workspaceId: string): Promise<void> {
     );
   }
 
-  // Spent: entering another workspace from here requires proving the password
-  // again. This is what stops a long-lived reusable workspace credential from
-  // sitting in memory for the life of the tab.
+  // Spent. For LOGIN this drops the pre-auth token, so no reusable
+  // workspace-entry credential survives in memory for the life of the tab.
   pendingSelection = null;
 
   applySession(

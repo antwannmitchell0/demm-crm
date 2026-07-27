@@ -151,6 +151,35 @@ function installGlobals() {
       });
     }
 
+    // Phase 2: switching no longer re-logs-in. It reads the account's
+    // memberships with the live access token, then spends the refresh cookie
+    // through the BFF switch route.
+    if (url.includes('api/auth/memberships')) {
+      return json(200, { memberships: workspacesForLogin });
+    }
+
+    if (url.includes('/api/session/switch-workspace')) {
+      const workspaceId = String(body.workspaceId);
+      const chosen = workspacesForLogin.find(
+        (w) => w.workspaceId === workspaceId,
+      );
+      if (!chosen) return json(401, { error: 'Session expired.' });
+      return json(200, {
+        access_token: `ACCESS_${workspaceId}_${++issuedTokenCounter}`,
+        token_type: 'Bearer',
+        expires_in: 900,
+        user: {
+          id: 'u1',
+          email: 'demo@example.com',
+          firstName: 'Demo',
+          lastName: 'User',
+          role: chosen.role ?? 'ORG_OWNER',
+          workspaceId,
+          workspaceName: chosen.workspaceName ?? '',
+        },
+      });
+    }
+
     if (url.includes('/api/session/refresh')) {
       return json(401, { error: 'no cookie in this harness' });
     }
@@ -308,17 +337,27 @@ async function main() {
     sessionClient.getSessionUser()?.workspaceId === 'ws-charlie',
   );
 
-  // === 5. SWITCHING with fresh re-authentication ===========================
+  // === 5. SWITCHING, without a password ====================================
+  //
+  // CONTRACT CHANGED IN PHASE 2. This block used to assert that starting a
+  // switch called /api/session/login -- because re-authenticating was the only
+  // way to obtain both a workspace list and the authority to enter one. The
+  // backend now exposes `GET api/auth/memberships` and `switch-workspace`, so
+  // the password prompt is gone and these assertions describe the new contract.
+  // See test-password-free-switch.ts for the full proof.
   const tokenBeforeSwitch = sessionClient.getAccessToken();
   calls = [];
   broadcasts.length = 0;
-  const switchChoices = await sessionClient.beginWorkspaceSwitch('pw');
-  check(
-    '20. Starting a switch re-authenticates against the backend',
-    urlsOf('/api/session/login').length === 1,
+  const switchChoices = await sessionClient.beginWorkspaceSwitch(
+    'http://backend.test',
   );
   check(
-    '21. The switch workspace list comes from that fresh backend response',
+    '20. Starting a switch does NOT re-authenticate',
+    urlsOf('/api/session/login').length === 0 &&
+      urlsOf('api/auth/memberships').length === 1,
+  );
+  check(
+    '21. The switch workspace list comes from the memberships endpoint',
     switchChoices.length === 3 &&
       switchChoices.some(
         (c: { workspaceId: string }) => c.workspaceId === 'ws-bravo',
@@ -346,9 +385,9 @@ async function main() {
     sessionClient.getSessionUser()?.role === 'WORKSPACE_ADMIN',
   );
   check(
-    '26. The switch goes through the BFF select-workspace route (the only place the refresh cookie is rotated)',
-    urlsOf('/api/session/select-workspace').length === 1 &&
-      urlsOf('/api/session/select-workspace')[0].url.startsWith('/api/session/'),
+    '26. The switch goes through the BFF switch-workspace route (the only place the refresh cookie is read and rotated)',
+    urlsOf('/api/session/switch-workspace').length === 1 &&
+      urlsOf('/api/session/switch-workspace')[0].url.startsWith('/api/session/'),
   );
   check(
     `27. Switching triggers NO refresh call, so rotation replay cannot be provoked (observed ${urlsOf('/api/session/refresh').length})`,
@@ -474,14 +513,21 @@ async function main() {
     !clientSource.includes('workspaces[0]'),
   );
 
-  sessionClient.teardownSession();
-
   console.log('==============================================================');
   console.log(`📊 T9 WORKSPACE SELECTION SUITE: ${pass} passed, ${fail} failed.`);
   if (fail > 0) process.exitCode = 1;
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exitCode = 1;
-});
+// teardownSession() cancels the scheduled access-token refresh. It MUST run in
+// a finally: it used to sit at the end of main(), so any throw skipped it, the
+// pending setTimeout kept the event loop alive, and the suite hung instead of
+// failing. A test that hangs on error reports nothing at all.
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    const sessionClient = await import('./src/lib/session/client');
+    sessionClient.teardownSession();
+  });

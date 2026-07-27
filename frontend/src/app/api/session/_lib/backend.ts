@@ -19,6 +19,10 @@ import { resolveBackendBaseUrl } from './config';
 const ALLOWED_BACKEND_PATHS = [
   'api/auth/login',
   'api/auth/select-workspace',
+  // Spends the httpOnly refresh cookie to move the session into another
+  // workspace. It belongs here, and not in a general proxy, for the same reason
+  // as refresh: this is the only tier that may read that cookie.
+  'api/auth/switch-workspace',
   'api/auth/refresh',
   'api/auth/logout',
 ] as const;

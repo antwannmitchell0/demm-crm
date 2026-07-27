@@ -223,3 +223,10 @@ jobs:
 
       - name: Honest Frontend Suite (T10/T11)
         run: cd frontend && npm run test:honest-frontend
+
+      - name: Password-Free Workspace Switch Suite
+        # Phase 2. Proves switching workspace sends no password, reads the
+        # account's memberships with the live access token, and completes
+        # through the BFF route that spends the httpOnly refresh cookie
+        # server-side.
+        run: cd frontend && npm run test:password-free-switch

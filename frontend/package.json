@@ -17,7 +17,8 @@
     "test:workspace-selection": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\",\"jsx\":\"react-jsx\",\"esModuleInterop\":true}' node ../backend/node_modules/ts-node/dist/bin.js test-workspace-selection.ts",
     "test:honest-frontend": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\",\"jsx\":\"react-jsx\",\"esModuleInterop\":true}' node ../backend/node_modules/ts-node/dist/bin.js test-honest-frontend.ts",
     "test:build-guard": "node scripts/test-build-guard.js",
-    "verify": "npm run lint && npm run typecheck && npm run test:e2e && npm run build"
+    "verify": "npm run lint && npm run typecheck && npm run test:e2e && npm run build",
+    "test:password-free-switch": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\",\"jsx\":\"react-jsx\",\"esModuleInterop\":true}' node ../backend/node_modules/ts-node/dist/bin.js test-password-free-switch.ts"
   },
   "dependencies": {
     "lucide-react": "^1.25.0",

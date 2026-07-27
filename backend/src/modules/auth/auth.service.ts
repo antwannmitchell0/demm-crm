@@ -176,7 +176,10 @@ export class AuthService {
   private async issueTokensForMembership(userId: string, workspaceId: string) {
     const membership = await this.prisma.membership.findFirst({
       where: { userId, workspaceId },
-      include: { user: true },
+      // workspace/organization are joined so the session payload can NAME the
+      // active workspace. It previously carried workspaceId and role only, so
+      // after a refresh the sidebar had an id and nothing to display.
+      include: { user: true, workspace: true, organization: true },
     });
 
     if (!membership) {
@@ -220,6 +223,8 @@ export class AuthService {
         lastName: membership.user.lastName,
         role: membership.role,
         workspaceId: membership.workspaceId,
+        workspaceName: membership.workspace?.name ?? '',
+        organizationName: membership.organization.name,
       },
     };
   }
@@ -290,7 +295,16 @@ export class AuthService {
   }
 
   // 3. Rotate Refresh Token
-  async refreshToken(rawRefreshToken: string) {
+  /**
+   * Consumes a presented refresh token atomically and returns the row it
+   * claimed.
+   *
+   * Extracted so that rotation and workspace switching share ONE
+   * implementation of replay detection, expiry handling and the concurrent
+   * claim. Two copies of this logic would drift, and the half that drifted
+   * would be the one an attacker uses.
+   */
+  private async claimRefreshToken(rawRefreshToken: string) {
     const hashedToken = this.hashToken(rawRefreshToken);
     // Deliberately NOT filtered by `revoked`/`expiresAt`. The row must be read
     // in whatever state it is in, because telling "this token never existed"
@@ -360,6 +374,33 @@ export class AuthService {
     }
 
     // From here the claim is ours and the old token is spent.
+    return stored;
+  }
+
+  /**
+   * Issues a session for a claimed token, converting the one refusal that would
+   * otherwise leak information.
+   *
+   * A membership that no longer exists must not answer differently from any
+   * other refusal. The raw ForbiddenException ("User is not a member of this
+   * workspace") confirms to the caller that the token itself was otherwise
+   * valid -- an oracle. Only that case is converted; anything else (a real
+   * database fault) propagates untouched so it cannot be silently swallowed as
+   * an auth failure.
+   */
+  private async issueForClaimedToken(userId: string, workspaceId: string) {
+    try {
+      return await this.issueTokensForMembership(userId, workspaceId);
+    } catch (error: unknown) {
+      if (error instanceof ForbiddenException) {
+        throw new UnauthorizedException('Invalid or expired refresh token');
+      }
+      throw error;
+    }
+  }
+
+  async refreshToken(rawRefreshToken: string) {
+    const stored = await this.claimRefreshToken(rawRefreshToken);
 
     if (!stored.workspaceId) {
       throw new UnauthorizedException('Invalid or expired refresh token');
@@ -369,23 +410,69 @@ export class AuthService {
     // proof of identity -- no pre-auth token needed here. Membership is still
     // re-verified inside issueTokensForMembership, so access removed after the
     // token was minted stops working immediately.
-    try {
-      return await this.issueTokensForMembership(
-        stored.userId,
-        stored.workspaceId,
-      );
-    } catch (error: unknown) {
-      // A membership that no longer exists must not answer differently from any
-      // other refusal. The old ForbiddenException ("User is not a member of
-      // this workspace") confirmed to the caller that the token itself was
-      // otherwise valid -- an oracle. Only that case is converted; anything
-      // else (a real database fault) propagates untouched so it cannot be
-      // silently swallowed as an auth failure.
-      if (error instanceof ForbiddenException) {
-        throw new UnauthorizedException('Invalid or expired refresh token');
-      }
-      throw error;
-    }
+    return this.issueForClaimedToken(stored.userId, stored.workspaceId);
+  }
+
+  /**
+   * Moves an existing session into another workspace the SAME user belongs to,
+   * without a password.
+   *
+   * Switching previously required a full re-authentication: the only route to a
+   * second workspace was login() -> preAuthToken -> selectWorkspace(). That is
+   * not a security property, it is a missing endpoint -- the user has already
+   * proven who they are, and the authority that matters is the membership,
+   * which is re-checked below.
+   *
+   * Built on the same claim as rotation rather than on the access token,
+   * deliberately:
+   *
+   *  - the old session's refresh token is SPENT by switching, so a user cannot
+   *    accumulate one live token per workspace they visit;
+   *  - eight concurrent switches of one token produce one session, not eight;
+   *  - replaying a spent token is still theft and still revokes the family.
+   *
+   * The target workspace is caller-supplied and therefore untrusted. It is not
+   * validated here at all: issueTokensForMembership looks up
+   * (userId, workspaceId) and refuses when no membership joins them, and that
+   * refusal is converted to the same generic 401 as every other failure, so
+   * this route cannot be used to probe which workspace ids exist.
+   */
+  async switchWorkspace(rawRefreshToken: string, targetWorkspaceId: string) {
+    const stored = await this.claimRefreshToken(rawRefreshToken);
+    return this.issueForClaimedToken(stored.userId, targetWorkspaceId);
+  }
+
+  /**
+   * The workspaces the authenticated caller may enter.
+   *
+   * `userId` comes from the verified JWT subject in the controller, never from
+   * a parameter or body, so one user cannot enumerate another's workspaces.
+   * Before this existed the client learned its workspace list exactly once --
+   * in the login response -- and had no way to ask again, which is why a picker
+   * could only be shown immediately after a password.
+   */
+  async listMemberships(userId: string) {
+    // `Membership.workspaceId` is nullable -- an organization-level membership
+    // grants standing without naming a workspace. Those are excluded here
+    // rather than rendered as "Organization Level" (which is what the login
+    // response does): every entry this endpoint returns is meant to be a
+    // switch target, and a row whose id is null cannot be switched into. A
+    // picker showing an unusable option is worse than showing one fewer.
+    const memberships = await this.prisma.membership.findMany({
+      where: { userId, workspaceId: { not: null } },
+      include: { workspace: true, organization: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return {
+      memberships: memberships.map((m) => ({
+        workspaceId: m.workspaceId as string,
+        workspaceName: m.workspace?.name ?? '',
+        organizationId: m.organizationId,
+        organizationName: m.organization.name,
+        role: m.role,
+      })),
+    };
   }
 
   // 4. Logout single session

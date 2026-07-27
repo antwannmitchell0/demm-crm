@@ -20,6 +20,13 @@ export interface User {
   lastName: string;
   role: string;
   workspaceId: string;
+  /**
+   * Display names for the active context, mirroring SessionUserMeta. Optional
+   * for the same reason: a session established by an older backend carries the
+   * ids only, so the UI must fall back rather than render "undefined".
+   */
+  workspaceName?: string;
+  organizationName?: string;
 }
 
 /**
@@ -95,6 +102,33 @@ export class ApiError extends Error {
  */
 const NON_RETRYABLE_PREFIX = 'api/auth/';
 
+/**
+ * Routes under `api/auth/` that are ordinary bearer-authorised READS rather
+ * than credential exchanges, and so may be refreshed and replayed like any
+ * other resource.
+ *
+ * The prefix rule above exists because a 401 from a credential route means the
+ * credential itself was rejected -- refreshing and replaying is meaningless at
+ * best and recursive at worst. `memberships` is not that: it is a plain list of
+ * the caller's workspaces that happens to be mounted on the auth controller,
+ * and a 401 from it means only that the access token aged out. Excluding it
+ * would strand the workspace picker exactly when a user has left a tab open.
+ *
+ * Note the direction this enumeration fails in. The prefix rule's own comment
+ * records that an earlier ENUMERATION OF CREDENTIAL ROUTES omitted `register`
+ * -- an omission that made a credential route retryable. This list is the
+ * inverse: it enumerates the SAFE routes, so forgetting to add one costs a
+ * retry, not a security property.
+ */
+const RETRYABLE_AUTH_ROUTES = new Set(['api/auth/memberships']);
+
+function isNonRetryable(endpoint: string): boolean {
+  if (!endpoint.startsWith(NON_RETRYABLE_PREFIX)) return false;
+  // Compare on the path only: a query string must not smuggle a credential
+  // route past this check, and must not stop a safe one from matching.
+  return !RETRYABLE_AUTH_ROUTES.has(endpoint.split('?')[0]);
+}
+
 async function request(
   endpoint: string,
   options: RequestInit = {},
@@ -126,11 +160,7 @@ async function request(
   // guarantees termination: a second 401 falls through to the normal error path
   // instead of looping. Auth endpoints are excluded so a refresh can never
   // recursively trigger another refresh.
-  if (
-    response.status === 401 &&
-    !hasRetried &&
-    !endpoint.startsWith(NON_RETRYABLE_PREFIX)
-  ) {
+  if (response.status === 401 && !hasRetried && !isNonRetryable(endpoint)) {
     const refreshed = await sessionClient.refreshSession();
     if (refreshed) {
       return request(endpoint, options, true);

@@ -1,5 +1,6 @@
 import {
   Controller,
+  Get,
   Post,
   Body,
   Headers,
@@ -15,6 +16,7 @@ import {
   LoginDto,
   SelectWorkspaceDto,
   RefreshTokenDto,
+  SwitchWorkspaceDto,
 } from './dto/auth.dto';
 
 @Controller('api/auth')
@@ -55,6 +57,35 @@ export class AuthController {
   @Post('refresh')
   async refresh(@Body() body: RefreshTokenDto) {
     return this.authService.refreshToken(body.refreshToken);
+  }
+
+  /**
+   * Moves the current session into another workspace without a password.
+   *
+   * Authenticated by the refresh token in the body rather than by
+   * JwtAuthGuard, deliberately: the switch must SPEND the old session's token
+   * so a user cannot accumulate one live token per workspace they visit, and
+   * so eight concurrent switches produce one session rather than eight. The
+   * access token proves identity but cannot be spent.
+   */
+  @Post('switch-workspace')
+  async switchWorkspace(@Body() body: SwitchWorkspaceDto) {
+    return this.authService.switchWorkspace(
+      body.refreshToken,
+      body.workspaceId,
+    );
+  }
+
+  /**
+   * The workspaces this caller may switch into.
+   *
+   * The user id comes from the verified JWT subject that JwtAuthGuard put on
+   * the request -- there is no userId parameter to tamper with.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('memberships')
+  async memberships(@Request() req: any) {
+    return this.authService.listMemberships(req.user.id);
   }
 
   @Post('logout')
