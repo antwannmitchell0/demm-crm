@@ -324,23 +324,68 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
-    // STATE 4 -- valid: rotate below.
-
-    // Revoke old refresh token (rotation)
-    await this.prisma.refreshToken.update({
-      where: { id: stored.id },
+    // STATE 4 -- valid AT READ TIME. That is not the same as "still valid", so
+    // the rotation below is a conditional CLAIM rather than a plain update.
+    //
+    // WHY (Phase 0C-R). The previous code read the row, then issued an
+    // unconditional `update` keyed only on `id`. Two requests carrying the same
+    // token could both pass the read (both saw revoked=false), both "succeed"
+    // at the write, and both mint a session. Measured against real PostgreSQL
+    // with 8 concurrent callers: 8 succeeded and 8 live tokens existed
+    // afterwards. One refresh token amplified into N sessions.
+    //
+    // `WHERE id = ? AND revoked = false` makes the database the arbiter:
+    // exactly one caller can transition the row, and `count` tells us whether
+    // we were that caller.
+    const claim = await this.prisma.refreshToken.updateMany({
+      where: { id: stored.id, revoked: false },
       data: { revoked: true },
     });
 
+    if (claim.count !== 1) {
+      // We lost the race: the row was unrevoked when we read it and revoked by
+      // the time we wrote, a window only concurrent use can produce.
+      //
+      // Deliberately NOT treated as suspected theft. A thief holding a stolen
+      // token has no reason to race the victim -- presenting it alone succeeds
+      // uncontested -- so losing a claim is evidence of concurrency, not of
+      // compromise. The real theft signal is presenting a token that was
+      // ALREADY rotated away, which STATE 2 above still catches and still
+      // answers with full family revocation.
+      //
+      // Revoking here instead would kill the winner's brand-new session too,
+      // logging out a legitimate user whose second tab merely refreshed at the
+      // same moment, while giving an attacker nothing they could not already do.
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
+
+    // From here the claim is ours and the old token is spent.
+
     if (!stored.workspaceId) {
-      throw new UnauthorizedException(
-        'Missing workspace context on refresh token',
-      );
+      throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
     // Possession of a valid, unexpired, unrevoked refresh token already IS
-    // proof of identity -- no pre-auth token needed here.
-    return this.issueTokensForMembership(stored.userId, stored.workspaceId);
+    // proof of identity -- no pre-auth token needed here. Membership is still
+    // re-verified inside issueTokensForMembership, so access removed after the
+    // token was minted stops working immediately.
+    try {
+      return await this.issueTokensForMembership(
+        stored.userId,
+        stored.workspaceId,
+      );
+    } catch (error: unknown) {
+      // A membership that no longer exists must not answer differently from any
+      // other refusal. The old ForbiddenException ("User is not a member of
+      // this workspace") confirmed to the caller that the token itself was
+      // otherwise valid -- an oracle. Only that case is converted; anything
+      // else (a real database fault) propagates untouched so it cannot be
+      // silently swallowed as an auth failure.
+      if (error instanceof ForbiddenException) {
+        throw new UnauthorizedException('Invalid or expired refresh token');
+      }
+      throw error;
+    }
   }
 
   // 4. Logout single session

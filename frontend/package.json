@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "tsc --noEmit && next build",
     "test:e2e": "node ../backend/node_modules/ts-node/dist/bin.js test-pilot-e2e.ts",
-    "test:session-routes": "node ../backend/node_modules/ts-node/dist/bin.js test-session-routes.ts",
+    "test:session-routes": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\",\"jsx\":\"react-jsx\",\"esModuleInterop\":true}' node ../backend/node_modules/ts-node/dist/bin.js test-session-routes.ts",
     "test:session-orchestration": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\",\"jsx\":\"react-jsx\",\"esModuleInterop\":true}' node ../backend/node_modules/ts-node/dist/bin.js test-session-orchestration.ts",
     "test:workspace-selection": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\",\"jsx\":\"react-jsx\",\"esModuleInterop\":true}' node ../backend/node_modules/ts-node/dist/bin.js test-workspace-selection.ts",
     "test:honest-frontend": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\",\"jsx\":\"react-jsx\",\"esModuleInterop\":true}' node ../backend/node_modules/ts-node/dist/bin.js test-honest-frontend.ts",
