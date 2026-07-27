@@ -1245,6 +1245,73 @@ production build exit 0 with both guards ✅. Transcripts: `/tmp/t13-orch.log`,
 
 ---
 
+## Phase 0A + Phase 0B — Preservation and truthful handoff — COMPLETE
+
+### Phase 0A — preservation
+
+All Phase 0 work (T1–T14) was uncommitted on `main` at `24808c4`: 20 tracked files
+(+2,350/−560) and 21 new source files, with no branch, tag, stash, or remote copy. It is now
+preserved on `phase0/baseline-preservation-2026-07-26`, pushed and remotely verified
+(remote tip == local tip == `4f59a2fe23963bc79277c754fa6f274858f10725`).
+
+Seven logical commits: `1ae8be0` approvals · `fa7c8ca` auth · `f27939d` frontend session ·
+`7ae4fb0` workspaces · `59e9b0d` honest UI · `0956183` safety + CI + dump removal ·
+`4f59a2f` this evidence plan. 45 files, +9,078/−560.
+
+**Commit-boundary deviations**, all forced by buildability rather than preference:
+- `verify-http-staging.ts` carries both T6 auth assertions and T13 guard/cleanup work. It sits in
+  the safety commit because it imports `test-db-guard.ts`; committing it earlier would produce a
+  commit that does not build. Same reasoning for `verify-comprehensive.ts`, `verify-scenarios.ts`,
+  and `test-isolation.ts`.
+- `frontend/src/lib/session/` is a new file set containing T7, T8, and T9 work inseparably; it
+  lands whole in the session commit, so `switchWorkspace` exists one commit before the workspace
+  UI that uses it.
+- `frontend/src/lib/api.ts` spans T8/T9/T10 and lands in the session commit; `ApiError` is present
+  there before anything consumes it (harmless, buildable).
+- Both `package.json` files land in the safety commit so no script ever points at a test file that
+  does not yet exist.
+- `Sidebar.tsx` is in the workspace commit because it imports `WorkspaceSwitcher`.
+
+**Excluded deliberately:** `DEMM_Autonomous_Execution_Loop_Prompt.md` and
+`flyer for event planners.png` (unrelated), plus all `.env`, generated output, `node_modules`,
+external backups, and duplicate artifacts. Verified: zero matches for each exclusion pattern in
+`git diff main..HEAD`.
+
+**Pre-existing credential note (not newly introduced).** The CI workflow contains an ephemeral
+service-container credential and a CI-only `JWT_SECRET` literal. Both already exist in committed
+`HEAD`; the Phase 0A diff reduces the database-URL literal from three occurrences to one and
+changes only the database name. No new secret enters Git. Recorded for Phase 0C.
+
+**Verification, run twice — before the first commit and again after the last** — each on its own
+uniquely named disposable database with the live-name guard and explicit opt-in, then dropped:
+repo-safety 43/0, approval 46/0, workspace guard 12/0, workspace controller 12/0, auth 21/0,
+HTTP 22/0, comprehensive 19/0, full backend `npm run verify` exit 0, backend lint/typecheck 0.
+Frontend: T7 25/0, T8 15/0, T9 44/0, T10+T11 36/0, lint 0 (7 pre-existing warnings), typecheck 0,
+production build 0 with both guards. `dev-db-integrity UNCHANGED=true` both times.
+
+Git health after: `show-ref`, `for-each-ref`, `log --all`, `fsck --full` all exit 0, no bad-ref
+errors; 15 dangling commits retained; both extra worktrees clean and unchanged; `main` unmoved;
+no tag created; Communications branch untouched.
+
+### Phase 0B — truthful handoff
+
+`handoff.md` was rewritten. Removed as stale or unverifiable: the "Release 1.0" framing, the GCP
+project id, two staging URLs, the staging database instance name, the "Baseline Backup
+Identifier", and a memory-sync API paired with a local token path. Removed as already completed:
+"next steps" calling for DOM26-R controllers (four now exist) and Marketing offer work (module
+now has eight controllers).
+
+The new document distinguishes locally verified from CI-verified, staging-verified, and
+production-verified — the last three all being **none** — and states plainly that the build is not
+sealed for external release. It records repository truth, database truth including the 10-vs-12
+migration drift and its cause, completed capabilities, verification counts, security decisions,
+the full defect list, the host-duplication blocker, dump and recovery truth, memory boundaries,
+the Phase 0C gate, the 25-step roadmap, a confirmed core-file map, and takeover instructions.
+
+**Deployed-staging verification remains outstanding** and is a Phase 0C requirement.
+
+---
+
 ## Remaining Phase 0 tasks (not started — approved scope, unchanged)
 
 - [x] **T4 — COMPLETE** (full record in the "T4 — Approval authority" section above).
