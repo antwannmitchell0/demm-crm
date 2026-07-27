@@ -16,3 +16,10 @@
 # Restores and exports occasionally land next to the code they were taken from.
 *.dump.gz
 *.pgdump.gz
+
+# Playwright browser-UAT artefacts. The harness and its results format are
+# committed; per-run output (screenshots, traces, seeded fixture ids) is not.
+frontend/test-results/
+frontend/playwright-report/
+frontend/e2e-results/fixtures.json
+frontend/e2e-results/results.json
