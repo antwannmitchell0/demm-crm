@@ -333,7 +333,7 @@ export default function OffersPage() {
 
             <p className="text-[10px] text-slate-600">
               The four fields below are optional -- leave blank if genuinely not yet decided.
-              An empty field means "not yet defined," not a fabricated promise.
+              An empty field means &quot;not yet defined,&quot; not a fabricated promise.
             </p>
             <div className="grid grid-cols-2 gap-4">
               <input

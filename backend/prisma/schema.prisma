@@ -47,6 +47,12 @@ enum ApprovalStatus {
   PENDING
   APPROVED
   REJECTED
+  // Clock-driven terminal state, deliberately distinct from REJECTED: a
+  // human declining a high-risk action and an approval window elapsing are
+  // different governance facts and must not be conflated in the audit
+  // record. Applied lazily on the next resolve attempt (see
+  // AgentService.resolveApproval) -- a background sweep is Phase 5 work.
+  EXPIRED
 }
 
 enum ActivityType {
@@ -1374,6 +1380,23 @@ model AgentApproval {
   status        ApprovalStatus @default(PENDING)
   workspaceId   String
   requestedById String
+  // The role the REQUESTER held at the moment the approval was staged.
+  // Execution authority for an approved action is derived from this column,
+  // never from the approver's current role -- otherwise approving would
+  // silently re-authorize the action under the approver's (possibly higher)
+  // privileges. Reuses the shared `Role` enum; there is no second role
+  // system.
+  //
+  // Nullable ONLY to keep the migration additive for rows staged before this
+  // column existed. Those legacy rows cannot be resolved: resolveApproval
+  // fails closed and asks the caller to re-submit the action, because their
+  // staging-time role is unknowable after the fact.
+  requesterRole Role?
+  // When the approval window closes. Populated at staging time as
+  // now + 7 days, matching the existing 7-day expiry convention already used
+  // for refresh tokens in auth.service.ts. Null means "no expiry recorded"
+  // (legacy rows only) and is treated as non-expiring.
+  expiresAt     DateTime?
   resolvedById  String?
   resolvedBy    User?          @relation("ResolverRelation", fields: [resolvedById], references: [id])
   createdAt     DateTime       @default(now())

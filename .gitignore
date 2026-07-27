@@ -1,0 +1,18 @@
+# Database archives must never be committed.
+#
+# T12 removed a tracked `backend/test_backup.dump`: a snapshot of the DEVELOPMENT
+# database that entered history 82 seconds after it was written, swept into an
+# unrelated commit. Nobody chose to commit it. It carried a real bcrypt password
+# hash and eight refresh-token hashes, and by the time it was found it was nine
+# migrations obsolete and could not have recovered anything.
+#
+# These patterns are narrow on purpose. `*.sql` is deliberately NOT ignored:
+# Prisma migration SQL under backend/prisma/migrations/ is legitimate tracked
+# source and must stay trackable.
+*.dump
+*.pgdump
+*.backup
+
+# Restores and exports occasionally land next to the code they were taken from.
+*.dump.gz
+*.pgdump.gz

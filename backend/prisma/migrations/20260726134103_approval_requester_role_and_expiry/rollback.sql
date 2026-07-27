@@ -1,0 +1,61 @@
+-- Rollback for 20260726134103_approval_requester_role_and_expiry
+--
+-- Forward migration was purely additive: two nullable columns on
+-- "AgentApproval" plus one new value on the "ApprovalStatus" enum. No data
+-- was rewritten and no column was dropped, so there is no data-loss risk in
+-- the forward direction.
+--
+-- ORDER MATTERS. Run step 1 BEFORE step 2.
+
+-- Step 1 (REQUIRED IF ANY APPROVALS WERE EXPIRED).
+-- Rolling back re-deploys code whose ApprovalStatus enum has no 'EXPIRED'
+-- member. Prisma Client fails to deserialize a row holding an enum value it
+-- does not know about, so any row left at 'EXPIRED' would break reads of the
+-- AgentApproval table. Collapse those rows onto the nearest pre-existing
+-- terminal state first. This is lossy in MEANING (a lapsed approval window
+-- becomes indistinguishable from a human rejection) but the distinction
+-- survives in the AuditLog 'APPROVAL_EXPIRED' rows, which are not touched
+-- here.
+UPDATE "AgentApproval" SET "status" = 'REJECTED' WHERE "status" = 'EXPIRED';
+
+-- Step 2. Drop the added columns.
+--
+-- READ THIS BEFORE RUNNING. Rolling back this migration is NOT a neutral or
+-- self-correcting operation. If the application code is also reverted to the
+-- previous approval implementation, doing so REINTRODUCES three defects that
+-- this migration exists to fix:
+--
+--   1. THE RECURSIVE APPROVAL LOOP. resolveApproval() re-entered the public
+--      execution path, which re-ran the high-risk check and staged ANOTHER
+--      pending approval instead of executing. High-risk actions became
+--      impossible to execute, and every approval spawned a new pending row.
+--   2. APPROVER-ROLE / REQUESTER-IDENTITY MIXING. The action ran as the
+--      original requester but under the APPROVER's current role, so approving
+--      silently re-authorized the action at the approver's privilege level.
+--   3. LOSS OF REQUESTER-ROLE FIDELITY. Any approval still PENDING loses its
+--      staged requesterRole and expiresAt permanently. The staging-time
+--      authority is unknowable after the fact, so it cannot be reconstructed;
+--      the previous code papered over this by falling back to 'USER'.
+--
+-- Roll back ONLY if reintroducing the above is an explicitly accepted cost of
+-- the incident being handled. Prefer rolling forward.
+ALTER TABLE "AgentApproval" DROP COLUMN IF EXISTS "requesterRole";
+ALTER TABLE "AgentApproval" DROP COLUMN IF EXISTS "expiresAt";
+
+-- Step 3. NOT POSSIBLE -- documented deliberately rather than silently omitted.
+-- PostgreSQL provides no "ALTER TYPE ... DROP VALUE". The 'EXPIRED' member of
+-- "ApprovalStatus" therefore REMAINS in the database after this rollback.
+-- Leaving it is harmless: after Step 1 no row references it, and an unused
+-- enum member has no runtime effect.
+-- Removing it would require the full type-swap dance below, which rewrites the
+-- AgentApproval table and takes an ACCESS EXCLUSIVE lock. Do NOT run this
+-- unless a reviewer has explicitly required a byte-identical type definition:
+--
+--   ALTER TYPE "ApprovalStatus" RENAME TO "ApprovalStatus_old";
+--   CREATE TYPE "ApprovalStatus" AS ENUM ('PENDING', 'APPROVED', 'REJECTED');
+--   ALTER TABLE "AgentApproval"
+--     ALTER COLUMN "status" DROP DEFAULT,
+--     ALTER COLUMN "status" TYPE "ApprovalStatus"
+--       USING ("status"::text::"ApprovalStatus"),
+--     ALTER COLUMN "status" SET DEFAULT 'PENDING';
+--   DROP TYPE "ApprovalStatus_old";

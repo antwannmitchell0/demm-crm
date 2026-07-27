@@ -2,13 +2,22 @@ import { PrismaClient, Role } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import * as bcrypt from 'bcrypt';
+import { assertDisposableTestDatabase } from './test-db-guard';
 
+// NOTE: the fallback below points at the DEVELOPMENT database. It is now
+// unreachable in practice -- the T13 guard refuses to run when DATABASE_URL is
+// unset, and refuses `demm_crm` outright when it is set -- but it is left in
+// place rather than changed, because editing connection defaults is outside
+// this task's scope. Removing it is recorded as a follow-up.
 const connectionString = process.env.DATABASE_URL || 'postgresql://antwannmitchellsr@localhost:5432/demm_crm';
 const pool = new Pool({ connectionString });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 async function main() {
+  // T13 GUARD -- first statement, before the 17 unscoped deleteMany() calls below.
+  await assertDisposableTestDatabase('test-isolation.ts');
+
   console.log('🧪 Starting Tenant Isolation verification tests...');
 
   // Clear existing databases for clean test run.
