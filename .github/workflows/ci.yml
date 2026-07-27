@@ -140,6 +140,25 @@ jobs:
           JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
           ALLOW_DESTRUCTIVE_TESTS: "true"
 
+      - name: Workspace Switching Suite
+        # Phase 2. Membership listing and password-free workspace switching.
+        # Includes the concurrency check: eight simultaneous switches of one
+        # refresh token must produce ONE session, because the switch is built on
+        # the same atomic claim as rotation.
+        run: cd backend && npm run test:workspace-switching
+        env:
+          JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+          ALLOW_DESTRUCTIVE_TESTS: "true"
+
+      - name: Approval Inbox Suite
+        # Phase 2. Listing, scoping, filtering and requester cancellation --
+        # including that a cancelled request cannot afterwards be approved and
+        # that an approver's REJECT cannot be re-labelled as a cancellation.
+        run: cd backend && npm run test:approval-inbox
+        env:
+          JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+          ALLOW_DESTRUCTIVE_TESTS: "true"
+
       - name: Team Management Suite
         # Phase 2. Invitations, member listing, role changes, removal, and the
         # last-owner rule. Includes a genuine concurrency check: three
