@@ -50,15 +50,34 @@ function check(label: string, condition: boolean, detail?: string) {
   }
 }
 
-const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
+const sha256 = (v: string) =>
+  crypto.createHash('sha256').update(v).digest('hex');
 
 // Named with the `_verify` suffix the database guard recognises as disposable,
 // so this can never be pointed at a real database even by accident.
 const DB_MIGRATE = 'demm_crm_invitation_verify';
 const DB_ZERO = 'demm_crm_zero_verify';
 const USER = process.env.PGUSER || process.env.USER || 'postgres';
+const HOST = process.env.PGHOST || 'localhost';
+const PORT = process.env.PGPORT || '5432';
+
+/**
+ * Includes the password when one is configured.
+ *
+ * WHY THIS EXISTS. The first CI run of this suite HUNG -- not failed, hung --
+ * for over twenty minutes until it was cancelled. A local developer's Postgres
+ * trusts the socket, so no password is needed and the URL worked. CI's service
+ * container requires one. `createdb` is an interactive libpq client: given no
+ * password it prompts on stdin, and `sh()` below sets stdin to 'ignore', so
+ * libpq waited forever for input that could never arrive.
+ *
+ * A missing password must produce a fast, readable failure -- never a hang.
+ */
+const AUTH = process.env.PGPASSWORD
+  ? `${encodeURIComponent(USER)}:${encodeURIComponent(process.env.PGPASSWORD)}`
+  : encodeURIComponent(USER);
 const urlFor = (db: string) =>
-  `postgresql://${USER}@localhost:5432/${db}?schema=public`;
+  `postgresql://${AUTH}@${HOST}:${PORT}/${db}?schema=public`;
 
 const MIGRATIONS_DIR = path.join(__dirname, 'prisma/migrations');
 // Everything from this migration onward is held back while the "old world"
@@ -74,7 +93,12 @@ function sh(cmd: string, args: string[], env: Record<string, string> = {}) {
     cwd: __dirname,
     env: { ...process.env, ...env },
     encoding: 'utf8',
+    // stdin stays closed on purpose: nothing here may be interactive. The
+    // TIMEOUT is what makes that safe -- without it, a client that decides to
+    // prompt blocks until the CI job's own limit, which is how this suite once
+    // hung for twenty minutes instead of failing in seconds.
     stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 120_000,
   });
 }
 
@@ -109,7 +133,9 @@ async function main() {
     let ok = true;
     let detail = '';
     try {
-      sh('npx', ['prisma', 'migrate', 'deploy'], { DATABASE_URL: urlFor(DB_ZERO) });
+      sh('npx', ['prisma', 'migrate', 'deploy'], {
+        DATABASE_URL: urlFor(DB_ZERO),
+      });
     } catch (e: any) {
       ok = false;
       detail = String(e?.stderr ?? e?.message ?? e).slice(0, 300);
@@ -129,9 +155,16 @@ async function main() {
     const applied = await c.query(
       `SELECT count(*)::int AS n FROM "_prisma_migrations" WHERE finished_at IS NOT NULL`,
     );
+    // Counted from the directory rather than hardcoded. The literal 13 here
+    // broke the moment a migration was added -- a test that has to be edited
+    // every time the schema evolves trains people to edit tests instead of
+    // reading them.
+    const onDisk = fs
+      .readdirSync(MIGRATIONS_DIR, { withFileTypes: true })
+      .filter((e) => e.isDirectory()).length;
     check(
-      `3. Every migration is recorded as applied (got ${applied.rows[0].n})`,
-      applied.rows[0].n === 13,
+      `3. Every migration on disk is recorded as applied (applied=${applied.rows[0].n}, on disk=${onDisk})`,
+      applied.rows[0].n === onDisk,
     );
     await c.end();
   }
@@ -154,7 +187,9 @@ async function main() {
   let wsId = '';
 
   try {
-    sh('npx', ['prisma', 'migrate', 'deploy'], { DATABASE_URL: urlFor(DB_MIGRATE) });
+    sh('npx', ['prisma', 'migrate', 'deploy'], {
+      DATABASE_URL: urlFor(DB_MIGRATE),
+    });
 
     const c = new Client({ connectionString: urlFor(DB_MIGRATE) });
     await c.connect();
@@ -213,7 +248,13 @@ async function main() {
     const future = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
     const past = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
 
-    await insertOld(crypto.randomUUID(), inviteeEmail, rawPending, 'PENDING', future);
+    await insertOld(
+      crypto.randomUUID(),
+      inviteeEmail,
+      rawPending,
+      'PENDING',
+      future,
+    );
     await insertOld(
       crypto.randomUUID(),
       `exp-${suffix}@example.invalid`,
@@ -243,12 +284,18 @@ async function main() {
   let migrateOk = true;
   let migrateDetail = '';
   try {
-    sh('npx', ['prisma', 'migrate', 'deploy'], { DATABASE_URL: urlFor(DB_MIGRATE) });
+    sh('npx', ['prisma', 'migrate', 'deploy'], {
+      DATABASE_URL: urlFor(DB_MIGRATE),
+    });
   } catch (e: any) {
     migrateOk = false;
     migrateDetail = String(e?.stderr ?? e?.message ?? e).slice(0, 400);
   }
-  check('6. The migration applies cleanly over existing data', migrateOk, migrateDetail);
+  check(
+    '6. The migration applies cleanly over existing data',
+    migrateOk,
+    migrateDetail,
+  );
 
   {
     const c = new Client({ connectionString: urlFor(DB_MIGRATE) });
@@ -268,7 +315,9 @@ async function main() {
     check('9. tokenHash exists', names.includes('tokenHash'));
     check(
       '10. Provenance columns exist',
-      ['invitedById', 'acceptedById', 'acceptedAt'].every((n) => names.includes(n)),
+      ['invitedById', 'acceptedById', 'acceptedAt'].every((n) =>
+        names.includes(n),
+      ),
     );
 
     const notNull = await c.query(
@@ -287,18 +336,28 @@ async function main() {
       '12. The backfilled hash of the PENDING row matches the application hash of its original token',
       stored.includes(sha256(rawPending)),
     );
-    check('13. The EXPIRED row was hashed too -- no row is skipped', stored.includes(sha256(rawExpired)));
-    check('14. The ACCEPTED row was hashed too', stored.includes(sha256(rawAccepted)));
+    check(
+      '13. The EXPIRED row was hashed too -- no row is skipped',
+      stored.includes(sha256(rawExpired)),
+    );
+    check(
+      '14. The ACCEPTED row was hashed too',
+      stored.includes(sha256(rawAccepted)),
+    );
     check(
       '15. No stored value is a raw token',
-      !stored.some((h: string) => [rawPending, rawExpired, rawAccepted].includes(h)),
+      !stored.some((h: string) =>
+        [rawPending, rawExpired, rawAccepted].includes(h),
+      ),
     );
     check(
       '16. Every hash is 64 hex characters',
       stored.every((h: string) => /^[0-9a-f]{64}$/.test(h)),
     );
 
-    const uniq = await c.query(`SELECT indexname FROM pg_indexes WHERE tablename='Invitation'`);
+    const uniq = await c.query(
+      `SELECT indexname FROM pg_indexes WHERE tablename='Invitation'`,
+    );
     const idx = uniq.rows.map((r) => r.indexname);
     check(
       `17. The unique constraint on tokenHash exists (got ${idx.join(', ')})`,
@@ -341,7 +400,11 @@ async function main() {
 
     const app = await NestFactory.create(AppModule, { logger: false });
     app.useGlobalPipes(
-      new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
     );
     await app.listen(0);
     check('20. The application boots against the migrated database', true);
@@ -351,7 +414,9 @@ async function main() {
       adapter: new PrismaPg(new Pool({ connectionString: urlFor(DB_MIGRATE) })),
     });
 
-    const invitee = await prisma.user.findUnique({ where: { email: inviteeEmail } });
+    const invitee = await prisma.user.findUnique({
+      where: { email: inviteeEmail },
+    });
     const token = jwt.sign(
       { sub: invitee!.id, email: invitee!.email },
       process.env.JWT_SECRET!,
@@ -360,7 +425,10 @@ async function main() {
 
     const res = await fetch(`${base}/team/invitations/accept`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
       body: JSON.stringify({ token: rawPending }),
     });
     check(
@@ -373,8 +441,13 @@ async function main() {
     });
     check('22. Accepting it created the membership', !!membership);
 
-    const row = await prisma.invitation.findFirst({ where: { email: inviteeEmail } });
-    check('23. The pre-existing invitation is now ACCEPTED', row?.status === 'ACCEPTED');
+    const row = await prisma.invitation.findFirst({
+      where: { email: inviteeEmail },
+    });
+    check(
+      '23. The pre-existing invitation is now ACCEPTED',
+      row?.status === 'ACCEPTED',
+    );
     check(
       '24. Acceptance recorded who accepted and when',
       row?.acceptedById === invitee!.id && !!row?.acceptedAt,
