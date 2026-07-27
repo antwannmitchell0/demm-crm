@@ -582,39 +582,54 @@ found" result — that has already produced a false negative once.
 
 ---
 
-## 17. BLOCKER — Phase 0C cannot be sealed without a decision
+## 17. Phase 0C status — deployed and verified; awaiting two human-gated items
 
-Phase 0C reconciliation, host-duplication containment, disposition, local verification, and CI
-triggering are all achievable. **Staging deployment of the seal candidate is not**, for a
-structural reason:
+The blocker recorded here previously (the deploy pipeline refusing a commit that was not an
+ancestor of `origin/main`) is **resolved**. The Product Manager approved PR #1, it was merged with
+a normal merge commit, and the merged commit was deployed through the pipeline unmodified.
 
-`scripts/deploy-staging.sh` enforces, with no bypass flag:
+| Item | State |
+|---|---|
+| PR #1 | **MERGED** — normal merge commit, 2 parents, reviewed ancestry preserved |
+| `origin/main` | `51ed1f60c8fe616f9109c594efaa5b1d4a0eb3ab` |
+| Preservation commits | **8/8 reachable** from `origin/main` |
+| Real CI | **green** on the merged content |
+| Staging deployment | **SUCCESS** — backend `demm-crm-backend-staging-00017-l2z`, frontend `demm-crm-frontend-staging-00008-n7v`, both 100% traffic |
+| Deployed commit proof | both `/version` endpoints return `51ed1f6…` |
+| Migrations applied | 11, via `prisma migrate deploy` (no `db push`) |
+| Non-credentialed staging verification | **green** (see below) |
+| Contacts-page crash | **resolved** — was a local harness artifact, not product code |
+| Staging log review | **clean** — zero credential/token/secret matches, zero errors |
+| Development database | **unchanged** |
+| Baseline tag | **NOT created** |
 
-```
-git merge-base --is-ancestor "$COMMIT_SHA" origin/main
-  || fail "Commit ... is not an ancestor of origin/main -- it has not been pushed/reviewed.
-           Refusing to deploy an unreviewed commit."
-```
+### Verified live on staging without credentials
 
-The seal candidate is a **merge that is ahead of** `origin/main`, so it is by definition not an
-ancestor. The pipeline is working exactly as designed: it only deploys code that has already
-landed on `main`.
+Origin rejection (cross-site **and** missing Origin) → 403 · wrong content-type → 415 · refresh
+with no cookie → 401 · refresh with a synthetic cookie → 401 · no token in any BFF response body ·
+no internal backend URL in errors · zero `localhost` in served chunks · login page renders ·
+`/contacts` unauthenticated redirects cleanly with no console errors · exactly **one** refresh
+request on load (no refresh loop) · browser storage and cookies empty.
 
-There are three ways forward and **all of them need a human decision**:
+Backend contract: bad credentials → 401 · missing pre-auth token → 401 · invalid pre-auth token →
+401 · unknown refresh token → 401 with the same message (no oracle) · protected routes → 401 ·
+approval resolve without auth → 401 (not 500) · no stack traces or internal detail in responses.
 
-1. **Merge the seal candidate into `main` and push `main`.** This is what the pipeline expects and
-   is almost certainly the intended path. It was explicitly withheld from the Phase 0C mandate
-   ("do not merge into `main` … unless explicitly required by repository policy and independently
-   approved"). Repository policy *does* require it. **The approval does not exist yet.**
-2. **Add a reviewed-branch escape hatch to the deploy guard.** This weakens a release control and
-   should not be done to make a task pass.
-3. **Deploy by hand with raw `gcloud`, bypassing the pipeline.** Rejected — it discards the
-   migration preflight, the archive-from-commit build, and the deployed-SHA verification that make
-   the pipeline trustworthy.
+### The two remaining gates — both need a human
 
-A second, independent blocker sits behind the same gate: deployed-staging browser verification
-requires a login, and constraint 3 above forbids Claude from typing real credentials. That step
-needs a human at the keyboard regardless of how deployment is resolved.
+1. **Credentialed browser verification.** A standing constraint forbids Claude typing real
+   credentials, and this was previously enforced by a hard sandbox refusal. The 17-point checklist
+   is in the Phase 0C report and must be run by the Product Manager against
+   commit `51ed1f6…`.
+2. **Independent security and architecture review.** A separate session must supply it. The
+   implementation session must not grade its own work.
 
-**Until item 1 is approved, `v0.1.4-phase0-baseline` must not be created and Phase 1 must not
-start.**
+Until both are returned, `v0.1.4-phase0-baseline` must not be created.
+
+### Note on the pre-existing staging login failure
+
+The previously reported "Failed to fetch" browser login failure occurred on `d0d0b26`, which
+predates the Phase 0 session architecture. That build posted login **cross-origin** to the backend;
+this build posts **same-origin** to `/api/session/login`. The deployed page was observed making
+exactly one same-origin refresh call with no console errors. Whether that removes the failure can
+only be confirmed by the credentialed login in gate 1 — it is a hypothesis, not a finding.

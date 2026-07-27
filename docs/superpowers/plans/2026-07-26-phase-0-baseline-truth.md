@@ -1392,21 +1392,44 @@ Contrary to the earlier Phase 0B write-up, a real staging environment exists and
 live: both Cloud Run services return HTTP 200 serving `d0d0b26`, Cloud SQL `demm-crm-staging-db`
 is RUNNABLE, four secrets are configured (names only), and the deploy identity has access.
 
-### THE BLOCKER (Checkpoint 7)
+### Deployment and verification (Checkpoints 3-8) — COMPLETE
 
-`scripts/deploy-staging.sh` enforces, with no bypass flag:
+The blocker was resolved by Product Manager approval. PR #1 merged with a normal merge commit
+(`51ed1f6`, 2 parents, 8/8 preservation commits reachable, only the merge commit itself new).
 
-```
-git merge-base --is-ancestor "$COMMIT_SHA" origin/main
-  || fail "... not an ancestor of origin/main -- Refusing to deploy an unreviewed commit."
-```
+Deployed through `scripts/deploy-staging.sh` unmodified: archive-from-commit build, `prisma
+migrate deploy` applying 11 migrations, both services deployed, live `/version` confirmed
+`51ed1f6…` on both, 100% traffic on `demm-crm-backend-staging-00017-l2z` and
+`demm-crm-frontend-staging-00008-n7v`. Deploy report written.
 
-The seal candidate is a merge **ahead of** `origin/main`, so it can never satisfy that guard.
-Deploying it requires merging to `main` first — which Phase 0C explicitly withheld pending
-independent approval. A second blocker sits behind the same gate: deployed-browser verification
-needs a login, and the standing constraint forbids Claude from typing real credentials.
+Non-credentialed staging verification green across Origin rejection, content-type rejection,
+cookie-less and synthetic-cookie refresh, token-leak scanning, bundle localhost scanning, login
+page render, unauthenticated `/contacts` redirect, and single-refresh-no-loop behaviour. Backend
+contract checks green with no oracle and no internal detail leakage. Staging log review clean:
+zero matches for tokens, hashes, cookies, database URLs, Stripe secrets, or errors.
 
-**Consequently `v0.1.4-phase0-baseline` was NOT created, and Phase 1 was NOT started.**
+### Contacts-page crash — RESOLVED, not a product defect
+
+Reproduced on the clean production build, then isolated by changing exactly one variable: the
+local stub harness's response shape for `/contacts`.
+
+| Stub returns | Result |
+|---|---|
+| object (`{ok:true}`) | renderer crash |
+| array (`[]`) | page renders correctly |
+
+The real API returns `prisma.contact.findMany(...)` — an array. The harness was returning an
+object from its catch-all, which is not the contract the page is written against. **No product
+code was changed**; the harness was corrected. The page renders "No contacts found in workspace."
+with zero console errors.
+
+### Remaining gates — both human
+
+1. Credentialed browser verification (17 points) — a standing constraint forbids Claude typing
+   real credentials.
+2. Independent security and architecture review — must come from a separate session.
+
+`v0.1.4-phase0-baseline` was NOT created. Phase 1 was NOT started.
 
 ---
 
