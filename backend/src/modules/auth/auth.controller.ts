@@ -55,8 +55,14 @@ export class AuthController {
   }
 
   @Post('refresh')
-  async refresh(@Body() body: RefreshTokenDto) {
-    return this.authService.refreshToken(body.refreshToken);
+  async refresh(@Request() req: any, @Body() body: RefreshTokenDto) {
+    // requestStartedAt is stamped by CorrelationIdMiddleware at the HTTP
+    // boundary. It is what lets rotation tell a concurrent second tab apart
+    // from a replay; see AuthService.isBenignConcurrentPresentation.
+    return this.authService.refreshToken(
+      body.refreshToken,
+      req.requestStartedAt,
+    );
   }
 
   /**
@@ -69,10 +75,11 @@ export class AuthController {
    * access token proves identity but cannot be spent.
    */
   @Post('switch-workspace')
-  async switchWorkspace(@Body() body: SwitchWorkspaceDto) {
+  async switchWorkspace(@Request() req: any, @Body() body: SwitchWorkspaceDto) {
     return this.authService.switchWorkspace(
       body.refreshToken,
       body.workspaceId,
+      req.requestStartedAt,
     );
   }
 

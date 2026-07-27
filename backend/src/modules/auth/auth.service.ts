@@ -330,35 +330,66 @@ export class AuthService {
    * whole family. A `revokedAt` of NULL means the row predates this column, and
    * is treated as theft, so the change fails closed.
    */
-  private isBenignConcurrentPresentation(stored: {
-    revokedAt: Date | null;
-  }): boolean {
+  private isBenignConcurrentPresentation(
+    stored: { revokedAt: Date | null },
+    requestStartedAt: Date,
+  ): boolean {
     if (!stored.revokedAt) return false;
-    const age = Date.now() - stored.revokedAt.getTime();
-    return age >= 0 && age <= AuthService.CONCURRENT_PRESENTATION_GRACE_MS;
+    // CAUSAL, not durational. The question is not "was this recent?" but "was
+    // this request already in flight when the rotation committed?" -- which is
+    // precisely what makes a caller a concurrent loser rather than a replayer.
+    return (
+      requestStartedAt.getTime() <
+      stored.revokedAt.getTime() + AuthService.CLOCK_SKEW_ALLOWANCE_MS
+    );
   }
 
   /**
-   * How long after revocation a presentation is still treated as concurrency
-   * rather than theft.
+   * Tolerance for CLOCK SKEW ONLY -- not a grace period.
    *
-   * SIZED SMALL ON PURPOSE, and here is the exposure it buys down. Suppose an
-   * attacker steals a live token and WINS the claim -- they hold a session and
-   * the victim's copy is now spent. The victim's next refresh presenting that
-   * spent token is the signal that detects the theft and kills every session.
-   * Inside this window that signal is suppressed, so the attacker keeps their
-   * session. The window is therefore a direct trade of detection latency
-   * against spurious logouts, and every extra second is real exposure.
+   * WHAT THIS REPLACED, AND WHY. The first fix used a flat two-second window:
+   * any presentation within 2s of revocation was benign. That closed the
+   * multi-tab logout bug but opened a real hole, correctly identified in
+   * review. Suppose an attacker steals a live token and WINS the claim. The
+   * victim's next refresh presents a spent token, and that presentation is the
+   * signal that detects the theft and kills every session -- including the
+   * attacker's. A durational window suppresses that signal for anyone who
+   * happens to arrive inside it, so an attacker who struck moments earlier kept
+   * their session. Duration cannot tell the two cases apart, because "recent"
+   * is not the property that distinguishes them.
    *
-   * Two seconds covers a browser's two tabs racing across a normal network --
-   * the case measured in the workspace-switching suite -- while leaving almost
-   * no room for a stolen token to be used and then covered. This mirrors the
-   * "leeway" that OAuth refresh-rotation implementations expose for exactly
-   * this problem; the value is deliberately at the low end of that range.
+   * The property that DOES distinguish them is causal: a concurrent loser's
+   * request was already in flight when the rotation committed; a replayer's
+   * request began afterwards, presenting a token it should already have
+   * discarded. So each caller now records when its request STARTED, before it
+   * reads anything, and that instant is compared against the row's revokedAt:
+   *
+   *   requestStartedAt <  revokedAt  ->  in flight already   ->  concurrency
+   *   requestStartedAt >= revokedAt  ->  began after the spend -> replay
+   *
+   * The attack above is now classified as theft however quickly the victim
+   * refreshes, because the victim's request necessarily began after the
+   * attacker's commit. And a legitimately slow tab is still benign however
+   * long it takes, because it started first. Duration is no longer part of the
+   * decision at all.
+   *
+   * This allowance exists only because the two timestamps can be produced by
+   * different application instances behind a load balancer, whose clocks are
+   * NTP-disciplined but not identical. It is sized for that and nothing else:
+   * 250ms is orders of magnitude above observed inter-instance NTP skew, and
+   * an attacker cannot exploit it without also winning a sub-250ms race that
+   * the atomic claim already arbitrates.
    */
-  private static readonly CONCURRENT_PRESENTATION_GRACE_MS = 2_000;
+  private static readonly CLOCK_SKEW_ALLOWANCE_MS = 250;
 
-  private async claimRefreshToken(rawRefreshToken: string) {
+  private async claimRefreshToken(
+    rawRefreshToken: string,
+    // Captured by the CALLER before any work begins. Taking it here would be
+    // too late: the read below is what establishes whether the row was already
+    // revoked, and the instant that matters is when the request entered the
+    // system, not when it reached this line.
+    requestStartedAt: Date,
+  ) {
     const hashedToken = this.hashToken(rawRefreshToken);
     // Deliberately NOT filtered by `revoked`/`expiresAt`. The row must be read
     // in whatever state it is in, because telling "this token never existed"
@@ -385,7 +416,7 @@ export class AuthService {
     // identical without a timestamp, and treating them alike signs a real user
     // out of every device for the crime of using two tabs.
     if (stored.revoked) {
-      if (this.isBenignConcurrentPresentation(stored)) {
+      if (this.isBenignConcurrentPresentation(stored, requestStartedAt)) {
         // Refused, but NOT treated as theft: no family revocation. The caller
         // still receives the same generic 401 as every other failure, so this
         // branch is invisible from outside and cannot be probed.
@@ -462,8 +493,11 @@ export class AuthService {
     }
   }
 
-  async refreshToken(rawRefreshToken: string) {
-    const stored = await this.claimRefreshToken(rawRefreshToken);
+  async refreshToken(rawRefreshToken: string, requestStartedAt = new Date()) {
+    const stored = await this.claimRefreshToken(
+      rawRefreshToken,
+      requestStartedAt,
+    );
 
     if (!stored.workspaceId) {
       throw new UnauthorizedException('Invalid or expired refresh token');
@@ -500,8 +534,15 @@ export class AuthService {
    * refusal is converted to the same generic 401 as every other failure, so
    * this route cannot be used to probe which workspace ids exist.
    */
-  async switchWorkspace(rawRefreshToken: string, targetWorkspaceId: string) {
-    const stored = await this.claimRefreshToken(rawRefreshToken);
+  async switchWorkspace(
+    rawRefreshToken: string,
+    targetWorkspaceId: string,
+    requestStartedAt = new Date(),
+  ) {
+    const stored = await this.claimRefreshToken(
+      rawRefreshToken,
+      requestStartedAt,
+    );
     return this.issueForClaimedToken(stored.userId, targetWorkspaceId);
   }
 
