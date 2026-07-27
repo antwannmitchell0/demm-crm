@@ -298,6 +298,65 @@ export const api = {
     });
   },
 
+  // Approvals. Before these existed a staged high-risk action was invisible:
+  // nothing listed approvals, so the resolve endpoint could only be called by
+  // someone who already had an id they had no way to obtain.
+  getApprovals: async (status?: string) => {
+    return request(
+      `agent/approvals${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+    );
+  },
+
+  resolveApproval: async (id: string, action: 'APPROVE' | 'REJECT') => {
+    return request(`agent/approvals/${id}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    });
+  },
+
+  /** Withdraws your OWN pending request. Approvers reject; requesters cancel. */
+  cancelApproval: async (id: string) => {
+    return request(`agent/approvals/${id}/cancel`, { method: 'POST' });
+  },
+
+  // Team
+  getTeamMembers: async () => {
+    return request('team/members');
+  },
+
+  getTeamInvitations: async () => {
+    return request('team/invitations');
+  },
+
+  inviteTeamMember: async (email: string, role: string) => {
+    return request('team/invitations', {
+      method: 'POST',
+      body: JSON.stringify({ email, role }),
+    });
+  },
+
+  revokeInvitation: async (id: string) => {
+    return request(`team/invitations/${id}`, { method: 'DELETE' });
+  },
+
+  changeMemberRole: async (userId: string, role: string) => {
+    return request(`team/members/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role }),
+    });
+  },
+
+  removeMember: async (userId: string) => {
+    return request(`team/members/${userId}`, { method: 'DELETE' });
+  },
+
+  acceptInvitation: async (token: string) => {
+    return request('team/invitations/accept', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    });
+  },
+
   // Marketing: Offers
   getOffers: async () => {
     return request('marketing/offers');

@@ -33,6 +33,10 @@ export const APPROVAL_AUDIT_ACTIONS = {
   // A rejection is a human decision that terminates the approval; this is a
   // blocked attempt that changes nothing.
   SELF_APPROVAL_REFUSED: 'APPROVAL_SELF_APPROVAL_REFUSED',
+  // The REQUESTER withdrew their own request before anyone decided. Distinct
+  // from APPROVAL_REJECTED, which records an approver's decision: these rows
+  // carry no approver at all.
+  CANCELLED: 'APPROVAL_CANCELLED',
 } as const;
 
 /**
@@ -877,6 +881,145 @@ export class AgentService {
    * exactly-once execution is DEFERRED TO PHASE 5 (durable execution substrate
    * with claimable, resumable jobs and a transactional outbox).
    */
+  /**
+   * The approval inbox.
+   *
+   * Before this existed, a staged high-risk action was invisible: nothing
+   * listed approvals, so `POST /agent/approvals/:id/resolve` could only be
+   * called by someone who already had an id they had no way to obtain. Staged
+   * actions sat until they expired.
+   *
+   * PENDING first, then everything else newest-first. Not filtered to PENDING
+   * by default: a queue that silently hides resolved items reads as "nothing
+   * happened" when in fact something was rejected or expired, which is the
+   * opposite of what an approval record is for.
+   */
+  async listApprovals(workspaceId: string, status?: ApprovalStatus) {
+    const approvals = await this.prisma.agentApproval.findMany({
+      where: { workspaceId, ...(status ? { status } : {}) },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Requester emails are resolved in one query rather than per row.
+    const requesterIds = [...new Set(approvals.map((a) => a.requestedById))];
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: requesterIds } },
+      select: { id: true, email: true, firstName: true, lastName: true },
+    });
+    const byId = new Map(users.map((u) => [u.id, u]));
+
+    const rank = (s: ApprovalStatus) => (s === ApprovalStatus.PENDING ? 0 : 1);
+
+    return {
+      approvals: approvals
+        .sort(
+          (a, b) =>
+            rank(a.status) - rank(b.status) ||
+            b.createdAt.getTime() - a.createdAt.getTime(),
+        )
+        .map((a) => ({
+          id: a.id,
+          toolName: a.toolName,
+          // Already sanitized at staging time -- staging refuses outright if
+          // any argument would have to be redacted to be stored, so what is
+          // here is what was submitted.
+          arguments: a.arguments,
+          status: a.status,
+          // The role the REQUESTER held when they staged it. Showing the
+          // approver's own role here would misrepresent the authority the
+          // action will actually execute under.
+          requesterRole: a.requesterRole,
+          requestedById: a.requestedById,
+          requestedByEmail: byId.get(a.requestedById)?.email ?? null,
+          requestedByName: byId.get(a.requestedById)
+            ? `${byId.get(a.requestedById)!.firstName} ${byId.get(a.requestedById)!.lastName}`
+            : null,
+          createdAt: a.createdAt.toISOString(),
+          expiresAt: a.expiresAt ? a.expiresAt.toISOString() : null,
+          resolvedById: a.resolvedById,
+        })),
+    };
+  }
+
+  /**
+   * Withdraws a still-pending request, by the person who made it.
+   *
+   * A requester who staged something by mistake previously had no way out:
+   * only an administrator could reject it, and only if they somehow learned it
+   * existed. Cancellation is restricted to the requester on purpose -- an
+   * administrator already has REJECT, and letting them cancel instead would let
+   * a decision be recorded as if no decision had been made.
+   *
+   * CANCELLED is a distinct terminal state rather than a reuse of REJECTED. On
+   * a REJECTED row `resolvedById` names the approver who decided; on a
+   * CANCELLED row it is null because nobody approved anything. Collapsing the
+   * two would produce a row claiming a human declined the action with no human
+   * attached to it.
+   */
+  async cancelApproval(
+    workspaceId: string,
+    requesterId: string,
+    approvalId: string,
+  ) {
+    const existing = await this.prisma.agentApproval.findUnique({
+      where: { id: approvalId },
+    });
+
+    // Tenant isolation, matching resolveApproval: an approval belonging to
+    // another workspace is indistinguishable from one that does not exist.
+    if (!existing || existing.workspaceId !== workspaceId) {
+      throw new NotFoundException('Staged approval record not found');
+    }
+
+    if (existing.requestedById !== requesterId) {
+      throw new ForbiddenException(
+        'Only the person who requested this action can withdraw it. An administrator can reject it instead.',
+      );
+    }
+
+    // Conditional claim, like every other state transition here: two
+    // simultaneous cancels cannot both write an audit row, and a cancel racing
+    // a resolve cannot overwrite the approver's decision.
+    const claim = await this.prisma.agentApproval.updateMany({
+      where: {
+        id: approvalId,
+        workspaceId,
+        status: ApprovalStatus.PENDING,
+      },
+      data: { status: ApprovalStatus.CANCELLED },
+    });
+
+    if (claim.count !== 1) {
+      throw new ConflictException({
+        statusCode: 409,
+        reason: APPROVAL_REFUSAL_REASONS.NOT_PENDING,
+        message:
+          'This request is no longer pending, so it cannot be withdrawn. Nothing was changed.',
+      });
+    }
+
+    await this.writeApprovalAudit({
+      action: APPROVAL_AUDIT_ACTIONS.CANCELLED,
+      workspaceId,
+      actorType: 'USER',
+      actorId: requesterId,
+      approvalId,
+      toolName: existing.toolName,
+      requestedById: existing.requestedById,
+      requesterRole: existing.requesterRole,
+      // Explicitly null: no approver acted. This is the field that makes
+      // CANCELLED distinguishable from REJECTED in the audit record.
+      approvedById: null,
+      outcome: 'CANCELLED',
+    });
+
+    return {
+      id: approvalId,
+      status: ApprovalStatus.CANCELLED,
+      message: 'Request withdrawn. Nothing was executed.',
+    };
+  }
+
   async resolveApproval(
     workspaceId: string,
     approverId: string,

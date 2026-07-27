@@ -1,0 +1,12 @@
+-- ApprovalStatus gains CANCELLED: a request withdrawn by the person who made it.
+--
+-- Distinct from REJECTED for the same reason EXPIRED already is. A requester
+-- thinking better of their own high-risk action and an approver declining it
+-- are different governance facts. Collapsing them would make the audit record
+-- claim an approver acted when none did -- and `resolvedById` would be null on
+-- a row whose status says a human decided, which is a contradiction an auditor
+-- cannot resolve after the fact.
+--
+-- Purely additive. No existing row changes, and no code reads this value until
+-- the cancellation route ships alongside it.
+ALTER TYPE "ApprovalStatus" ADD VALUE 'CANCELLED';

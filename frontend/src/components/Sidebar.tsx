@@ -15,6 +15,7 @@ import {
   UserPlus,
   TrendingUp,
   FileBarChart,
+  ShieldCheck,
 } from 'lucide-react';
 import { logoutSession, logoutEverywhere, getActiveUser } from '../lib/api';
 import WorkspaceSwitcher from './WorkspaceSwitcher';
@@ -47,6 +48,11 @@ export default function Sidebar() {
     { name: 'Reports', href: '/marketing/reports', icon: FileBarChart },
     { name: 'Offers & Settings', href: '/marketing/offers', icon: Tag },
     { name: 'Agent Console', href: '/agent', icon: Terminal },
+    // Both of these were unreachable before Phase 2: approvals existed in the
+    // database with no endpoint that listed them, and there was no team
+    // management at all.
+    { name: 'Approvals', href: '/approvals', icon: ShieldCheck },
+    { name: 'Team', href: '/team', icon: UserIcon },
   ];
 
   return (

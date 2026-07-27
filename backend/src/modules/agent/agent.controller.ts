@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Body, Param, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  HttpCode,
+  ParseUUIDPipe,
+} from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { AgentService } from './agent.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -10,6 +20,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ResolveApprovalDto } from './dto/resolve-approval.dto';
 import { ExecuteToolDto } from './dto/execute-tool.dto';
 import { CancelExecutionDto } from './dto/cancel-execution.dto';
+import { ListApprovalsQueryDto } from './dto/list-approvals-query.dto';
 
 @Controller('agent')
 @UseGuards(JwtAuthGuard, WorkspaceGuard)
@@ -44,6 +55,37 @@ export class AgentController {
   @Post('execute/cancel')
   cancel(@Body() body: CancelExecutionDto) {
     return this.agentService.cancelExecution(body.sessionId);
+  }
+
+  /**
+   * The approval inbox. Readable by any member of the workspace, deliberately:
+   * a requester must be able to see the request they made and its outcome, and
+   * gating the list to approvers would leave them staging actions into silence.
+   * Resolving is still administrative (below); only WITHDRAWING your own
+   * request is not.
+   */
+  @Get('approvals')
+  listApprovals(
+    @CurrentWorkspaceId() workspaceId: string,
+    @Query() query: ListApprovalsQueryDto,
+  ) {
+    return this.agentService.listApprovals(workspaceId, query.status);
+  }
+
+  /**
+   * Withdraws a pending request. Restricted to the person who made it -- an
+   * administrator already has REJECT, and letting them cancel instead would
+   * record a decision as if none had been made. No RolesGuard: authority here
+   * is ownership of the request, not rank.
+   */
+  @Post('approvals/:id/cancel')
+  @HttpCode(200)
+  cancelApproval(
+    @CurrentWorkspaceId() workspaceId: string,
+    @CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.agentService.cancelApproval(workspaceId, user.id, id);
   }
 
   /**

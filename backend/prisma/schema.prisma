@@ -57,6 +57,12 @@ enum ApprovalStatus {
   // record. Applied lazily on the next resolve attempt (see
   // AgentService.resolveApproval) -- a background sweep is Phase 5 work.
   EXPIRED
+  // Withdrawn by the person who REQUESTED it, before any approver decided.
+  // Distinct from REJECTED for the same reason EXPIRED is: a requester
+  // thinking better of their own action and an approver declining it are
+  // different governance facts. Collapsing them would make the audit record
+  // claim an approver acted when none did.
+  CANCELLED
 }
 
 enum ActivityType {
