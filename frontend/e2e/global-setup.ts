@@ -22,7 +22,11 @@ export default async function globalSetup() {
       cwd: BACKEND,
       env: { ...process.env, ...env },
       encoding: 'utf8',
+      // stdin closed on purpose -- nothing here may be interactive. The TIMEOUT
+      // is what makes that safe: without it a client that decides to prompt
+      // blocks until the CI job's own limit instead of failing in seconds.
       stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 120_000,
     });
 
   try {

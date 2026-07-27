@@ -286,3 +286,113 @@ jobs:
         # through the BFF route that spends the httpOnly refresh cookie
         # server-side.
         run: cd frontend && npm run test:password-free-switch
+
+  # ---------------------------------------------------------------------------
+  # BROWSER UAT
+  #
+  # Drives a REAL production stack in a real browser: the compiled backend
+  # (dist/src/main -- what the Dockerfile runs) and a production Next build, so
+  # both release guards actually apply. Nothing here touches a development,
+  # staging or production database, uses owner credentials, or reaches a real
+  # provider.
+  # ---------------------------------------------------------------------------
+  browser-uat:
+    name: Browser UAT
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgrespassword
+          # The harness creates its OWN database (demm_crm_uat_verify) and drops
+          # it in teardown; this is only the maintenance database it connects to
+          # in order to do that.
+          POSTGRES_DB: demm_crm_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGPASSWORD: postgrespassword
+      JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+
+      - name: Confirm the live database is the ephemeral CI one
+        # Asks the server via SELECT current_database() rather than trusting a
+        # URL string. Credentials travel as PG* variables so no connection
+        # string reaches a command line or the job log.
+        env:
+          PGDATABASE: demm_crm_ci
+        run: |
+          DB=$(psql -tAc "SELECT current_database()")
+          echo "Connected database: $DB"
+          if [ "$DB" != "demm_crm_ci" ]; then
+            echo "REFUSING: connected to '$DB', not the ephemeral 'demm_crm_ci'."
+            exit 1
+          fi
+
+      - name: Install backend dependencies
+        run: cd backend && npm ci
+
+      - name: Prisma generate
+        run: cd backend && npx prisma generate
+
+      - name: Build backend
+        run: cd backend && npm run build
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
+      - name: Build frontend with production guards intact
+        # NEXT_PUBLIC_API_URL is a real https origin, NOT localhost, so
+        # verify-production-config and verify-no-localhost-in-bundle both pass
+        # honestly. Playwright reroutes that origin to the local backend at the
+        # network layer, exactly as a reverse proxy would. The guards are never
+        # weakened for the test.
+        run: cd frontend && npm run build
+        env:
+          NODE_ENV: production
+          NEXT_PUBLIC_API_URL: "https://backend.uat.invalid"
+
+      - name: Install Playwright browser
+        run: cd frontend && npx playwright install --with-deps chromium
+
+      - name: Run browser UAT
+        # global-setup creates demm_crm_uat_verify, applies every migration with
+        # `prisma migrate deploy`, and seeds synthetic users, workspaces,
+        # approvals and invitations. global-teardown removes them and drops the
+        # database. A browser failure fails this job.
+        run: cd frontend && npx playwright test
+
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-uat-evidence
+          # Screenshots, traces and the control inventory. fixtures.json is
+          # excluded: it carries seeded account identifiers, and an artifact is
+          # the wrong place for them even synthetic.
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
+            frontend/e2e-results/button-inventory.json
+            frontend/e2e-results/button-inventory.md
+          retention-days: 7
+          if-no-files-found: ignore
