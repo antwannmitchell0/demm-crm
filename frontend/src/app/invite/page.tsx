@@ -26,6 +26,10 @@ type Phase =
   | { kind: 'READY' }
   | { kind: 'WORKING' }
   | { kind: 'DONE' }
+  // Accepted, but the account no longer has access -- an administrator removed
+  // them after they used the link. A distinct state, because it is neither a
+  // success to celebrate nor a failure to retry.
+  | { kind: 'NO_ACCESS' }
   | { kind: 'FAILED'; message: string };
 
 function InviteInner() {
@@ -52,7 +56,19 @@ function InviteInner() {
     if (!token) return;
     setPhase({ kind: 'WORKING' });
     try {
-      await api.acceptInvitation(token);
+      const result = await api.acceptInvitation(token);
+
+      // HTTP 200 does NOT mean "you're in". Acceptance is idempotent, so the
+      // server also answers 200 for a link that was already consumed -- and if
+      // an administrator removed the person afterwards it reports
+      // hasAccess:false with a null role. Redirecting on status alone would
+      // announce "You are in" and then drop them into a workspace they cannot
+      // open. Read what the server actually said.
+      if (result?.hasAccess === false) {
+        setPhase({ kind: 'NO_ACCESS' });
+        return;
+      }
+
       setPhase({ kind: 'DONE' });
       // A full load, not a client route change: the session's workspace list
       // has changed and everything on screen belongs to the previous context.
@@ -120,6 +136,14 @@ function InviteInner() {
               <span>Accept invitation</span>
             </button>
           </>
+        ) : null}
+
+        {phase.kind === 'NO_ACCESS' ? (
+          <p className="text-sm text-slate-400 mt-4 leading-relaxed">
+            This invitation was already used by your account, but you no longer
+            have access to that workspace. Ask an administrator there to invite
+            you again.
+          </p>
         ) : null}
 
         {phase.kind === 'DONE' ? (
