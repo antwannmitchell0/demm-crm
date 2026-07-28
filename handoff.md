@@ -752,3 +752,78 @@ Both ship rollbacks stating what they cannot restore. Applied only to
 - **Approval expiry is still lazy** — evaluated on the next resolve attempt, not swept.
 - Phases 3–11 of the finishing plan are untouched. The workflow engine still does not
   exist, and no launch pack exists.
+
+---
+
+## 19. Memory and review receipts — actually captured
+
+Earlier reports in this effort said `PREPARED LOCALLY — REMOTE CAPTURE NOT CONFIRMED`.
+That was wrong, and the correct word was "untried", not "unavailable". The documented
+mechanisms work.
+
+### DOM26 v3 — reachable
+
+`GET https://intelligence.demmmarketing.com/health` → `200`,
+`{"status":"online","engrams":62468,"version":"3.0.0","stack":"pgvector+ollama"}`.
+Direct IP (`34.138.159.127:8004`) times out, exactly as CLAUDE.md documents; the
+domain is the canonical path.
+
+Captured engrams, domain `DEMM`, all embedded:
+
+| id | subject | salience |
+|---|---|---|
+| `eng_a7d0672c73` | Team-authorization privilege escalation found and fixed | 0.95 |
+| `eng_d9f31052ba` | Destructive invitation migration replaced with in-place backfill | 0.90 |
+| `eng_dd7f19b486` | Replay-detection residual risk accepted with measurements | 0.92 |
+
+No tenant content, credentials, tokens, hashes, emails or customer data was sent.
+
+### G-Brain — reachable
+
+`mcp__gbrain__*` is available through ToolSearch. Page
+`demm-crm-phase2-security-decisions` written, 2 chunks embedded. `auto_link` and
+`auto_timeline` reported `skipped: remote` and `write_through` reported
+`no_repo_configured` — server-side configuration, not a failed write.
+
+### G-Stack — skills on disk, partially registered
+
+`~/.claude/skills/gstack/` contains `review`, `cso`, `qa`, `qa-only`,
+`design-review`, `devex-review`, `health`, `careful`, `plan-*-review` and others.
+
+- `gstack` (router) and `review` ARE registered with the Skill tool and were invoked.
+- `cso` exists on disk with valid frontmatter but is NOT registered in this session;
+  it was executed by reading and following the skill file directly.
+
+**Gates executed against `05b6d5d` → `f7d3051`:**
+
+| Gate | How | Result |
+|---|---|---|
+| gstack router | Skill tool | routed to `/review` |
+| `/review` | Skill tool | 1 HIGH finding, fixed |
+| `cso` security sweep | skill file followed directly | 1 NOT A FINDING, rest clean |
+
+**Findings:**
+
+- **HIGH — fixed (`f7d3051`).** `acceptInvitation` created a membership with no
+  existing-membership check. An invitation issued before the person joined by
+  another route stays PENDING; accepting it violated
+  `@@unique([userId, organizationId, workspaceId])` → P2002 → HTTP 500. Because
+  acceptance is one transaction, the status claim rolled back too, so the
+  invitation returned to PENDING and every retry failed identically — a
+  permanently stuck link reporting a server error. Proven by mutation: 500
+  without the guard, 400 with it. Regression assertions 35a/35b added.
+- **NOT A FINDING.** `stripe-webhook.controller.ts` is the only unauthenticated
+  mutating surface. It fails closed when `STRIPE_WEBHOOK_SECRET` is absent,
+  requires the `stripe-signature` header, and verifies via
+  `stripe.webhooks.constructEvent`.
+- **Clean.** No raw token or hash reaches a log or an audit payload; `tokenHash`
+  never leaves the service; no tenant table is read by id alone without a
+  workspace scope.
+- **Process note.** A grep for `WorkspaceGuard` gave a false negative on
+  `invitation.controller.ts` because the word appears in a comment there. The
+  absence of that guard on `POST /team/invitations/accept` is deliberate and
+  documented — an invitee has no membership yet.
+
+### Still not run
+
+`/qa`, `/design-review`, `/devex-review`, `/health`, and the accessibility gate.
