@@ -294,6 +294,26 @@ export class TeamService {
         throw new BadRequestException('This invitation is no longer valid.');
       }
 
+      // ALREADY A MEMBER. invite() refuses to invite a current member, but an
+      // invitation issued BEFORE the person joined by another route stays
+      // PENDING and remains acceptable. Without this check membership.create
+      // violates @@unique([userId, organizationId, workspaceId]) and Prisma
+      // raises P2002, surfacing as a 500. Worse, the whole transaction rolls
+      // back INCLUDING the claim above, so the invitation returns to PENDING
+      // and every retry fails identically: a permanently stuck link that
+      // reports a server error instead of the plain truth.
+      //
+      // Read inside the transaction so it cannot race a concurrent acceptance
+      // or team-management change.
+      const existing = await tx.membership.findFirst({
+        where: { userId, workspaceId: invitation.workspaceId },
+      });
+      if (existing) {
+        throw new BadRequestException(
+          'You are already a member of this workspace.',
+        );
+      }
+
       await tx.membership.create({
         data: {
           userId,

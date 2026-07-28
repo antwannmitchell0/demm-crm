@@ -354,6 +354,47 @@ async function main() {
     check(`31. Replaying does not duplicate the membership (got ${count})`, count === 1);
   }
 
+  // ===== C2. An invitation for someone who is ALREADY a member =====
+  //
+  // invite() refuses to invite a current member, but an invitation issued
+  // BEFORE the person joined by another route stays PENDING. Accepting it used
+  // to hit @@unique([userId, organizationId, workspaceId]) -> Prisma P2002 ->
+  // HTTP 500, and because the whole thing is one transaction the claim rolled
+  // back too, so the invitation returned to PENDING and every retry failed the
+  // same way. A permanently stuck link reporting a server error.
+  {
+    const raw = crypto.randomBytes(32).toString('hex');
+    const row = await prisma.invitation.create({
+      data: {
+        // `invitee` accepted in block C and is now a member of ws.
+        email: invitee.user.email,
+        role: Role.USER,
+        workspaceId: ws.id,
+        organizationId: org.id,
+        tokenHash: sha256(raw),
+        expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+      },
+    });
+
+    const res = await call('POST', '/team/invitations/accept', invitee.token, {
+      token: raw,
+    });
+    check(
+      `35a. Accepting an invitation when already a member is a clean 4xx, not a 500 (got ${res.status})`,
+      res.status >= 400 && res.status < 500,
+    );
+
+    const memberships = await prisma.membership.count({
+      where: { userId: invitee.user.id, workspaceId: ws.id },
+    });
+    check(
+      `35b. No duplicate membership is created (got ${memberships})`,
+      memberships === 1,
+    );
+
+    await prisma.invitation.delete({ where: { id: row.id } }).catch(() => undefined);
+  }
+
   // ===== D. Revoked and expired invitations are dead =====
   {
     const revokeRes = await call('POST', '/team/invitations', admin.token, {
