@@ -274,6 +274,26 @@ export class TeamService {
       throw new BadRequestException('This invitation has expired.');
     }
 
+    // IDEMPOTENT RETRY. The same account re-opening a link it already consumed
+    // is not an error -- a user refreshing the acceptance page, or a mail
+    // client prefetching the URL, must not be told something went wrong.
+    // Checked BEFORE the PENDING guard below, which would otherwise reject it.
+    if (
+      invitation.status === InvitationStatus.ACCEPTED &&
+      invitation.acceptedById === userId
+    ) {
+      const already = await this.prisma.membership.findFirst({
+        where: { userId, workspaceId: invitation.workspaceId },
+      });
+      return {
+        outcome: 'ALREADY_ACCEPTED' as const,
+        workspaceId: invitation.workspaceId,
+        // The membership's CURRENT role, never the invitation's -- an old link
+        // must not describe a role the person no longer holds.
+        role: already?.role ?? invitation.role,
+      };
+    }
+
     if (invitation.status !== InvitationStatus.PENDING) {
       throw new BadRequestException('This invitation is no longer valid.');
     }
@@ -294,34 +314,46 @@ export class TeamService {
         throw new BadRequestException('This invitation is no longer valid.');
       }
 
-      // ALREADY A MEMBER. invite() refuses to invite a current member, but an
-      // invitation issued BEFORE the person joined by another route stays
-      // PENDING and remains acceptable. Without this check membership.create
-      // violates @@unique([userId, organizationId, workspaceId]) and Prisma
-      // raises P2002, surfacing as a 500. Worse, the whole transaction rolls
-      // back INCLUDING the claim above, so the invitation returns to PENDING
-      // and every retry fails identically: a permanently stuck link that
-      // reports a server error instead of the plain truth.
+      // CONFLICT-SAFE INSERT, and why a read-then-create will not do.
       //
-      // Read inside the transaction so it cannot race a concurrent acceptance
-      // or team-management change.
-      const existing = await tx.membership.findFirst({
-        where: { userId, workspaceId: invitation.workspaceId },
-      });
-      if (existing) {
-        throw new BadRequestException(
-          'You are already a member of this workspace.',
-        );
-      }
+      // A read-then-create closed only the case where the person was ALREADY a
+      // member when acceptance began. It did nothing for two DIFFERENT pending
+      // invitations addressed to the same person for the same workspace:
+      // each accept claims its OWN row, so both claims succeed, both then read
+      // "no membership", and both insert. Measured: statuses 201 and 500.
+      //
+      // Worse, the previous shape threw INSIDE this transaction, which rolled
+      // the claim back with it -- the invitation returned to PENDING and every
+      // retry failed identically. A permanently stuck link.
+      //
+      // ON CONFLICT DO NOTHING makes the database arbitrate. The row count
+      // tells us which happened, so no exception is needed and the claim above
+      // always stands: the invitation reaches a terminal state either way.
+      //
+      // DO NOTHING, never DO UPDATE: an existing membership's role must not be
+      // rewritten by whatever role an old invitation happens to name.
+      const inserted = await tx.$executeRaw`
+        INSERT INTO "Membership"
+          (id, "userId", "organizationId", "workspaceId", role, permissions, "createdAt", "updatedAt")
+        VALUES (
+          gen_random_uuid()::text,
+          ${userId},
+          ${invitation.organizationId},
+          ${invitation.workspaceId},
+          ${invitation.role}::"Role",
+          '{}',
+          now(),
+          now()
+        )
+        ON CONFLICT DO NOTHING
+      `;
 
-      await tx.membership.create({
-        data: {
-          userId,
-          organizationId: invitation.organizationId,
-          workspaceId: invitation.workspaceId,
-          role: invitation.role,
-          permissions: [],
-        },
+      const outcome = inserted === 1 ? 'JOINED' : 'ALREADY_MEMBER';
+
+      // Read back rather than assume: on ALREADY_MEMBER the role that matters
+      // is the one they actually hold, not the one this invitation named.
+      const membership = await tx.membership.findFirst({
+        where: { userId, workspaceId: invitation.workspaceId },
       });
 
       await tx.auditLog.create({
@@ -329,15 +361,21 @@ export class TeamService {
           actorType: 'USER',
           actorId: userId,
           action: 'team.invitation.accepted',
-          payload: { invitationId: invitation.id, role: invitation.role },
+          payload: {
+            invitationId: invitation.id,
+            invitedRole: invitation.role,
+            outcome,
+            effectiveRole: membership?.role ?? null,
+          },
           workspaceId: invitation.workspaceId,
           userId,
         },
       });
 
       return {
+        outcome: outcome,
         workspaceId: invitation.workspaceId,
-        role: invitation.role,
+        role: membership?.role ?? invitation.role,
       };
     });
   }

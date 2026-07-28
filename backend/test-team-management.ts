@@ -321,7 +321,10 @@ async function main() {
     const res = await call('POST', '/team/invitations/accept', invitee.token, {
       token: rawToken,
     });
-    check(`25. The invited person can accept (got ${res.status})`, res.status === 201);
+    // 200, not 201: acceptance is idempotent, so it does not always create.
+    // The full JOINED / ALREADY_MEMBER / ALREADY_ACCEPTED contract is proven in
+    // test-invitation-acceptance.ts.
+    check(`25. The invited person can accept (got ${res.status})`, res.status === 200);
 
     const membership = await prisma.membership.findFirst({
       where: { userId: invitee.user.id, workspaceId: ws.id },
@@ -344,9 +347,13 @@ async function main() {
     const replay = await call('POST', '/team/invitations/accept', invitee.token, {
       token: rawToken,
     });
+    // CONTRACT CHANGED. Re-using a consumed link from the SAME account is now
+    // idempotent rather than an error -- a refreshed acceptance page or a mail
+    // client prefetching the URL must not report a failure. What must never
+    // happen is a SECOND membership, asserted immediately below.
     check(
-      `30. The same invitation cannot be used twice (got ${replay.status})`,
-      replay.status >= 400,
+      `30. Re-using a consumed invitation is idempotent, not an error (got ${replay.status})`,
+      replay.status === 200,
     );
     const count = await prisma.membership.count({
       where: { userId: invitee.user.id, workspaceId: ws.id },
@@ -379,9 +386,12 @@ async function main() {
     const res = await call('POST', '/team/invitations/accept', invitee.token, {
       token: raw,
     });
+    // Was a 500, then a 400 that rolled the claim back and left the invitation
+    // stuck at PENDING. Now a truthful 200 ALREADY_MEMBER with the invitation
+    // terminal -- see test-invitation-acceptance.ts assertions 9-14.
     check(
-      `35a. Accepting an invitation when already a member is a clean 4xx, not a 500 (got ${res.status})`,
-      res.status >= 400 && res.status < 500,
+      `35a. Accepting when already a member is a truthful 200, not an error (got ${res.status})`,
+      res.status === 200,
     );
 
     const memberships = await prisma.membership.count({

@@ -31,7 +31,8 @@
     "test:team": "npx ts-node test-team-management.ts",
     "test:approval-inbox": "npx ts-node test-approval-inbox.ts",
     "test:team-authz": "npx ts-node test-team-authorization.ts",
-    "test:invitation-migration": "npx ts-node test-invitation-migration.ts"
+    "test:invitation-migration": "npx ts-node test-invitation-migration.ts",
+    "test:invitation-accept": "npx ts-node test-invitation-acceptance.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

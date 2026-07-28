@@ -159,6 +159,17 @@ jobs:
           JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
           ALLOW_DESTRUCTIVE_TESTS: "true"
 
+      - name: Invitation Acceptance Suite
+        # Proves acceptance is IDEMPOTENT and TERMINAL. Covers both concurrency
+        # races: six accepts of ONE invitation, and two DIFFERENT pending
+        # invitations for the same user+workspace accepted simultaneously -- the
+        # second returned HTTP 500 and left a row stuck at PENDING before the
+        # conflict-safe insert.
+        run: cd backend && npm run test:invitation-accept
+        env:
+          JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+          ALLOW_DESTRUCTIVE_TESTS: "true"
+
       - name: Team Authorization Boundary Suite
         # GATE A. Proves a lower rank cannot demote or remove a higher one.
         # Before this, canGrant() was the only check and demoting is

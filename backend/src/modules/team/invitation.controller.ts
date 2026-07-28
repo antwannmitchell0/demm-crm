@@ -28,8 +28,23 @@ import { AcceptInvitationDto } from './dto/team.dto';
 export class InvitationController {
   constructor(private teamService: TeamService) {}
 
+  /**
+   * 200, not 201, because this endpoint is IDEMPOTENT.
+   *
+   * 201 asserts "a resource was created", which is true only on the JOINED
+   * path. The same call also legitimately returns ALREADY_MEMBER (the account
+   * had access already) and ALREADY_ACCEPTED (the same person retried a
+   * consumed link); neither creates anything, and answering 201 there would be
+   * a claim the client cannot check. The `outcome` field carries the
+   * distinction instead, so a caller can tell the three apart without inferring
+   * it from a status code.
+   *
+   * No existing contract depends on 201 here: the route shipped in this same
+   * unreleased phase, and its only caller (frontend/src/lib/api.ts) treats any
+   * 2xx as success.
+   */
   @Post('accept')
-  @HttpCode(201)
+  @HttpCode(200)
   accept(@CurrentUser() user: any, @Body() body: AcceptInvitationDto) {
     return this.teamService.acceptInvitation(user.id, body.token);
   }
