@@ -827,3 +827,71 @@ No tenant content, credentials, tokens, hashes, emails or customer data was sent
 ### Still not run
 
 `/qa`, `/design-review`, `/devex-review`, `/health`, and the accessibility gate.
+
+---
+
+## 20. Invitation acceptance — idempotent and terminal (`26e8715`)
+
+CI run `30326569865`: all three jobs green.
+
+### Three states of one bug
+
+| Version | Symptom | Why it was still wrong |
+|---|---|---|
+| v1 | HTTP **500** | `membership.create` hit `@@unique([userId, organizationId, workspaceId])` |
+| v2 (`f7d3051`) | HTTP **400** | the `throw` sat INSIDE the transaction, rolling the status claim back — invitation returned to PENDING and every retry failed identically |
+| v3 (`e7e0a54`) | HTTP **200** + outcome | conflict-safe insert; invitation always terminal |
+
+v2 also missed a **second race entirely**: two DIFFERENT pending invitations for
+the same user and workspace. Each accept claims its OWN row, so both claims
+succeed; both then read "no membership" and both insert. Measured: statuses
+`201` and `500`, with the second row stuck at PENDING.
+
+### Why read-then-create cannot work here
+
+The read is not the arbiter. Any check-then-act across two different rows has a
+window where both actors observe the same pre-state — the same shape as the
+last-owner rule (`SELECT ... FOR UPDATE`) and refresh-token rotation
+(conditional UPDATE). Here the arbiter already existed: the compound unique
+index.
+
+`INSERT ... ON CONFLICT DO NOTHING`, with the affected row count deciding the
+outcome. No exception, so the claim always stands. `DO NOTHING` and never
+`DO UPDATE`: an old invitation must not rewrite an existing membership's role.
+
+### Contract
+
+| outcome | meaning | HTTP |
+|---|---|---|
+| `JOINED` | created a new membership | 200 |
+| `ALREADY_MEMBER` | account already had access; role unchanged | 200 |
+| `ALREADY_ACCEPTED` | same account retried a consumed link | 200 |
+
+200 rather than 201 because the endpoint is idempotent — 201 asserts creation,
+true only on the JOINED path. The `outcome` field carries the distinction.
+No contract depended on 201: the route shipped in this unreleased phase and its
+only caller (`frontend/src/lib/api.ts:354`) treats any 2xx as success.
+
+### Evidence
+
+`test-invitation-acceptance.ts` — 33 assertions, **11 failing beforehand**.
+Mutation: with `ON CONFLICT DO NOTHING` removed, assertion 9 → 500,
+assertion 29 → `200,500`, assertions 11 and 31 → rows stuck at PENDING.
+Restored: 33/33.
+
+Suites updated to the new contract: `test-team-management.ts` 25/30/35a,
+`test-invitation-migration.ts` 21.
+
+### Memory receipts
+
+- DOM26 v3: `eng_c965e53805` (this fix), `eng_d2c70ca4d5` (the G-Stack finding)
+- G-Brain: `demm-crm-invitation-acceptance-idempotency` (2 chunks)
+
+### Remaining before merge — NOT done
+
+- Browser journeys: invitation end-to-end, UI role changes, cross-tab, approval
+  filtering, contacts. Current suite is 6 journeys / 26 controls.
+- All accessibility and keyboard testing.
+- G-Stack gates not yet run: `/qa`, `/design-review`, `/devex-review`, `/health`.
+- Phase 0 tag `v0.1.4-phase0-baseline` absent; PR #5 unmerged; no staging deploy.
+- Communications Core not started.
