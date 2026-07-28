@@ -318,9 +318,15 @@ export class AuthService {
     const code = (error as { code?: string })?.code;
     if (code !== 'P2002' && code !== '23505') return false;
     const target = (error as { meta?: { target?: unknown } })?.meta?.target;
+    // Prisma reports `target` as string[] on Postgres, but the shape is not
+    // guaranteed across adapters and versions. NARROWED, not coerced: String()
+    // on an object yields '[object Object]', which would never match 'email'
+    // and would silently turn a handled conflict back into a 500.
     const fields = Array.isArray(target)
       ? target.join(',')
-      : String(target ?? '');
+      : typeof target === 'string'
+        ? target
+        : '';
     // An empty target still counts: the only unique constraint this statement
     // can violate is the email one.
     return fields === '' || fields.toLowerCase().includes('email');
