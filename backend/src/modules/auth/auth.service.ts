@@ -133,7 +133,11 @@ export class AuthService {
     // response) could mint that user's real access + refresh tokens with
     // no credentials at all.
     const preAuthToken = this.jwtService.sign(
-      { sub: user.id, purpose: 'workspace-selection' },
+      {
+        sub: user.id,
+        tokenType: 'pre-session',
+        purpose: 'workspace-selection',
+      },
       { expiresIn: '5m' },
     );
 
@@ -193,6 +197,9 @@ export class AuthService {
       email: membership.user.email,
       workspaceId: membership.workspaceId,
       role: membership.role,
+      // Explicit class. Without it, "is this a session token?" is answered by
+      // the absence of other claims, which is not an answer.
+      tokenType: 'access' as const,
     };
 
     const accessToken = this.jwtService.sign(accessTokenPayload, {
