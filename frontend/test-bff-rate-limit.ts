@@ -24,7 +24,10 @@
 // the backend directly would pass whatever the fix does, because the backend
 // alone was never broken: the identity is lost in the hop between the two
 // servers, which only exists when both are running.
-import 'dotenv/config';
+// No dotenv: this is a frontend suite and dotenv is a backend dependency, so
+// the import resolves locally through hoisting and fails in CI where the two
+// dependency trees are installed separately. Both callers pass DATABASE_URL and
+// JWT_SECRET explicitly, which is the only configuration this needs.
 import * as path from 'path';
 import * as fs from 'fs';
 import { spawn, type ChildProcess } from 'child_process';
