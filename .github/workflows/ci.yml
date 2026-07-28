@@ -170,6 +170,18 @@ jobs:
           JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
           ALLOW_DESTRUCTIVE_TESTS: "true"
 
+      - name: Invited Registration Suite
+        # Atomicity, recovery and concurrency for register-invited. Proves a
+        # REVOKED or already-ACCEPTED invitation creates no account, that the
+        # user and its audit row commit together or not at all, that a lost
+        # response resolves by resubmitting, and that six simultaneous submits
+        # yield one account and no 500. TRUSTED_PROXY_HOPS mirrors the
+        # deployment so the rate limit is measured per client, not per proxy.
+        run: cd backend && npm run test:invited-registration
+        env:
+          JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+          ALLOW_DESTRUCTIVE_TESTS: "true"
+
       - name: Token Purpose Separation Suite
         # Proves a pre-session credential cannot be spent as a session. Before
         # the strategy checked token class, a five-minute workspace-selection

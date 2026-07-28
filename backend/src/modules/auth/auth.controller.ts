@@ -35,10 +35,23 @@ export class AuthController {
     return this.authService.register(body);
   }
 
-  // Same 5/min ceiling as register(): both are unauthenticated account
-  // creation. This one additionally probes an invitation token, so an
-  // unthrottled version would be a way to grind for valid links.
-  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  // Deliberately looser than register()'s 5/min, and the difference is the
+  // point.
+  //
+  // register() creates an Organization, a Workspace and a Membership: it is
+  // expensive, not idempotent, and nobody legitimately calls it twice. This
+  // endpoint is the opposite -- the product's entire recovery story for a lost
+  // response, a double-click, or a failed acceptance is "press the button
+  // again", and a repeat with the correct password writes nothing at all.
+  // Measured at 5/min: six simultaneous submissions from one browser -- an
+  // ordinary double-click storm -- got the sixth rejected with 429, so the
+  // documented recovery path failed against the product's own rate limit.
+  //
+  // 20/min still bounds grinding to no practical effect: guessing a token is a
+  // 64-hex-character search against a sha256 index, where the limit changes an
+  // infeasible number into a slightly larger infeasible number. The real
+  // protection is the token's entropy; this is defence in depth.
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
   @Post('register-invited')
   async registerInvited(@Body() body: RegisterInvitedDto) {
     return this.authService.registerInvited(body);

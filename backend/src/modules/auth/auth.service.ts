@@ -9,8 +9,23 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../prisma.service';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
-import { Role } from '@prisma/client';
+import { Role, InvitationStatus } from '@prisma/client';
 import { redactAuditPayload } from '../../common/utils/audit-redactor';
+
+/**
+ * Both outcomes are successes. CREATED means this call made the account;
+ * ALREADY_REGISTERED means an earlier call did and this one verified the
+ * caller owns it. The caller continues to invitation acceptance either way,
+ * which is what makes a lost response recoverable by pressing the button
+ * again.
+ */
+export interface InvitedRegistrationResult {
+  outcome: 'CREATED' | 'ALREADY_REGISTERED';
+  userId: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+}
 
 @Injectable()
 export class AuthService {
@@ -122,16 +137,26 @@ export class AuthService {
     passwordPlain: string;
     firstName: string;
     lastName: string;
-  }) {
+  }): Promise<InvitedRegistrationResult> {
     const normalizedEmail = data.email.trim().toLowerCase();
 
     const invitation = await this.prisma.invitation.findUnique({
       where: { tokenHash: this.hashToken(data.token) },
     });
 
-    // One message for "no such invitation" and "issued to somebody else", so a
-    // stray link cannot be used to probe which addresses are real.
+    // ONE message for every "this link is not usable by you" case: no such
+    // invitation, issued to a different address, withdrawn, or already spent
+    // by somebody else. Distinguishing them would let the holder of a stray
+    // link learn which addresses are real accounts and which invitations exist.
     if (!invitation || invitation.email !== normalizedEmail) {
+      throw new NotFoundException('Invitation not found.');
+    }
+
+    // REVOKED is checked, not assumed. Before this, an invitation an
+    // administrator had explicitly withdrawn still created an account --
+    // revocation that does not stop the thing it revokes is worse than no
+    // revocation, because it is believed.
+    if (invitation.status === InvitationStatus.REVOKED) {
       throw new NotFoundException('Invitation not found.');
     }
 
@@ -139,44 +164,166 @@ export class AuthService {
       throw new BadRequestException('This invitation has expired.');
     }
 
+    // IDEMPOTENT RETRY, evaluated before anything is written.
+    //
+    // The account may already exist because the previous attempt committed and
+    // its HTTP response was lost, or because the recipient double-submitted.
+    // Answering "User with this email already exists" was true, useless, and a
+    // dead end: their account existed and they had no way forward.
+    //
+    // Proving the password is what makes this safe to answer. Without it this
+    // endpoint would confirm, to anybody holding a link, whether a given
+    // address has an account.
+    const already = await this.resolveExistingRegistration(
+      normalizedEmail,
+      data.passwordPlain,
+    );
+    if (already) return already;
+
+    // ORDER MATTERS. This is checked only AFTER the retry path above, and only
+    // when no account exists.
+    //
+    // An ACCEPTED invitation is legitimate for exactly one person: the one
+    // already registered against it, retrying. For anybody else it is spent,
+    // and creating an account against it would produce a login that can never
+    // join anything -- a dead account the product would then have to explain.
+    // Checking status first would have broken the retry; checking it here
+    // would have been skipped entirely if placed after the write.
+    if (invitation.status !== InvitationStatus.PENDING) {
+      throw new BadRequestException('This invitation is no longer valid.');
+    }
+
+    // Hashing is deliberately OUTSIDE the transaction: bcrypt at cost 10 takes
+    // tens of milliseconds, and holding a write transaction open across it
+    // would serialise unrelated registrations behind it.
+    const passwordHash = await bcrypt.hash(data.passwordPlain, 10);
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // Re-read inside the transaction: the invitation may have been revoked
+        // between the checks above and here.
+        const current = await tx.invitation.findUnique({
+          where: { id: invitation.id },
+        });
+        if (!current || current.status === InvitationStatus.REVOKED) {
+          throw new NotFoundException('Invitation not found.');
+        }
+
+        const user = await tx.user.create({
+          data: {
+            email: normalizedEmail,
+            passwordHash,
+            firstName: data.firstName,
+            lastName: data.lastName,
+          },
+        });
+
+        // Attributed to the workspace that invited them -- the account has no
+        // workspace of its own, and an administrator there is who needs to see
+        // it. redactAuditPayload strips the password and the raw token.
+        //
+        // In the SAME transaction as the user on purpose. Separately, a failed
+        // audit insert left an account behind whose origin nothing recorded.
+        await tx.auditLog.create({
+          data: {
+            actorType: 'USER',
+            actorId: user.id,
+            action: 'register-invited',
+            payload: redactAuditPayload(data),
+            workspaceId: current.workspaceId,
+            userId: user.id,
+          },
+        });
+
+        return {
+          outcome: 'CREATED' as const,
+          userId: user.id,
+          email: user.email,
+          firstName: user.firstName,
+          lastName: user.lastName,
+        };
+      });
+    } catch (error: unknown) {
+      // A concurrent submission won the race between the existence check above
+      // and this insert. That is not an error the caller did anything about,
+      // and the raw P2002 would surface as a 500 carrying a Prisma error code
+      // and a constraint name.
+      //
+      // Re-entering resolves it through the idempotent path: the winner's row
+      // now exists, so the password is checked and ALREADY_REGISTERED is
+      // returned. Exactly one call reports CREATED.
+      if (this.isUniqueEmailConflict(error)) {
+        const winner = await this.resolveExistingRegistration(
+          normalizedEmail,
+          data.passwordPlain,
+        );
+        if (winner) return winner;
+        // The row that caused the conflict is not resolvable as this caller's
+        // account. Nothing actionable to report, and the Prisma code must not
+        // escape.
+        throw new BadRequestException('That account could not be created.');
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * The truthful answer when the account already exists.
+   *
+   * Reached two ways: the recipient re-submitted after a lost response, or a
+   * concurrent submission won the insert race. Both are the same situation
+   * from the caller's side, so both get the same answer.
+   *
+   * Proving the password is what makes it safe to answer at all -- without it
+   * this endpoint would confirm to anybody holding a link whether a given
+   * address has an account. Returns null when no such account exists.
+   */
+  private async resolveExistingRegistration(
+    normalizedEmail: string,
+    passwordPlain: string,
+  ): Promise<InvitedRegistrationResult | null> {
     const existingUser = await this.prisma.user.findUnique({
       where: { email: normalizedEmail },
     });
-    if (existingUser) {
-      throw new BadRequestException('User with this email already exists');
+    if (!existingUser) return null;
+
+    const matches = await bcrypt.compare(
+      passwordPlain,
+      existingUser.passwordHash,
+    );
+    if (!matches) {
+      // Deliberately the same message login() gives. It must not reveal that
+      // the address exists, nor that it was previously registered here.
+      throw new UnauthorizedException('Invalid email or password');
     }
 
-    const passwordHash = await bcrypt.hash(data.passwordPlain, 10);
-
-    const user = await this.prisma.user.create({
-      data: {
-        email: normalizedEmail,
-        passwordHash,
-        firstName: data.firstName,
-        lastName: data.lastName,
-      },
-    });
-
-    // Attributed to the workspace that invited them -- the account has no
-    // workspace of its own, and an administrator there is who needs to see it.
-    // redactAuditPayload strips the password and the raw token.
-    await this.prisma.auditLog.create({
-      data: {
-        actorType: 'USER',
-        actorId: user.id,
-        action: 'register-invited',
-        payload: redactAuditPayload(data),
-        workspaceId: invitation.workspaceId,
-        userId: user.id,
-      },
-    });
-
+    // Nothing is rewritten -- not the password, not the name, not roles, not
+    // memberships. A retry reports what is already true and lets the caller
+    // continue to acceptance.
     return {
-      id: user.id,
-      email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
+      outcome: 'ALREADY_REGISTERED',
+      userId: existingUser.id,
+      email: existingUser.email,
+      firstName: existingUser.firstName,
+      lastName: existingUser.lastName,
     };
+  }
+
+  /**
+   * A unique-constraint violation on User.email, whatever wrapper it arrives
+   * in. Matched on the code rather than the message: Prisma's phrasing has
+   * changed across versions, and the adapter can rethrow it wrapped.
+   */
+  private isUniqueEmailConflict(error: unknown): boolean {
+    const code = (error as { code?: string })?.code;
+    if (code !== 'P2002' && code !== '23505') return false;
+    const target = (error as { meta?: { target?: unknown } })?.meta?.target;
+    const fields = Array.isArray(target)
+      ? target.join(',')
+      : String(target ?? '');
+    // An empty target still counts: the only unique constraint this statement
+    // can violate is the email one.
+    return fields === '' || fields.toLowerCase().includes('email');
   }
 
   // 1. Initial login: returns user info + accessible workspaces

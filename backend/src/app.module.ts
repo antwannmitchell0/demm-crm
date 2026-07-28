@@ -1,5 +1,6 @@
 import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { ProxyAwareThrottlerGuard } from './common/guards/proxy-aware-throttler.guard';
 import { APP_GUARD } from '@nestjs/core';
 import { PrismaService } from './prisma.service';
 import { AuthModule } from './modules/auth/auth.module';
@@ -45,7 +46,7 @@ import { CorrelationIdMiddleware } from './common/middleware/correlation-id.midd
     PrismaService,
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: ProxyAwareThrottlerGuard,
     },
   ],
 })
