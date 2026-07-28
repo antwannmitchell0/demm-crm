@@ -1,5 +1,14 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ExecutionContext } from '@nestjs/common';
 import { ThrottlerGuard } from '@nestjs/throttler';
+import { verifyInternalClientIdentity } from '../security/bff-client-identity';
+
+/**
+ * Where a verified BFF-asserted identity is stashed between canActivate() and
+ * getTracker(). A plain property rather than a symbol: this rides on an Express
+ * request object typed as Record<string, any>, which cannot be symbol-indexed.
+ * The name is namespaced so it cannot collide with anything Express or Nest set.
+ */
+const VERIFIED_CLIENT_KEY = '__demmVerifiedClientKey';
 
 /**
  * Rate-limits per CLIENT, not per proxy.
@@ -49,10 +58,67 @@ export class ProxyAwareThrottlerGuard extends ThrottlerGuard {
     return Number.isFinite(raw) && raw > 0 ? raw : 0;
   }
 
+  /**
+   * Verification happens HERE, not in getTracker(), because a bad claim must be
+   * REJECTED rather than downgraded.
+   *
+   * getTracker() can only answer "who is this"; it has no way to refuse. If an
+   * invalid signature simply fell through to address-based limiting, an
+   * attacker could choose which counter applies by deliberately sending a
+   * broken header -- picking whichever one is emptier. Throwing before the
+   * limiter runs removes that choice.
+   */
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const req = context.switchToHttp().getRequest<Record<string, any>>();
+
+    let rejection: Error | null = null;
+    try {
+      const identity = verifyInternalClientIdentity(req);
+      if (identity) {
+        req[VERIFIED_CLIENT_KEY] = identity.key;
+      }
+    } catch (error) {
+      // Held, not thrown yet -- see below. Narrowed rather than rethrown as
+      // unknown: the verifier only ever throws BadRequestException, and a
+      // non-Error escaping here would mean something else entirely went wrong.
+      rejection =
+        error instanceof Error ? error : new Error('Invalid request.');
+    }
+
+    // COUNT FIRST, REJECT SECOND.
+    //
+    // Throwing straight from the catch would mean a malformed claim never
+    // reached the limiter, so forged-header traffic would be entirely
+    // unthrottled: every such request costs an HMAC and a parse, and nothing
+    // would ever slow it down. A rejected claim leaves VERIFIED_CLIENT_KEY
+    // unset, so it counts under the sender's own address -- which is exactly
+    // right. Sending rubbish must spend your budget, not somebody else's and
+    // not nobody's.
+    //
+    // A 429 from here still wins over the 400: being over budget is the more
+    // useful thing to tell a caller who is also sending malformed headers.
+    const allowed = await super.canActivate(context);
+    if (rejection) {
+      throw rejection;
+    }
+    return allowed;
+  }
+
   protected getTracker(req: Record<string, any>): Promise<string> {
+    // A verified BFF-asserted identity wins. It names the CUSTOMER; the address
+    // this request arrived from names the BFF, which is the same for everyone.
+    // Prefixed so an opaque key and a raw address can never collide in the
+    // limiter's keyspace.
+    const verified = req[VERIFIED_CLIENT_KEY];
+    if (typeof verified === 'string' && verified !== '') {
+      return Promise.resolve(`bff:${verified}`);
+    }
+
     const hops = ProxyAwareThrottlerGuard.trustedHops();
     if (hops === 0) {
-      return Promise.resolve(String(req.ip ?? req.socket?.remoteAddress ?? ''));
+      return Promise.resolve(
+        `ip:${String(req.ip ?? req.socket?.remoteAddress ?? '')}`,
+      );
     }
 
     const header = req.headers?.['x-forwarded-for'];
@@ -68,9 +134,11 @@ export class ProxyAwareThrottlerGuard extends ThrottlerGuard {
       // Fewer entries than declared hops: the request did not arrive through
       // the expected topology. Fall back to the socket peer rather than
       // guessing, so a malformed header cannot mint a new identity.
-      return Promise.resolve(String(req.ip ?? req.socket?.remoteAddress ?? ''));
+      return Promise.resolve(
+        `ip:${String(req.ip ?? req.socket?.remoteAddress ?? '')}`,
+      );
     }
 
-    return Promise.resolve(chain[index]);
+    return Promise.resolve(`ip:${chain[index]}`);
   }
 }

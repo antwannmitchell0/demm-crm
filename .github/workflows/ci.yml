@@ -417,6 +417,25 @@ jobs:
       - name: Install Playwright browser
         run: cd frontend && npx playwright install --with-deps chromium
 
+      - name: BFF Rate-Limit Identity Suite
+        # Runs the REAL topology -- browser -> Next BFF -> NestJS backend -- and
+        # proves two synthetic clients get independent registration budgets.
+        # Calling the backend directly would pass regardless: the identity is
+        # lost in the hop between the two servers, which only exists when both
+        # are running. Before the fix, client B's FIRST request returned 429.
+        #
+        # Self-contained database: this step runs BEFORE Playwright's
+        # global-setup creates demm_crm_uat_verify, and global-teardown drops it
+        # afterwards, so borrowing that one would work only by accident of
+        # ordering.
+        run: |
+          PGPASSWORD="$PGPASSWORD" createdb -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" demm_crm_bff_rl
+          cd backend && npx prisma migrate deploy
+          cd ../frontend && npm run test:bff-rate-limit
+        env:
+          DATABASE_URL: postgresql://postgres:postgrespassword@localhost:5432/demm_crm_bff_rl?schema=public
+          JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+
       - name: Reject disabled critical browser journeys
         # Runs BEFORE Playwright, so a branch that turned a journey off fails
         # here rather than reporting green with the journey silently skipped.
