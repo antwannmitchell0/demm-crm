@@ -553,6 +553,69 @@ export async function switchWorkspace(workspaceId: string): Promise<void> {
   });
 }
 
+/**
+ * Accepts an invitation using a password, and enters the workspace.
+ *
+ * FOR THE PERSON WHO CANNOT SIGN IN YET. Someone invited to their first
+ * workspace holds no membership, so select-workspace cannot mint them a
+ * session -- beginLogin() leaves them at "signed in, but not part of any
+ * workspace". Accepting is what creates the membership, so it has to happen
+ * BEFORE a session can exist, not after.
+ *
+ * The whole exchange happens in one server-side chain behind the BFF: the
+ * password buys a pre-session token, that mints a capability scoped to this one
+ * invitation, the capability accepts it, and only then is a session issued.
+ * Neither the pre-session token nor the capability is ever returned to this
+ * tab; the refresh token arrives only as an httpOnly cookie.
+ *
+ * Returns without adopting anything when the server reports no access -- an
+ * administrator removed the account after the link was used. Adopting a session
+ * there would put somebody inside a workspace they cannot open.
+ */
+export async function acceptInvitationAndEnter(
+  email: string,
+  passwordPlain: string,
+  token: string,
+): Promise<{ outcome: string | null; hasAccess: boolean }> {
+  const { status, data } = await postSessionRoute(
+    '/api/session/accept-invitation',
+    { email, passwordPlain, token },
+  );
+
+  if (status !== 200) {
+    throw new Error(
+      typeof data.error === 'string'
+        ? data.error
+        : 'That invitation could not be accepted.',
+    );
+  }
+
+  const outcome = typeof data.outcome === 'string' ? data.outcome : null;
+
+  if (data.hasAccess !== true || typeof data.access_token !== 'string') {
+    return { outcome, hasAccess: false };
+  }
+
+  applySession(
+    data.access_token,
+    typeof data.expires_in === 'number' ? data.expires_in : null,
+    readUser(data),
+  );
+
+  // Same reasoning as switchWorkspace(): accepting replaces the ONE refresh
+  // cookie the whole browser shares, so every other tab's session now belongs
+  // to this workspace whether it knows it or not.
+  broadcastSessionMessage({
+    type: 'WORKSPACE_SWITCHED',
+    from: TAB_ID,
+    accessToken: data.access_token,
+    expiresAt: accessTokenExpiresAt,
+    user: currentUser,
+  });
+
+  return { outcome, hasAccess: true };
+}
+
 /** Ends this session and every tab's view of it. Always clears locally. */
 export async function logout(): Promise<void> {
   try {

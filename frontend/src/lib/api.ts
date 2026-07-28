@@ -357,6 +357,43 @@ export const api = {
     });
   },
 
+  /**
+   * Acceptance for somebody who cannot sign in yet -- invited to their FIRST
+   * workspace, so no membership exists and no access token can be minted.
+   *
+   * Goes to the BFF, not the backend. The server-side chain mints a capability
+   * scoped to this one invitation and spends it immediately; neither that
+   * capability nor the pre-session token is ever returned here, and the
+   * refresh token arrives only as an httpOnly cookie.
+   */
+  acceptInvitationWithCredentials: async (
+    email: string,
+    passwordPlain: string,
+    token: string,
+  ) => {
+    const response = await fetch('/api/session/accept-invitation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ email, passwordPlain, token }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new ApiError(
+        (data as { error?: string })?.error ??
+          'That invitation could not be accepted.',
+        response.status,
+      );
+    }
+    return data as {
+      outcome: string | null;
+      hasAccess: boolean;
+      role: string | null;
+      access_token: string | null;
+      user: unknown;
+    };
+  },
+
   // Marketing: Offers
   getOffers: async () => {
     return request('marketing/offers');

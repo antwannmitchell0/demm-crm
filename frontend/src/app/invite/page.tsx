@@ -3,6 +3,7 @@
 import React, { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { api, getAuthToken, getActiveUser, ApiError } from '../../lib/api';
+import { acceptInvitationAndEnter } from '../../lib/session/client';
 import { MailCheck, Loader2 } from 'lucide-react';
 
 /**
@@ -37,6 +38,10 @@ function InviteInner() {
   const params = useSearchParams();
   const token = params.get('token');
   const [phase, setPhase] = useState<Phase>({ kind: 'CHECKING' });
+  // Held in component state only, for the duration of one submit. Never
+  // persisted, never logged, never put in the URL.
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
   const me = getActiveUser();
 
@@ -51,6 +56,40 @@ function InviteInner() {
     }
     setPhase({ kind: 'READY' });
   }, [token]);
+
+  /**
+   * The path for somebody who has no session and cannot get one: invited to
+   * their first workspace, so no membership exists yet and no access token can
+   * be minted for them. Accepting is what CREATES the membership, so it has to
+   * come before the session, not after.
+   *
+   * Everything sensitive stays server-side -- see the BFF route. This component
+   * sends a password once and receives a session, or an honest refusal.
+   */
+  const acceptWithCredentials = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!token) return;
+    setPhase({ kind: 'WORKING' });
+    try {
+      const result = await acceptInvitationAndEnter(email, password, token);
+      setPassword('');
+      if (!result.hasAccess) {
+        setPhase({ kind: 'NO_ACCESS' });
+        return;
+      }
+      setPhase({ kind: 'DONE' });
+      window.location.assign('/dashboard');
+    } catch (err: unknown) {
+      setPassword('');
+      setPhase({
+        kind: 'FAILED',
+        message:
+          err instanceof Error
+            ? err.message
+            : 'That invitation could not be accepted.',
+      });
+    }
+  };
 
   const accept = async () => {
     if (!token) return;
@@ -106,15 +145,63 @@ function InviteInner() {
         {phase.kind === 'NEEDS_SIGN_IN' ? (
           <>
             <p className="text-sm text-slate-400 mt-4 leading-relaxed">
-              Sign in first, then open this link again. An invitation can only be
-              accepted by the account it was sent to.
+              Enter the password for the account this invitation was sent to.
+              You will be taken straight into the workspace.
             </p>
-            <button
-              onClick={() => router.push('/')}
-              className="mt-5 w-full py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 text-white text-sm font-semibold hover:from-cyan-400 hover:to-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-300 active:translate-y-px transition"
-            >
-              Go to sign in
-            </button>
+            <form onSubmit={acceptWithCredentials} className="mt-5 space-y-3">
+              <div>
+                <label
+                  htmlFor="invite-email"
+                  className="block text-xs font-semibold text-slate-300 mb-1.5"
+                >
+                  Email address
+                </label>
+                <input
+                  id="invite-email"
+                  type="email"
+                  required
+                  autoComplete="username"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-100 text-sm placeholder:text-slate-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
+                  placeholder="you@company.com"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="invite-password"
+                  className="block text-xs font-semibold text-slate-300 mb-1.5"
+                >
+                  Password
+                </label>
+                <input
+                  id="invite-password"
+                  type="password"
+                  required
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-100 text-sm placeholder:text-slate-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
+                  placeholder="Your password"
+                />
+              </div>
+              <button
+                type="submit"
+                className="w-full py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 text-white text-sm font-semibold hover:from-cyan-400 hover:to-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-300 active:translate-y-px transition"
+              >
+                Accept invitation
+              </button>
+            </form>
+            <p className="text-xs text-slate-500 mt-4 leading-relaxed">
+              No account yet?{' '}
+              <button
+                onClick={() => router.push('/')}
+                className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400 rounded"
+              >
+                Create one first
+              </button>
+              , then open this link again.
+            </p>
           </>
         ) : null}
 
