@@ -895,3 +895,63 @@ Suites updated to the new contract: `test-team-management.ts` 25/30/35a,
 - G-Stack gates not yet run: `/qa`, `/design-review`, `/devex-review`, `/health`.
 - Phase 0 tag `v0.1.4-phase0-baseline` absent; PR #5 unmerged; no staging deploy.
 - Communications Core not started.
+
+---
+
+## 21. Strict same-link idempotency (`5442356`, `b90753d`)
+
+### "Does not crash" was not idempotent
+
+Six simultaneous requests for the SAME link by the SAME person produced one 200
+and several 400s — the loser of the conditional claim threw:
+
+```
+new member      -> 200,400,400,400,200,200
+existing member -> 200,400,400,400,400,200
+```
+
+Every one had the same intent and the same correct end state.
+
+**Fix:** on claim loss, re-read inside the transaction; when the row is ACCEPTED
+by this same `userId`, return `ALREADY_ACCEPTED` rather than throwing. Consumed
+by anyone else, revoked, or expired still refuses, with the same generic message
+so a caller never learns who used it.
+
+Contract, all HTTP 200: exactly one `JOINED` or `ALREADY_MEMBER`, every loser
+`ALREADY_ACCEPTED`, one membership, **one** acceptance audit, invitation terminal.
+
+### `hasAccess` / `role` come from the membership, never the invitation
+
+The old code fell back to `invitation.role`. An evicted user reopening their
+link was told they still held `ORG_OWNER`. The invitation records what was
+*offered*, not what is *held*. Now `hasAccess:false`, `role:null`, and the
+membership is **not** recreated — an administrator's removal stands.
+
+### The downstream defect this exposed
+
+`/invite` discarded the response: call, `setPhase DONE`, redirect. Once 200 also
+meant "already used, no access", it announced **"You are in"** and dropped an
+evicted user into a workspace they cannot open. Now reads `hasAccess` and renders
+a distinct `NO_ACCESS` state.
+
+**Lesson:** widening a contract is not backwards-compatible just because the
+status code didn't change. Grep the callers before shipping the widening.
+
+### Evidence
+
+`test-invitation-acceptance.ts` 53/53 (20 new assertions 34–53, **6 failing
+beforehand**). Mutation: re-read removed → `400,200,400,400,200,200` and
+`400,200,400,400,400,400`. Restored → 53/53.
+Backend: team 56/0, team-authz 32/0, invitation-migration 24/0, lint/build clean.
+Frontend: typecheck clean, production build clean with both guards.
+CI `30364270826` green on `5442356`.
+
+### Receipts
+
+DOM26 v3 `eng_b300831cc0` · G-Brain `demm-crm-strict-idempotency-and-honest-clients`
+
+### Still outstanding
+
+G-Stack `/qa`, `/design-review`, `/devex-review`, `/health`; full browser
+journeys (6 / 26 controls); all accessibility and keyboard testing; Phase 0 tag;
+PR #5 merge; staging deploy; Communications Core.
