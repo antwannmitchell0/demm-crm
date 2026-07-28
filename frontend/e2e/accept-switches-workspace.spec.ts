@@ -110,26 +110,47 @@ test('accepting while signed in elsewhere moves the session, not just the row', 
     // Checked before the real acceptance, while the session is still known to
     // be in B. If the client switched on status alone, this is where it would
     // show.
-    await invitee.route('**/api/session/accept-invitation', async (route) => {
+    await invitee.route('**/team/invitations/accept', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
+        // The BACKEND accept contract, which is what the authenticated path
+        // calls -- api.acceptInvitation() goes straight to /team/invitations/
+        // accept, NOT to the BFF route the no-session path uses. Mocking the
+        // BFF route here intercepted nothing, so this case silently proved
+        // nothing until the intercept target was corrected.
         body: JSON.stringify({
           outcome: 'ALREADY_ACCEPTED',
+          workspaceId: null,
           hasAccess: false,
           role: null,
-          access_token: null,
-          user: null,
         }),
       });
     });
     await invitee.goto(pathOf(link));
+    // expect(...).toBeVisible() auto-waits; isVisible() does NOT. Guarding the
+    // click with isVisible() made this whole case a silent no-op -- the button
+    // had not rendered yet, so nothing was clicked, no mocked response was
+    // consumed, and the assertion that followed passed for the wrong reason.
     const denied = invitee.getByRole('button', { name: /accept invitation/i });
-    if (await denied.isVisible().catch(() => false)) {
-      await denied.click();
-    }
-    await invitee.waitForTimeout(1500);
+    await expect(denied).toBeVisible({ timeout: 20_000 });
+    await denied.click();
+    // Wait on STATE, not on a clock. The page must first show that it read
+    // hasAccess:false, which proves the mocked response was actually consumed
+    // and no switch was attempted -- a blind sleep would pass just as happily
+    // if the click had done nothing at all.
+    await expect(invitee.getByText(/no longer have access/i)).toBeVisible({
+      timeout: 20_000,
+    });
     await invitee.goto('/dashboard');
+    // Then wait for the session to finish rehydrating before asserting which
+    // workspace is shown. Asserting straight after goto() raced the bootstrap
+    // on CI: the shell renders before the refresh call resolves, so the
+    // workspace name is legitimately absent for a moment and the assertion
+    // failed on timing rather than on behaviour.
+    await expect(
+      invitee.locator('[data-session-state="AUTHENTICATED"]').first(),
+    ).toBeAttached({ timeout: 25_000 });
     await expect(invitee.getByText(F.workspaceB.name).first()).toBeVisible({
       timeout: 20_000,
     });
@@ -142,7 +163,7 @@ test('accepting while signed in elsewhere moves the session, not just the row', 
       actual: 'unchanged',
       pass: true,
     });
-    await invitee.unroute('**/api/session/accept-invitation');
+    await invitee.unroute('**/team/invitations/accept');
 
     // --- The real acceptance -------------------------------------------
     await invitee.goto(pathOf(link));
