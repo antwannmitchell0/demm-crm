@@ -1,7 +1,7 @@
 'use client';
 
 import React, { Suspense, useEffect, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { api, getAuthToken, getActiveUser, ApiError } from '../../lib/api';
 import { acceptInvitationAndEnter } from '../../lib/session/client';
 import { MailCheck, Loader2 } from 'lucide-react';
@@ -23,6 +23,9 @@ import { MailCheck, Loader2 } from 'lucide-react';
 type Phase =
   | { kind: 'CHECKING' }
   | { kind: 'NEEDS_SIGN_IN' }
+  // Holds an invitation but has no account at all. A distinct state, because
+  // the ordinary sign-up form would found them an organization.
+  | { kind: 'NEEDS_ACCOUNT' }
   | { kind: 'NO_TOKEN' }
   | { kind: 'READY' }
   | { kind: 'WORKING' }
@@ -34,7 +37,6 @@ type Phase =
   | { kind: 'FAILED'; message: string };
 
 function InviteInner() {
-  const router = useRouter();
   const params = useSearchParams();
   const token = params.get('token');
   const [phase, setPhase] = useState<Phase>({ kind: 'CHECKING' });
@@ -42,6 +44,8 @@ function InviteInner() {
   // persisted, never logged, never put in the URL.
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
 
   const me = getActiveUser();
 
@@ -85,6 +89,43 @@ function InviteInner() {
         kind: 'FAILED',
         message:
           err instanceof Error
+            ? err.message
+            : 'That invitation could not be accepted.',
+      });
+    }
+  };
+
+  /**
+   * Create the account, then immediately accept. Two server calls, one action:
+   * asking somebody to fill a form, then sign in, then find the link again is
+   * three chances to lose them, and the link is what they already have in hand.
+   */
+  const registerThenAccept = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!token) return;
+    setPhase({ kind: 'WORKING' });
+    try {
+      await api.registerInvited({
+        token,
+        email,
+        passwordPlain: password,
+        firstName,
+        lastName,
+      });
+      const result = await acceptInvitationAndEnter(email, password, token);
+      setPassword('');
+      if (!result.hasAccess) {
+        setPhase({ kind: 'NO_ACCESS' });
+        return;
+      }
+      setPhase({ kind: 'DONE' });
+      window.location.assign('/dashboard');
+    } catch (err: unknown) {
+      setPassword('');
+      setPhase({
+        kind: 'FAILED',
+        message:
+          err instanceof ApiError || err instanceof Error
             ? err.message
             : 'That invitation could not be accepted.',
       });
@@ -195,12 +236,12 @@ function InviteInner() {
             <p className="text-xs text-slate-500 mt-4 leading-relaxed">
               No account yet?{' '}
               <button
-                onClick={() => router.push('/')}
+                onClick={() => setPhase({ kind: 'NEEDS_ACCOUNT' })}
                 className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400 rounded"
               >
-                Create one first
+                Create one here
               </button>
-              , then open this link again.
+              . You will join this workspace, not start your own.
             </p>
           </>
         ) : null}
@@ -221,6 +262,98 @@ function InviteInner() {
                 <Loader2 className="w-4 h-4 animate-spin shrink-0" />
               ) : null}
               <span>Accept invitation</span>
+            </button>
+          </>
+        ) : null}
+
+        {phase.kind === 'NEEDS_ACCOUNT' ? (
+          <>
+            <p className="text-sm text-slate-400 mt-4 leading-relaxed">
+              Create your account with the address this invitation was sent to.
+              You will join the workspace that invited you.
+            </p>
+            <form onSubmit={registerThenAccept} className="mt-5 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor="reg-first"
+                    className="block text-xs font-semibold text-slate-300 mb-1.5"
+                  >
+                    First name
+                  </label>
+                  <input
+                    id="reg-first"
+                    required
+                    autoComplete="given-name"
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-100 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="reg-last"
+                    className="block text-xs font-semibold text-slate-300 mb-1.5"
+                  >
+                    Last name
+                  </label>
+                  <input
+                    id="reg-last"
+                    required
+                    autoComplete="family-name"
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-100 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
+                  />
+                </div>
+              </div>
+              <div>
+                <label
+                  htmlFor="reg-email"
+                  className="block text-xs font-semibold text-slate-300 mb-1.5"
+                >
+                  Email address
+                </label>
+                <input
+                  id="reg-email"
+                  type="email"
+                  required
+                  autoComplete="username"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-100 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
+                  placeholder="you@company.com"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="reg-password"
+                  className="block text-xs font-semibold text-slate-300 mb-1.5"
+                >
+                  Choose a password
+                </label>
+                <input
+                  id="reg-password"
+                  type="password"
+                  required
+                  autoComplete="new-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-100 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
+                />
+              </div>
+              <button
+                type="submit"
+                className="w-full py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 text-white text-sm font-semibold hover:from-cyan-400 hover:to-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-300 active:translate-y-px transition"
+              >
+                Create account and join
+              </button>
+            </form>
+            <button
+              onClick={() => setPhase({ kind: 'NEEDS_SIGN_IN' })}
+              className="mt-4 text-xs text-slate-400 hover:text-slate-200 underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400 rounded"
+            >
+              I already have an account
             </button>
           </>
         ) : null}

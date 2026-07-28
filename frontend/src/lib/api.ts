@@ -201,6 +201,27 @@ export const api = {
     return sessionClient.beginLogin(email, passwordPlain);
   },
 
+  /**
+   * Creates an account for somebody holding an invitation link.
+   *
+   * No workspaceName or subdomain, unlike register(): this person is joining
+   * an existing workspace, not founding one, and passing those would create a
+   * spare organization they never asked for. It grants no membership either --
+   * accepting the invitation is the separate step that does that.
+   */
+  registerInvited: async (data: {
+    token: string;
+    email: string;
+    passwordPlain: string;
+    firstName: string;
+    lastName: string;
+  }) => {
+    return request('api/auth/register-invited', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
   register: async (data: {
     email: string;
     passwordPlain: string;
