@@ -33,7 +33,8 @@
     "test:team-authz": "npx ts-node test-team-authorization.ts",
     "test:invitation-migration": "npx ts-node test-invitation-migration.ts",
     "test:invitation-accept": "npx ts-node test-invitation-acceptance.ts",
-    "test:token-purpose": "npx ts-node test-token-purpose.ts"
+    "test:token-purpose": "npx ts-node test-token-purpose.ts",
+    "test:invitation-pre-session": "ts-node test-invitation-pre-session.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

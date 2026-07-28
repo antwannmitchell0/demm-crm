@@ -3,6 +3,7 @@ import {
   UnauthorizedException,
   BadRequestException,
   ForbiddenException,
+  NotFoundException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../prisma.service';
@@ -170,6 +171,68 @@ export class AuthService {
     }
 
     return this.issueTokensForMembership(preAuthPayload.sub, workspaceId);
+  }
+
+  /**
+   * Exchanges (proof of password) + (possession of the invitation link) for a
+   * capability that authorizes accepting that ONE invitation.
+   *
+   * WHY THIS EXISTS. A person invited to their first workspace holds no
+   * membership, so selectWorkspace() cannot mint them a session and the
+   * ordinary accept endpoint is unreachable. The alternative -- a session
+   * without a workspace -- would be a general-purpose bearer token for an
+   * account that has not yet been granted access to anything.
+   *
+   * NOTHING HERE IS TAKEN FROM THE CALLER'S BODY. The user is whoever the
+   * pre-session token says, which is only ever minted by login() against a
+   * verified password. The invitation is whichever row the presented token
+   * hashes to. A caller cannot name a different user, a different invitation,
+   * a different role or a different workspace, because no such input is read.
+   *
+   * NO REFRESH-TOKEN ROW IS CREATED. This is not a session and must not
+   * survive as one; the capability expires in two minutes, well inside the
+   * five-minute ceiling, because the BFF consumes it in the next hop.
+   */
+  async mintInvitationCapability(preAuthToken: string, rawToken: string) {
+    let payload: { sub: string; purpose?: string };
+    try {
+      payload = this.jwtService.verify(preAuthToken);
+    } catch {
+      throw new UnauthorizedException('Invalid or expired pre-auth token');
+    }
+    if (payload.purpose !== 'workspace-selection') {
+      throw new UnauthorizedException('Invalid pre-auth token');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+    });
+    if (!user) {
+      throw new UnauthorizedException('Invalid pre-auth token');
+    }
+
+    const invitation = await this.prisma.invitation.findUnique({
+      where: { tokenHash: this.hashToken(rawToken) },
+    });
+
+    // ONE message for "no such invitation" and "issued to somebody else".
+    // Distinguishing them would confirm to the holder of a stray link that it
+    // is a real invitation, and that the address it names is a real account.
+    if (!invitation || invitation.email !== user.email.trim().toLowerCase()) {
+      throw new NotFoundException('Invitation not found.');
+    }
+
+    return {
+      capabilityToken: this.jwtService.sign(
+        {
+          sub: user.id,
+          tokenType: 'pre-session',
+          purpose: 'invitation-acceptance',
+          invitationId: invitation.id,
+        },
+        { expiresIn: '2m' },
+      ),
+    };
   }
 
   // Issues real access/refresh tokens for an ALREADY-VERIFIED (userId,

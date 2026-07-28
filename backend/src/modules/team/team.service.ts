@@ -245,12 +245,35 @@ export class TeamService {
    * whoever received it, only by the person it names.
    */
   async acceptInvitation(userId: string, rawToken: string) {
+    return this.acceptResolvedInvitation(userId, {
+      tokenHash: this.hashToken(rawToken),
+    });
+  }
+
+  /**
+   * Accepting by invitation id, for a caller holding an invitation-acceptance
+   * capability (see auth/invitation-capability.strategy.ts). The id is not
+   * client-supplied: it was written into the capability by the server, which
+   * resolved it from a token the caller demonstrably possessed.
+   *
+   * Shares ONE body with the token path below rather than reimplementing it.
+   * That logic -- the idempotent retry, the atomic PENDING claim, the
+   * ON CONFLICT insert, reporting the role from the membership rather than the
+   * invitation -- took several corrections to get right, and a second copy
+   * would be a second place for those to regress.
+   */
+  async acceptInvitationById(userId: string, invitationId: string) {
+    return this.acceptResolvedInvitation(userId, { id: invitationId });
+  }
+
+  private async acceptResolvedInvitation(
+    userId: string,
+    where: { id: string } | { tokenHash: string },
+  ) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('Invitation not found.');
 
-    const invitation = await this.prisma.invitation.findUnique({
-      where: { tokenHash: this.hashToken(rawToken) },
-    });
+    const invitation = await this.prisma.invitation.findUnique({ where });
 
     // Same message for "no such token" and "wrong recipient": distinguishing
     // them would confirm to a holder of a stray token that it is real.

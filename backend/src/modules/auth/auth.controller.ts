@@ -17,6 +17,7 @@ import {
   SelectWorkspaceDto,
   RefreshTokenDto,
   SwitchWorkspaceDto,
+  MintInvitationCapabilityDto,
 } from './dto/auth.dto';
 
 @Controller('api/auth')
@@ -52,6 +53,33 @@ export class AuthController {
       );
     }
     return this.authService.selectWorkspace(preAuthToken, body.workspaceId);
+  }
+
+  /**
+   * Called SERVER-SIDE ONLY, by the BFF. The capability it returns must never
+   * reach a browser: it is minted and consumed within one server-side request
+   * chain, so it is never stored, never put in a URL, and never handed to
+   * client JavaScript.
+   *
+   * Rate-limited like register(): it is reachable without a session and each
+   * call performs a bcrypt-free but still unauthenticated lookup, so it is a
+   * plausible target for grinding invitation tokens.
+   */
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @Post('pre-session/invitation-capability')
+  async mintInvitationCapability(
+    @Headers('authorization') authHeader: string | undefined,
+    @Body() body: MintInvitationCapabilityDto,
+  ) {
+    const preAuthToken = authHeader?.startsWith('Bearer ')
+      ? authHeader.slice('Bearer '.length)
+      : undefined;
+    if (!preAuthToken) {
+      throw new UnauthorizedException(
+        'Missing pre-auth token from Authorization header',
+      );
+    }
+    return this.authService.mintInvitationCapability(preAuthToken, body.token);
   }
 
   @Post('refresh')

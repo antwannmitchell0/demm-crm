@@ -1,6 +1,14 @@
-import { Controller, Post, Body, UseGuards, HttpCode } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  UseGuards,
+  HttpCode,
+  Request,
+} from '@nestjs/common';
 import { TeamService } from './team.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { InvitationCapabilityGuard } from '../../common/guards/invitation-capability.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AcceptInvitationDto } from './dto/team.dto';
 
@@ -24,7 +32,6 @@ import { AcceptInvitationDto } from './dto/team.dto';
  * (different method).
  */
 @Controller('team/invitations')
-@UseGuards(JwtAuthGuard)
 export class InvitationController {
   constructor(private teamService: TeamService) {}
 
@@ -43,9 +50,35 @@ export class InvitationController {
    * unreleased phase, and its only caller (frontend/src/lib/api.ts) treats any
    * 2xx as success.
    */
+  @UseGuards(JwtAuthGuard)
   @Post('accept')
   @HttpCode(200)
   accept(@CurrentUser() user: any, @Body() body: AcceptInvitationDto) {
     return this.teamService.acceptInvitation(user.id, body.token);
+  }
+
+  /**
+   * Acceptance for somebody who cannot yet hold a session: the person invited
+   * to their FIRST workspace. They have no membership, so no access token can
+   * be minted for them and the route above is unreachable.
+   *
+   * TAKES NO BODY. Both the acting user and the invitation come from the
+   * capability, which the server minted itself after verifying a password and
+   * possession of the invitation link. There is no field for a caller to
+   * tamper with -- no userId, no invitationId, no role, no workspaceId, no
+   * email.
+   *
+   * Guarded by InvitationCapabilityGuard, NOT JwtAuthGuard. The class-level
+   * guard was removed and applied per-route so that widening one of these two
+   * routes cannot silently widen the other.
+   */
+  @UseGuards(InvitationCapabilityGuard)
+  @Post('accept-pre-session')
+  @HttpCode(200)
+  acceptPreSession(@Request() req: any) {
+    return this.teamService.acceptInvitationById(
+      req.user.userId,
+      req.user.invitationId,
+    );
   }
 }

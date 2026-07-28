@@ -65,3 +65,20 @@ export class SwitchWorkspaceDto {
   @IsNotEmpty()
   workspaceId: string;
 }
+
+/**
+ * Exchanging possession of an invitation link for a capability.
+ *
+ * The RAW TOKEN IS THE ONLY FIELD. Who the caller is comes from the pre-session
+ * token in the Authorization header, and which invitation is being accepted is
+ * resolved from the token hash -- never from the body. With
+ * `forbidNonWhitelisted`, a request that tries to supply a userId, invitationId,
+ * role, workspaceId or email is rejected outright rather than having those
+ * fields quietly ignored, so an attempt to steer the decision is visible as a
+ * 400 instead of passing silently.
+ */
+export class MintInvitationCapabilityDto {
+  @IsString()
+  @IsNotEmpty()
+  token: string;
+}

@@ -56,9 +56,15 @@ async function teardown() {
     await prisma.invitation
       .deleteMany({ where: { organizationId: { in: ctx.orgIds } } })
       .catch(() => undefined);
-    await prisma.auditLog.deleteMany({ where: { userId: u } }).catch(() => undefined);
-    await prisma.refreshToken.deleteMany({ where: { userId: u } }).catch(() => undefined);
-    await prisma.membership.deleteMany({ where: { userId: u } }).catch(() => undefined);
+    await prisma.auditLog
+      .deleteMany({ where: { userId: u } })
+      .catch(() => undefined);
+    await prisma.refreshToken
+      .deleteMany({ where: { userId: u } })
+      .catch(() => undefined);
+    await prisma.membership
+      .deleteMany({ where: { userId: u } })
+      .catch(() => undefined);
     await prisma.user.deleteMany({ where: { id: u } }).catch(() => undefined);
     await prisma.organization
       .deleteMany({ where: { id: { in: ctx.orgIds } } })
@@ -86,12 +92,18 @@ async function main() {
   const base = `http://127.0.0.1:${(app.getHttpServer().address() as any).port}`;
 
   const suffix = Date.now();
-  const org = await prisma.organization.create({ data: { name: `AuthZ Org ${suffix}` } });
+  const org = await prisma.organization.create({
+    data: { name: `AuthZ Org ${suffix}` },
+  });
   const otherOrg = await prisma.organization.create({
     data: { name: `AuthZ Other Org ${suffix}` },
   });
   const ws = await prisma.workspace.create({
-    data: { organizationId: org.id, name: 'AuthZ WS', subdomain: `authz-${suffix}` },
+    data: {
+      organizationId: org.id,
+      name: 'AuthZ WS',
+      subdomain: `authz-${suffix}`,
+    },
   });
   const foreignWs = await prisma.workspace.create({
     data: {
@@ -102,7 +114,12 @@ async function main() {
   });
 
   const userIds: string[] = [];
-  const make = async (label: string, workspaceId: string, role: Role, orgId = org.id) => {
+  const make = async (
+    label: string,
+    workspaceId: string,
+    role: Role,
+    orgId = org.id,
+  ) => {
     const u = await prisma.user.create({
       data: {
         email: `authz-${label}-${suffix}@example.invalid`,
@@ -113,13 +130,23 @@ async function main() {
     });
     userIds.push(u.id);
     await prisma.membership.create({
-      data: { userId: u.id, organizationId: orgId, workspaceId, role, permissions: [] },
+      data: {
+        userId: u.id,
+        organizationId: orgId,
+        workspaceId,
+        role,
+        permissions: [],
+      },
     });
     return {
       user: u,
-      token: jwt.sign({ sub: u.id, email: u.email, workspaceId }, process.env.JWT_SECRET!, {
-        expiresIn: '15m',
-      }),
+      token: jwt.sign(
+        { sub: u.id, email: u.email, workspaceId },
+        process.env.JWT_SECRET!,
+        {
+          expiresIn: '15m',
+        },
+      ),
     };
   };
 
@@ -131,11 +158,22 @@ async function main() {
   const wsAdmin2 = await make('wsadmin2', ws.id, Role.WORKSPACE_ADMIN);
   const plain = await make('plain', ws.id, Role.USER);
   const superadmin = await make('superadmin', ws.id, Role.SUPERADMIN);
-  const foreigner = await make('foreigner', foreignWs.id, Role.ORG_OWNER, otherOrg.id);
+  const foreigner = await make(
+    'foreigner',
+    foreignWs.id,
+    Role.ORG_OWNER,
+    otherOrg.id,
+  );
 
   ctx = { orgIds: [org.id, otherOrg.id], userIds };
 
-  const call = (method: string, url: string, token: string, body?: unknown, wsId?: string) =>
+  const call = (
+    method: string,
+    url: string,
+    token: string,
+    body?: unknown,
+    wsId?: string,
+  ) =>
     fetch(`${base}${url}`, {
       method,
       headers: {
@@ -147,7 +185,8 @@ async function main() {
     });
 
   const roleOf = async (userId: string, workspaceId = ws.id) =>
-    (await prisma.membership.findFirst({ where: { userId, workspaceId } }))?.role ?? null;
+    (await prisma.membership.findFirst({ where: { userId, workspaceId } }))
+      ?.role ?? null;
   const isMember = async (userId: string, workspaceId = ws.id) =>
     (await prisma.membership.count({ where: { userId, workspaceId } })) > 0;
 
@@ -155,9 +194,14 @@ async function main() {
   // The core defect: demoting IS "granting a lower role", which the old
   // canGrant check waved through every time.
   {
-    const res = await call('PATCH', `/team/members/${owner1.user.id}`, wsAdmin.token, {
-      role: Role.USER,
-    });
+    const res = await call(
+      'PATCH',
+      `/team/members/${owner1.user.id}`,
+      wsAdmin.token,
+      {
+        role: Role.USER,
+      },
+    );
     check(
       `1. WORKSPACE_ADMIN cannot demote an ORG_OWNER (got ${res.status})`,
       res.status === 403,
@@ -167,18 +211,31 @@ async function main() {
       (await roleOf(owner1.user.id)) === Role.ORG_OWNER,
     );
 
-    const res2 = await call('PATCH', `/team/members/${owner1.user.id}`, orgAdmin.token, {
-      role: Role.WORKSPACE_ADMIN,
-    });
-    check(`3. ORG_ADMIN cannot demote an ORG_OWNER (got ${res2.status})`, res2.status === 403);
+    const res2 = await call(
+      'PATCH',
+      `/team/members/${owner1.user.id}`,
+      orgAdmin.token,
+      {
+        role: Role.WORKSPACE_ADMIN,
+      },
+    );
+    check(
+      `3. ORG_ADMIN cannot demote an ORG_OWNER (got ${res2.status})`,
+      res2.status === 403,
+    );
     check(
       '4. That owner still holds ORG_OWNER',
       (await roleOf(owner1.user.id)) === Role.ORG_OWNER,
     );
 
-    const res3 = await call('PATCH', `/team/members/${orgAdmin.user.id}`, wsAdmin.token, {
-      role: Role.USER,
-    });
+    const res3 = await call(
+      'PATCH',
+      `/team/members/${orgAdmin.user.id}`,
+      wsAdmin.token,
+      {
+        role: Role.USER,
+      },
+    );
     check(
       `5. WORKSPACE_ADMIN cannot demote an ORG_ADMIN (got ${res3.status})`,
       res3.status === 403,
@@ -193,23 +250,41 @@ async function main() {
   // removeMember had NO rank check whatsoever -- only the last-owner rule. With
   // two owners present that rule is satisfied, so nothing stopped it.
   {
-    const res = await call('DELETE', `/team/members/${owner1.user.id}`, wsAdmin.token);
+    const res = await call(
+      'DELETE',
+      `/team/members/${owner1.user.id}`,
+      wsAdmin.token,
+    );
     check(
       `7. WORKSPACE_ADMIN cannot remove an ORG_OWNER (got ${res.status})`,
       res.status === 403,
     );
     check('8. That owner is still a member', await isMember(owner1.user.id));
 
-    const res2 = await call('DELETE', `/team/members/${owner2.user.id}`, orgAdmin.token);
-    check(`9. ORG_ADMIN cannot remove an ORG_OWNER (got ${res2.status})`, res2.status === 403);
+    const res2 = await call(
+      'DELETE',
+      `/team/members/${owner2.user.id}`,
+      orgAdmin.token,
+    );
+    check(
+      `9. ORG_ADMIN cannot remove an ORG_OWNER (got ${res2.status})`,
+      res2.status === 403,
+    );
     check('10. That owner is still a member', await isMember(owner2.user.id));
 
-    const res3 = await call('DELETE', `/team/members/${orgAdmin.user.id}`, wsAdmin.token);
+    const res3 = await call(
+      'DELETE',
+      `/team/members/${orgAdmin.user.id}`,
+      wsAdmin.token,
+    );
     check(
       `11. WORKSPACE_ADMIN cannot remove an ORG_ADMIN (got ${res3.status})`,
       res3.status === 403,
     );
-    check('12. That org admin is still a member', await isMember(orgAdmin.user.id));
+    check(
+      '12. That org admin is still a member',
+      await isMember(orgAdmin.user.id),
+    );
   }
 
   // ===== C. SUPERADMIN is not manageable through a workspace endpoint =====
@@ -217,9 +292,14 @@ async function main() {
   // is the highest authority INSIDE a workspace, which is not authority over
   // the platform.
   {
-    const demote = await call('PATCH', `/team/members/${superadmin.user.id}`, owner1.token, {
-      role: Role.USER,
-    });
+    const demote = await call(
+      'PATCH',
+      `/team/members/${superadmin.user.id}`,
+      owner1.token,
+      {
+        role: Role.USER,
+      },
+    );
     check(
       `13. An ORG_OWNER cannot demote a SUPERADMIN through a workspace endpoint (got ${demote.status})`,
       demote.status === 403,
@@ -229,20 +309,35 @@ async function main() {
       (await roleOf(superadmin.user.id)) === Role.SUPERADMIN,
     );
 
-    const remove = await call('DELETE', `/team/members/${superadmin.user.id}`, owner1.token);
+    const remove = await call(
+      'DELETE',
+      `/team/members/${superadmin.user.id}`,
+      owner1.token,
+    );
     check(
       `15. An ORG_OWNER cannot remove a SUPERADMIN through a workspace endpoint (got ${remove.status})`,
       remove.status === 403,
     );
-    check('16. The SUPERADMIN is still a member', await isMember(superadmin.user.id));
+    check(
+      '16. The SUPERADMIN is still a member',
+      await isMember(superadmin.user.id),
+    );
   }
 
   // ===== D. What IS permitted still works =====
   {
-    const res = await call('PATCH', `/team/members/${plain.user.id}`, wsAdmin.token, {
-      role: Role.WORKSPACE_ADMIN,
-    });
-    check(`17. WORKSPACE_ADMIN can manage a USER (got ${res.status})`, res.status === 200);
+    const res = await call(
+      'PATCH',
+      `/team/members/${plain.user.id}`,
+      wsAdmin.token,
+      {
+        role: Role.WORKSPACE_ADMIN,
+      },
+    );
+    check(
+      `17. WORKSPACE_ADMIN can manage a USER (got ${res.status})`,
+      res.status === 200,
+    );
     check(
       '18. That promotion took effect',
       (await roleOf(plain.user.id)) === Role.WORKSPACE_ADMIN,
@@ -251,17 +346,27 @@ async function main() {
     // Equal-rank management is deliberately ALLOWED. Without it an owner could
     // never remove another owner, and the last-owner rule would become a trap:
     // the only person able to replace the final owner would be that owner.
-    const equal = await call('PATCH', `/team/members/${wsAdmin2.user.id}`, wsAdmin.token, {
-      role: Role.USER,
-    });
+    const equal = await call(
+      'PATCH',
+      `/team/members/${wsAdmin2.user.id}`,
+      wsAdmin.token,
+      {
+        role: Role.USER,
+      },
+    );
     check(
       `19. WORKSPACE_ADMIN can manage another WORKSPACE_ADMIN -- equal rank is permitted (got ${equal.status})`,
       equal.status === 200,
     );
 
-    const appoint = await call('PATCH', `/team/members/${orgAdmin.user.id}`, owner1.token, {
-      role: Role.ORG_OWNER,
-    });
+    const appoint = await call(
+      'PATCH',
+      `/team/members/${orgAdmin.user.id}`,
+      owner1.token,
+      {
+        role: Role.ORG_OWNER,
+      },
+    );
     check(
       `20. ORG_OWNER can appoint another ORG_OWNER (got ${appoint.status})`,
       appoint.status === 200,
@@ -271,7 +376,11 @@ async function main() {
     });
     check(`21. There are now three owners (got ${owners})`, owners === 3);
 
-    const removeOwner = await call('DELETE', `/team/members/${owner2.user.id}`, owner1.token);
+    const removeOwner = await call(
+      'DELETE',
+      `/team/members/${owner2.user.id}`,
+      owner1.token,
+    );
     check(
       `22. ORG_OWNER can remove another ORG_OWNER while owners remain (got ${removeOwner.status})`,
       removeOwner.status === 200,
@@ -310,8 +419,14 @@ async function main() {
 
     // `plain` was promoted to WORKSPACE_ADMIN in block D, then demote them back
     // and confirm the demoted account has no team authority left.
-    await call('PATCH', `/team/members/${plain.user.id}`, owner1.token, { role: Role.USER });
-    const byUser = await call('DELETE', `/team/members/${wsAdmin.user.id}`, plain.token);
+    await call('PATCH', `/team/members/${plain.user.id}`, owner1.token, {
+      role: Role.USER,
+    });
+    const byUser = await call(
+      'DELETE',
+      `/team/members/${wsAdmin.user.id}`,
+      plain.token,
+    );
     check(
       `27. A demoted member has no team authority (got ${byUser.status})`,
       byUser.status === 403,
@@ -320,9 +435,14 @@ async function main() {
 
   // ===== F. Self-management cannot be used to escape the rule =====
   {
-    const selfPromote = await call('PATCH', `/team/members/${wsAdmin.user.id}`, wsAdmin.token, {
-      role: Role.ORG_OWNER,
-    });
+    const selfPromote = await call(
+      'PATCH',
+      `/team/members/${wsAdmin.user.id}`,
+      wsAdmin.token,
+      {
+        role: Role.ORG_OWNER,
+      },
+    );
     check(
       `28. A WORKSPACE_ADMIN cannot promote THEMSELVES to ORG_OWNER (got ${selfPromote.status})`,
       selfPromote.status === 403,
@@ -334,7 +454,11 @@ async function main() {
 
     // Self-removal is management of an equal-rank target, so it is allowed --
     // subject to the last-owner rule, which is tested separately.
-    const selfRemove = await call('DELETE', `/team/members/${wsAdmin.user.id}`, wsAdmin.token);
+    const selfRemove = await call(
+      'DELETE',
+      `/team/members/${wsAdmin.user.id}`,
+      wsAdmin.token,
+    );
     check(
       `30. A member may remove themselves when the last-owner rule allows (got ${selfRemove.status})`,
       selfRemove.status === 200,
@@ -358,16 +482,38 @@ async function main() {
   // ===== H. The last-owner rule still holds under concurrency =====
   {
     const raceWs = await prisma.workspace.create({
-      data: { organizationId: org.id, name: 'AuthZ Race', subdomain: `authz-race-${suffix}` },
+      data: {
+        organizationId: org.id,
+        name: 'AuthZ Race',
+        subdomain: `authz-race-${suffix}`,
+      },
     });
     const a = await make('racea', raceWs.id, Role.ORG_OWNER);
     const b = await make('raceb', raceWs.id, Role.ORG_OWNER);
     const c = await make('racec', raceWs.id, Role.ORG_OWNER);
 
     await Promise.all([
-      call('DELETE', `/team/members/${a.user.id}`, a.token, undefined, raceWs.id),
-      call('DELETE', `/team/members/${b.user.id}`, b.token, undefined, raceWs.id),
-      call('PATCH', `/team/members/${c.user.id}`, c.token, { role: Role.USER }, raceWs.id),
+      call(
+        'DELETE',
+        `/team/members/${a.user.id}`,
+        a.token,
+        undefined,
+        raceWs.id,
+      ),
+      call(
+        'DELETE',
+        `/team/members/${b.user.id}`,
+        b.token,
+        undefined,
+        raceWs.id,
+      ),
+      call(
+        'PATCH',
+        `/team/members/${c.user.id}`,
+        c.token,
+        { role: Role.USER },
+        raceWs.id,
+      ),
     ]);
 
     const left = await prisma.membership.count({
