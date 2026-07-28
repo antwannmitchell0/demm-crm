@@ -170,6 +170,26 @@ jobs:
           JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
           ALLOW_DESTRUCTIVE_TESTS: "true"
 
+      - name: Token Purpose Separation Suite
+        # Proves a pre-session credential cannot be spent as a session. Before
+        # the strategy checked token class, a five-minute workspace-selection
+        # token -- issued BEFORE any password was verified -- returned HTTP 200
+        # on /team/members, /agent/approvals and /contacts among others.
+        run: cd backend && npm run test:token-purpose
+        env:
+          JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+          ALLOW_DESTRUCTIVE_TESTS: "true"
+
+      - name: Pre-Session Invitation Suite
+        # Proves a person invited to their FIRST workspace can accept, using a
+        # capability scoped to one invitation rather than a workspace-less
+        # session. Every other invitation suite signs a JWT directly, which
+        # bypasses login -- which is exactly where this defect lived.
+        run: cd backend && npm run test:invitation-pre-session
+        env:
+          JWT_SECRET: "demm_crm_production_secure_jwt_secret_key_32chars_minimum"
+          ALLOW_DESTRUCTIVE_TESTS: "true"
+
       - name: Team Authorization Boundary Suite
         # GATE A. Proves a lower rank cannot demote or remove a higher one.
         # Before this, canGrant() was the only check and demoting is
@@ -384,6 +404,14 @@ jobs:
 
       - name: Install Playwright browser
         run: cd frontend && npx playwright install --with-deps chromium
+
+      - name: Reject disabled critical browser journeys
+        # Runs BEFORE Playwright, so a branch that turned a journey off fails
+        # here rather than reporting green with the journey silently skipped.
+        # That exact thing happened: the invitation journeys shipped as
+        # `test.fixme`, Playwright exited 0, and CI was green for a run in which
+        # a new teammate joining a workspace was never executed.
+        run: cd frontend && npm run verify:journeys
 
       - name: Run browser UAT
         # global-setup creates demm_crm_uat_verify, applies every migration with
