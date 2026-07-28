@@ -415,6 +415,91 @@ async function main() {
     );
   }
 
+  // ===== G. Registering BECAUSE you were invited =====
+  //
+  // Ordinary register() creates an Organization, a Workspace and an ORG_OWNER
+  // membership -- correct for somebody starting their own company, wrong for
+  // somebody joining an existing one. It would leave every invited person
+  // owning an empty organization they never asked for and can never be rid of.
+  {
+    const orgsBefore = await prisma.organization.count();
+    const wsBefore = await prisma.workspace.count();
+    const invitedEmail = `invited-${s}@example.invalid`;
+    const { raw: invitedRaw } = await makeInvitation(invitedEmail);
+    const REG = '/api/auth/register-invited';
+
+    const bad = await post(REG, {
+      token: crypto.randomBytes(32).toString('hex'),
+      email: invitedEmail,
+      passwordPlain: PASSWORD,
+      firstName: 'Ida',
+      lastName: 'Invited',
+    });
+    check(
+      `33. Registering without a real invitation is refused (got ${bad.status})`,
+      bad.status === 404,
+    );
+
+    const mismatch = await post(REG, {
+      token: invitedRaw,
+      email: `someone-else-${s}@example.invalid`,
+      passwordPlain: PASSWORD,
+      firstName: 'Ida',
+      lastName: 'Invited',
+    });
+    check(
+      `34. Registering under a different address than the invitation is refused (got ${mismatch.status})`,
+      mismatch.status === 403 || mismatch.status === 404,
+    );
+
+    const reg = await post(REG, {
+      token: invitedRaw,
+      email: invitedEmail,
+      passwordPlain: PASSWORD,
+      firstName: 'Ida',
+      lastName: 'Invited',
+    });
+    check(
+      `35. An invited person can register (got ${reg.status})`,
+      reg.status < 300,
+    );
+
+    const created = await prisma.user.findUnique({
+      where: { email: invitedEmail },
+    });
+    if (created) ctx!.userIds.push(created.id);
+    check('36. The account exists', Boolean(created));
+
+    const orgsAfter = await prisma.organization.count();
+    const wsAfter = await prisma.workspace.count();
+    check(
+      `37. NO spare organization was created (${orgsBefore} -> ${orgsAfter})`,
+      orgsAfter === orgsBefore,
+    );
+    check(
+      `38. NO spare workspace was created (${wsBefore} -> ${wsAfter})`,
+      wsAfter === wsBefore,
+    );
+    check(
+      '39. NO membership is granted by registering -- the invitation still has to be accepted',
+      created
+        ? (await prisma.membership.count({ where: { userId: created.id } })) === 0
+        : false,
+    );
+
+    // And the account works: it can complete the whole chain.
+    const fresh = await login(invitedEmail);
+    const cap = await post(MINT, { token: invitedRaw }, fresh.body?.preAuthToken);
+    const capTok = ((await cap.json().catch(() => ({}))) as any)?.capabilityToken;
+    const acc = await post(ACCEPT, {}, capTok);
+    const accBody = (await acc.json().catch(() => ({}))) as any;
+    check(
+      `40. ...and can then accept the invitation that brought them (${accBody?.outcome})`,
+      acc.status === 200 &&
+        accBody?.outcome === 'JOINED' &&
+        accBody?.hasAccess === true,
+    );
+  }
   console.log('==========================================================');
   console.log(`📊 PRE-SESSION INVITATION SUITE: ${pass} passed, ${fail} failed.`);
   if (fail > 0) process.exitCode = 1;

@@ -82,3 +82,33 @@ export class MintInvitationCapabilityDto {
   @IsNotEmpty()
   token: string;
 }
+
+/**
+ * Creating an account BECAUSE you were invited.
+ *
+ * No workspaceName and no subdomain, unlike RegisterDto -- the whole point is
+ * that this person is joining an existing workspace, not founding one. Those
+ * two fields are what make ordinary registration create an Organization and a
+ * Workspace, so their absence here is the contract, not an omission.
+ */
+export class RegisterInvitedDto {
+  @IsString()
+  @IsNotEmpty()
+  token: string;
+
+  @IsEmail()
+  @IsNotEmpty()
+  email: string;
+
+  @IsString()
+  @IsNotEmpty()
+  passwordPlain: string;
+
+  @IsString()
+  @IsNotEmpty()
+  firstName: string;
+
+  @IsString()
+  @IsNotEmpty()
+  lastName: string;
+}

@@ -18,6 +18,7 @@ import {
   RefreshTokenDto,
   SwitchWorkspaceDto,
   MintInvitationCapabilityDto,
+  RegisterInvitedDto,
 } from './dto/auth.dto';
 
 @Controller('api/auth')
@@ -32,6 +33,15 @@ export class AuthController {
   @Post('register')
   async register(@Body() body: RegisterDto) {
     return this.authService.register(body);
+  }
+
+  // Same 5/min ceiling as register(): both are unauthenticated account
+  // creation. This one additionally probes an invitation token, so an
+  // unthrottled version would be a way to grind for valid links.
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('register-invited')
+  async registerInvited(@Body() body: RegisterInvitedDto) {
+    return this.authService.registerInvited(body);
   }
 
   @Post('login')

@@ -98,6 +98,87 @@ export class AuthService {
     };
   }
 
+  /**
+   * Creates an account for somebody holding an invitation link.
+   *
+   * CREATES A USER ROW AND NOTHING ELSE. register() also creates an
+   * Organization, a Workspace and an ORG_OWNER membership, which is right for
+   * somebody founding their own company and wrong for somebody joining one:
+   * every invited person would end up owning an empty organization they never
+   * asked for, cannot use, and cannot leave -- and would then appear in billing
+   * and tenant counts as a customer.
+   *
+   * It grants NO membership either. Registering proves who you are; accepting
+   * the invitation is a separate, auditable act, and collapsing the two would
+   * mean an account came into existence already inside somebody\'s workspace.
+   *
+   * Possession of the link is necessary but not sufficient: the address being
+   * registered must be the one the invitation was issued to, so a forwarded
+   * link cannot be redeemed by whoever receives it.
+   */
+  async registerInvited(data: {
+    token: string;
+    email: string;
+    passwordPlain: string;
+    firstName: string;
+    lastName: string;
+  }) {
+    const normalizedEmail = data.email.trim().toLowerCase();
+
+    const invitation = await this.prisma.invitation.findUnique({
+      where: { tokenHash: this.hashToken(data.token) },
+    });
+
+    // One message for "no such invitation" and "issued to somebody else", so a
+    // stray link cannot be used to probe which addresses are real.
+    if (!invitation || invitation.email !== normalizedEmail) {
+      throw new NotFoundException('Invitation not found.');
+    }
+
+    if (invitation.expiresAt < new Date()) {
+      throw new BadRequestException('This invitation has expired.');
+    }
+
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+    if (existingUser) {
+      throw new BadRequestException('User with this email already exists');
+    }
+
+    const passwordHash = await bcrypt.hash(data.passwordPlain, 10);
+
+    const user = await this.prisma.user.create({
+      data: {
+        email: normalizedEmail,
+        passwordHash,
+        firstName: data.firstName,
+        lastName: data.lastName,
+      },
+    });
+
+    // Attributed to the workspace that invited them -- the account has no
+    // workspace of its own, and an administrator there is who needs to see it.
+    // redactAuditPayload strips the password and the raw token.
+    await this.prisma.auditLog.create({
+      data: {
+        actorType: 'USER',
+        actorId: user.id,
+        action: 'register-invited',
+        payload: redactAuditPayload(data),
+        workspaceId: invitation.workspaceId,
+        userId: user.id,
+      },
+    });
+
+    return {
+      id: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+    };
+  }
+
   // 1. Initial login: returns user info + accessible workspaces
   async login(data: { email: string; passwordPlain: string }) {
     const user = await this.prisma.user.findUnique({
