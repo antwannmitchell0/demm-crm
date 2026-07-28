@@ -955,3 +955,17 @@ DOM26 v3 `eng_b300831cc0` · G-Brain `demm-crm-strict-idempotency-and-honest-cli
 G-Stack `/qa`, `/design-review`, `/devex-review`, `/health`; full browser
 journeys (6 / 26 controls); all accessibility and keyboard testing; Phase 0 tag;
 PR #5 merge; staging deploy; Communications Core.
+
+### 21a. Invitation browser journey — WIP, declared not coverage
+
+`frontend/e2e/invitation.spec.ts` exists and is marked `test.fixme` — **not**
+`skip`. Both journeys time out on the first `fill()` on the Team page; cause not
+yet identified.
+
+`fixme` is deliberate: it reports as expected-to-fail rather than vanishing
+silently from the run. **Do not count this file as coverage until it runs.**
+
+What it will prove, and why it matters: the `/invite` page rendering
+`hasAccess:false` honestly. That behaviour is proven at the API layer (53
+assertions) but the browser gap is exactly what let the "You are in" defect ship
+to an evicted user. Browser UAT remains **6 journeys / 26 controls**.
