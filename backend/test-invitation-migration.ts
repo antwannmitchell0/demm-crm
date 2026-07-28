@@ -431,9 +431,14 @@ async function main() {
       },
       body: JSON.stringify({ token: rawPending }),
     });
+    // 200, not 201: acceptance is idempotent, so it does not always create a
+    // resource. The JOINED / ALREADY_MEMBER / ALREADY_ACCEPTED contract lives
+    // in test-invitation-acceptance.ts; what matters HERE is only that a
+    // pre-migration invitation still works at all.
+    const acceptBody: any = await res.json().catch(() => ({}));
     check(
-      `21. AN INVITATION ISSUED BEFORE THE MIGRATION IS STILL ACCEPTABLE AFTER IT (got ${res.status})`,
-      res.status === 201,
+      `21. AN INVITATION ISSUED BEFORE THE MIGRATION IS STILL ACCEPTABLE AFTER IT (got ${res.status}, outcome ${acceptBody.outcome})`,
+      res.status === 200 && acceptBody.outcome === 'JOINED',
     );
 
     const membership = await prisma.membership.findFirst({
