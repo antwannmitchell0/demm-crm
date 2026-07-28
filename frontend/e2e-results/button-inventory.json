@@ -1,0 +1,330 @@
+[
+  {
+    "route": "/team",
+    "kind": "form",
+    "label": "Create invitation for a workspace-less account",
+    "role": "ORG_OWNER",
+    "expected": "one-time link shown exactly once",
+    "actual": "link shown",
+    "network": "POST /team/invitations",
+    "pass": true
+  },
+  {
+    "route": "/team",
+    "kind": "status-action",
+    "label": "Token recoverability after reload",
+    "role": "ORG_OWNER",
+    "expected": "raw token absent from the listing",
+    "actual": "absent",
+    "pass": true
+  },
+  {
+    "route": "/invite",
+    "kind": "nav",
+    "label": "Open an invitation with no session",
+    "role": "invitee",
+    "expected": "the page renders instead of bouncing to sign-in",
+    "actual": "rendered",
+    "pass": true
+  },
+  {
+    "route": "/invite",
+    "kind": "form",
+    "label": "Accept invitation with a password",
+    "role": "invitee",
+    "expected": "membership created, then enter the workspace",
+    "actual": "entered /dashboard",
+    "network": "POST /api/session/accept-invitation",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "nav",
+    "label": "Workspace availability after accepting",
+    "role": "invitee",
+    "expected": "\"Downtown Studio\" is the active workspace",
+    "actual": "visible",
+    "pass": true
+  },
+  {
+    "route": "/invite",
+    "kind": "status-action",
+    "label": "Pre-session credentials after acceptance",
+    "role": "invitee",
+    "expected": "no JWT in storage, cookies or the URL",
+    "actual": "none readable",
+    "pass": true
+  },
+  {
+    "route": "/invite",
+    "kind": "form",
+    "label": "Re-use a consumed link while still a member",
+    "role": "invitee",
+    "expected": "idempotent -- no error shown",
+    "actual": "no error",
+    "pass": true
+  },
+  {
+    "route": "/team",
+    "kind": "table-action",
+    "label": "Remove member",
+    "role": "ORG_OWNER",
+    "expected": "DELETE membership, the row disappears",
+    "actual": "removed",
+    "network": "DELETE /team/members/{id}",
+    "pass": true
+  },
+  {
+    "route": "/invite",
+    "kind": "status-action",
+    "label": "Reopen link after removal",
+    "role": "removed member",
+    "expected": "honest \"no longer have access\", never \"You are in\"",
+    "actual": "told the truth",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "status-action",
+    "label": "Executive brief text",
+    "role": "ORG_OWNER",
+    "expected": "no \"No automations failed today.\" claim",
+    "actual": "absent",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "status-action",
+    "label": "Workflow/automation metrics",
+    "role": "ORG_OWNER",
+    "expected": "no invented workflow or automation metric",
+    "actual": "none present",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "nav",
+    "label": "Active workspace name in sidebar",
+    "role": "ORG_OWNER",
+    "expected": "shows \"Downtown Studio\"",
+    "actual": "visible",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "status-action",
+    "label": "Browser storage",
+    "role": "ORG_OWNER",
+    "expected": "no readable token in localStorage/sessionStorage",
+    "actual": "clean",
+    "pass": true
+  },
+  {
+    "route": "/agent",
+    "kind": "button",
+    "label": "Plan-preview control",
+    "role": "ORG_OWNER",
+    "expected": "control absent",
+    "actual": "absent",
+    "pass": true
+  },
+  {
+    "route": "/agent",
+    "kind": "select",
+    "label": "Tool list",
+    "role": "ORG_OWNER",
+    "expected": "tools populated from GET agent/tools",
+    "actual": "6 tools: getDashboard, createContact, searchContacts, createPipeline, createOpportunity, moveOpportunity",
+    "network": "GET /agent/tools",
+    "pass": true
+  },
+  {
+    "route": "/agent",
+    "kind": "form",
+    "label": "Parameter fields for createOpportunity",
+    "role": "ORG_OWNER",
+    "expected": "named parameters shown from the published schema",
+    "actual": "parameters shown",
+    "pass": true
+  },
+  {
+    "route": "/agent",
+    "kind": "status-action",
+    "label": "High-risk approval warning",
+    "role": "ORG_OWNER",
+    "expected": "console indicates this action may need approval",
+    "actual": "warning shown",
+    "pass": true
+  },
+  {
+    "route": "/approvals",
+    "kind": "nav",
+    "label": "Approvals page load",
+    "role": "ORG_OWNER",
+    "expected": "pending requests listed",
+    "actual": "listed",
+    "network": "GET /agent/approvals",
+    "pass": true
+  },
+  {
+    "route": "/approvals",
+    "kind": "status-action",
+    "label": "Request arguments",
+    "role": "ORG_OWNER",
+    "expected": "arguments shown verbatim",
+    "actual": "visible",
+    "pass": true
+  },
+  {
+    "route": "/approvals",
+    "kind": "status-action",
+    "label": "REJECTED status label",
+    "role": "ORG_OWNER",
+    "expected": "distinct from cancelled",
+    "actual": "\"Rejected by an approver\"",
+    "pass": true
+  },
+  {
+    "route": "/approvals",
+    "kind": "button",
+    "label": "Approve and run",
+    "role": "ORG_OWNER",
+    "expected": "POST resolve, row leaves pending",
+    "actual": "resolve requested",
+    "network": "POST /agent/approvals/2deaabcb-4490-41d3-b5f2-24902fb6cd2b/resolve",
+    "pass": true
+  },
+  {
+    "route": "/approvals",
+    "kind": "button",
+    "label": "Approve control for own request",
+    "role": "WORKSPACE_ADMIN (requester)",
+    "expected": "not offered to the requester",
+    "actual": "not offered",
+    "pass": true
+  },
+  {
+    "route": "/team",
+    "kind": "nav",
+    "label": "Team page load",
+    "role": "ORG_OWNER",
+    "expected": "members listed",
+    "actual": "listed",
+    "network": "GET /team/members",
+    "pass": true
+  },
+  {
+    "route": "/team",
+    "kind": "status-action",
+    "label": "Member payload",
+    "role": "ORG_OWNER",
+    "expected": "no password hash exposed",
+    "actual": "none present",
+    "pass": true
+  },
+  {
+    "route": "/team",
+    "kind": "form",
+    "label": "Invite form, blank email",
+    "role": "ORG_OWNER",
+    "expected": "refused before any request",
+    "actual": "no request made",
+    "network": "NO REQUEST",
+    "pass": true
+  },
+  {
+    "route": "/team",
+    "kind": "form",
+    "label": "Invite form, invalid email",
+    "role": "ORG_OWNER",
+    "expected": "refused before any request",
+    "actual": "no request made",
+    "network": "NO REQUEST",
+    "pass": true
+  },
+  {
+    "route": "/team",
+    "kind": "select",
+    "label": "Invite role select",
+    "role": "ORG_OWNER",
+    "expected": "SUPERADMIN and AGENT absent",
+    "actual": "only grantable roles",
+    "pass": true
+  },
+  {
+    "route": "/team",
+    "kind": "button",
+    "label": "Create link",
+    "role": "ORG_OWNER",
+    "expected": "POST invitation, one-time link shown with a warning",
+    "actual": "link shown with retrieval warning",
+    "network": "POST /team/invitations",
+    "pass": true
+  },
+  {
+    "route": "/team",
+    "kind": "table-action",
+    "label": "Pending invitation row",
+    "role": "ORG_OWNER",
+    "expected": "new invitation appears as pending",
+    "actual": "visible",
+    "pass": true
+  },
+  {
+    "route": "/team",
+    "kind": "table-action",
+    "label": "Revoke invitation",
+    "role": "ORG_OWNER",
+    "expected": "DELETE invitation, row disappears",
+    "actual": "delete requested",
+    "network": "DELETE /team/invitations/150509c6-58d0-4bcf-92bc-f21b24840341",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "modal",
+    "label": "Switch workspace",
+    "role": "ORG_OWNER",
+    "expected": "opens picker by READING memberships, no password prompt",
+    "actual": "memberships read",
+    "network": "GET /api/auth/memberships",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "modal",
+    "label": "Switch dialog password field",
+    "role": "ORG_OWNER",
+    "expected": "no password input",
+    "actual": "none",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "modal",
+    "label": "Workspace choice list",
+    "role": "ORG_OWNER",
+    "expected": "workspaces shown by name",
+    "actual": "\"Airport Location\" visible",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "button",
+    "label": "Open workspace \"Airport Location\"",
+    "role": "ORG_OWNER",
+    "expected": "POST switch-workspace, reload into the new workspace",
+    "actual": "switch requested",
+    "network": "POST /api/session/switch-workspace",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "status-action",
+    "label": "Post-switch workspace context",
+    "role": "ORG_OWNER",
+    "expected": "new workspace named and active",
+    "actual": "new workspace active",
+    "pass": true
+  }
+]
