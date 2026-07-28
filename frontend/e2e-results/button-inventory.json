@@ -330,7 +330,7 @@
     "role": "ORG_OWNER",
     "expected": "POST resolve, row leaves pending",
     "actual": "resolve requested",
-    "network": "POST /agent/approvals/9eb7e4de-c733-4efd-8996-09c863b5c1a2/resolve",
+    "network": "POST /agent/approvals/d87bd572-98a8-4aac-8211-8b015edec2cf/resolve",
     "pass": true
   },
   {
@@ -416,7 +416,7 @@
     "role": "ORG_OWNER",
     "expected": "DELETE invitation, row disappears",
     "actual": "delete requested",
-    "network": "DELETE /team/invitations/75bc939c-b0c5-4e82-9388-037f1d1b7c45",
+    "network": "DELETE /team/invitations/116cfb64-cd71-49e4-bfae-9ca13115e551",
     "pass": true
   },
   {

@@ -78,6 +78,16 @@ export default defineConfig({
       env: {
         NODE_ENV: 'production',
         BACKEND_API_URL: BACKEND_URL,
+        // The BFF refuses to serve registration in production mode without
+        // this: it could not carry a per-client rate-limit identity, and the
+        // limit would silently become a product-wide cap. Synthetic and
+        // test-only -- the real value comes from deployment configuration.
+        BFF_RATE_LIMIT_SIGNING_SECRET:
+          'synthetic-playwright-rate-limit-secret-32chars+',
+        // 0: these journeys drive the app through a browser with no edge in
+        // front, so no client identity is claimed. Identity propagation has its
+        // own suite (test-bff-rate-limit.ts) which runs the real topology.
+        FRONTEND_TRUSTED_PROXY_HOPS: '0',
         // Runtime only: the BFF reads this on the server, where reaching
         // 127.0.0.1 is correct. The BROWSER bundle is built against
         // UAT_PUBLIC_API_ORIGIN and rerouted by Playwright -- see helpers.ts.

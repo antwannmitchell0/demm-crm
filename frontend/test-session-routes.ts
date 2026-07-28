@@ -229,6 +229,13 @@ async function main() {
       HOSTNAME: '127.0.0.1',
       // Server-only runtime override, so no rebuild is needed to retarget.
       BACKEND_API_URL: `http://127.0.0.1:${stub.port}`,
+      // Registration refuses to serve in production mode without this. Hops 0
+      // means no client identity is claimed here, which is correct: this suite
+      // asserts route behaviour, and rate-limit identity has its own suite
+      // (test-bff-rate-limit.ts) that runs the real backend.
+      BFF_RATE_LIMIT_SIGNING_SECRET:
+        'synthetic-session-routes-secret-for-tests-32b+',
+      FRONTEND_TRUSTED_PROXY_HOPS: '0',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

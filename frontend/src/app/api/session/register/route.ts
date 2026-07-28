@@ -87,6 +87,11 @@ export async function POST(request: NextRequest) {
   // explicitly rather than spread, so nothing that arrived can ride along.
   const result = await callBackendAuth('api/auth/register', {
     method: 'POST',
+    // Carries the CUSTOMER's opaque, signed rate-limit identity. Without it the
+    // backend sees only this server's address and the per-client budget becomes
+    // a product-wide cap -- measured: an unrelated client's FIRST registration
+    // returned 429.
+    forwardClientIdentityFrom: request,
     body: {
       email,
       passwordPlain,

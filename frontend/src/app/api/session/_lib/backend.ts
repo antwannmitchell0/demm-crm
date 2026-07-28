@@ -6,6 +6,13 @@
  * into the backend or the wider network.
  */
 import { resolveBackendBaseUrl } from './config';
+import {
+  buildInternalClientIdentity,
+  CLIENT_KEY_HEADER,
+  CLIENT_TIMESTAMP_HEADER,
+  CLIENT_SIGNATURE_HEADER,
+} from './client-identity';
+import type { NextRequest } from 'next/server';
 
 /**
  * The complete set of backend paths these routes may reach. Anything else
@@ -64,7 +71,24 @@ export interface BackendResult {
  */
 export async function callBackendAuth(
   path: AllowedBackendPath,
-  init: { method: 'POST'; body?: unknown; bearerToken?: string },
+  init: {
+    method: 'POST';
+    body?: unknown;
+    bearerToken?: string;
+    /**
+     * OPT-IN, never automatic.
+     *
+     * Pass the incoming request to have this call carry the customer's signed,
+     * opaque rate-limit identity to the backend. Only routes whose backend
+     * endpoint is rate-limited per client need it -- attaching it to every call
+     * would widen the blast radius of the signing secret for no benefit and
+     * make the header meaningless through ubiquity.
+     *
+     * Currently: the two registration routes. Login and the invitation hops are
+     * not per-client throttled at the backend, so they do not claim an identity.
+     */
+    forwardClientIdentityFrom?: NextRequest;
+  },
 ): Promise<BackendResult> {
   if (!ALLOWED_BACKEND_PATHS.includes(path)) {
     throw new Error('Refusing to call a non-allowlisted backend path.');
@@ -82,6 +106,22 @@ export async function callBackendAuth(
     // browser request is forwarded blindly.
     if (init.bearerToken) {
       headers.Authorization = `Bearer ${init.bearerToken}`;
+    }
+
+    // All three headers or none. The backend rejects a partial set outright
+    // rather than falling back, so sending one without the others would turn a
+    // working request into a refused one.
+    if (init.forwardClientIdentityFrom) {
+      const identity = buildInternalClientIdentity(
+        init.forwardClientIdentityFrom,
+        init.method,
+        path,
+      );
+      if (identity) {
+        headers[CLIENT_KEY_HEADER] = identity.key;
+        headers[CLIENT_TIMESTAMP_HEADER] = identity.timestamp;
+        headers[CLIENT_SIGNATURE_HEADER] = identity.signature;
+      }
     }
 
     const response = await fetch(`${baseUrl}/${path}`, {
