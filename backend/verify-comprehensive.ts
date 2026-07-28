@@ -182,7 +182,13 @@ async function main() {
   // hashes, so we mint the same short-lived token login() would issue,
   // rather than trying to bcrypt-authenticate a fake hash.
   const mintPreAuthToken = (userId: string) =>
-    jwtService.sign({ sub: userId, purpose: 'workspace-selection' }, { expiresIn: '5m' });
+    jwtService.sign(
+      // Mirrors what login() actually mints. selectWorkspace() requires BOTH
+      // claims, so a helper that fabricates only the purpose would be testing a
+      // token shape the product never issues.
+      { sub: userId, tokenType: 'pre-session', purpose: 'workspace-selection' },
+      { expiresIn: '5m' },
+    );
 
   // 3. Multi-Workspace User Isolation
   console.log('\n--- Part 3: Multi-Workspace User Isolation ---');
