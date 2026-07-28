@@ -15,6 +15,7 @@ import {
   UserPlus,
   TrendingUp,
   FileBarChart,
+  ShieldCheck,
 } from 'lucide-react';
 import { logoutSession, logoutEverywhere, getActiveUser } from '../lib/api';
 import WorkspaceSwitcher from './WorkspaceSwitcher';
@@ -47,6 +48,11 @@ export default function Sidebar() {
     { name: 'Reports', href: '/marketing/reports', icon: FileBarChart },
     { name: 'Offers & Settings', href: '/marketing/offers', icon: Tag },
     { name: 'Agent Console', href: '/agent', icon: Terminal },
+    // Both of these were unreachable before Phase 2: approvals existed in the
+    // database with no endpoint that listed them, and there was no team
+    // management at all.
+    { name: 'Approvals', href: '/approvals', icon: ShieldCheck },
+    { name: 'Team', href: '/team', icon: UserIcon },
   ];
 
   return (
@@ -101,6 +107,23 @@ export default function Sidebar() {
             </div>
           </div>
         )}
+        {/* The active workspace, named. The session payload used to carry
+            workspaceId and role only, so a person with two workspaces had no
+            way to tell which one they were looking at -- the switcher said
+            "Switch workspace" and nothing said where they already were.
+            Rendered only when a name is actually present: a session
+            established before the backend sent one must show nothing rather
+            than "undefined". */}
+        {user?.workspaceName ? (
+          <div className="px-2 mb-3">
+            <p className="text-[10px] uppercase tracking-wider text-slate-600 font-medium">
+              Workspace
+            </p>
+            <p className="text-xs text-slate-300 truncate" title={user.workspaceName}>
+              {user.workspaceName}
+            </p>
+          </div>
+        ) : null}
         <WorkspaceSwitcher />
         <button
           onClick={handleLogout}

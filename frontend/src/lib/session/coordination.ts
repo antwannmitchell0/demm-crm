@@ -26,6 +26,14 @@ export interface SessionUserMeta {
   lastName: string;
   role: string;
   workspaceId: string;
+  /**
+   * Display names for the active context. Optional because a session
+   * established before the backend started sending them -- or by an older
+   * backend -- carries only the id. The UI must fall back rather than render
+   * "undefined", so nothing here may be assumed present.
+   */
+  workspaceName?: string;
+  organizationName?: string;
 }
 
 export type SessionMessage =

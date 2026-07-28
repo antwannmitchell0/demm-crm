@@ -119,18 +119,19 @@ async function runScenarios() {
   console.log(`Created Opportunity: ${opportunity.name} (Value: $${opportunity.value})`);
   console.log('✅ PASS: CRM entity creation verified.');
 
-  // Scenario 3: Ask the Agent to create a wedding lead pipeline (Plan Preview)
-  console.log('\n--- Scenario 3-4: Agent Plan Preview and Approve Workflow ---');
-  const preview = await agentService.previewPlan(workspace.id, owner.id, 'Create a wedding pipeline');
-  console.log(`Plan Status: ${preview.status}`);
-  console.log(`Staged Plan Actions: ${JSON.stringify(preview.plan, null, 2)}`);
-  
-  // Approve and execute plan
+  // Scenario 3-4: Ask the Agent to create a pipeline through the tool registry.
+  //
+  // This previously called agentService.previewPlan() and executed whatever it
+  // returned. That method has been deleted: it keyword-matched the description
+  // and returned hard-coded steps, so this scenario was demonstrating a canned
+  // response rather than the agent deciding anything. The tool call below is
+  // what actually exists.
+  console.log('\n--- Scenario 3-4: Agent tool execution workflow ---');
   const exec1 = await agentService.executeTool(
     workspace.id,
     owner.id,
-    preview.plan[0].action,
-    preview.plan[0].args,
+    'createPipeline',
+    { name: 'Wedding Lead Pipeline' },
     'ORG_OWNER',
   );
   console.log(`Execution result: status=${exec1.status}`);

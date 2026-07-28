@@ -30,6 +30,17 @@ export function useSession(): SessionSnapshot {
  * refresh round-trip preserves those pages unchanged while still removing the
  * token from browser storage.
  */
+/**
+ * Routes reachable WITHOUT a session.
+ *
+ * `/invite` belongs here because the person it exists for provably has no
+ * session: they were invited to their first workspace, hold no membership, and
+ * therefore cannot be issued an access token. Bouncing them to sign-in sent
+ * them in a circle -- signing in gave them nothing to sign in TO, and reopening
+ * the link bounced them again. The page authenticates them itself.
+ */
+const PUBLIC_ROUTES = new Set(['/', '/invite']);
+
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<SessionSnapshot>(getSessionSnapshot);
   const router = useRouter();
@@ -51,7 +62,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   // its token is gone. Clearing the token is the security control; this closes
   // the misleading-UI gap that would otherwise remain until navigation.
   useEffect(() => {
-    if (session.state === 'UNAUTHENTICATED' && pathname !== '/') {
+    if (session.state === 'UNAUTHENTICATED' && !PUBLIC_ROUTES.has(pathname)) {
       router.replace('/');
     }
   }, [session.state, pathname, router]);

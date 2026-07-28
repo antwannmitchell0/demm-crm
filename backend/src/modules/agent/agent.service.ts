@@ -33,6 +33,10 @@ export const APPROVAL_AUDIT_ACTIONS = {
   // A rejection is a human decision that terminates the approval; this is a
   // blocked attempt that changes nothing.
   SELF_APPROVAL_REFUSED: 'APPROVAL_SELF_APPROVAL_REFUSED',
+  // The REQUESTER withdrew their own request before anyone decided. Distinct
+  // from APPROVAL_REJECTED, which records an approver's decision: these rows
+  // carry no approver at all.
+  CANCELLED: 'APPROVAL_CANCELLED',
 } as const;
 
 /**
@@ -89,6 +93,21 @@ interface RunToolParams {
   approvalContext?: ApprovalExecutionContext;
 }
 
+/**
+ * One argument a tool accepts, as published to callers.
+ *
+ * `required` mirrors the underlying service signature, so it is a statement
+ * about what the handler will actually dereference -- not a UI hint. Keep the
+ * two in step: a parameter documented as optional but dereferenced
+ * unconditionally is a lie that produces a 500 instead of a 400.
+ */
+export interface AgentToolParameter {
+  name: string;
+  type: 'string' | 'number' | 'boolean' | 'string[]' | 'object';
+  required: boolean;
+  description: string;
+}
+
 @Injectable()
 export class AgentService {
   private toolRegistry = new Map<
@@ -96,6 +115,14 @@ export class AgentService {
     {
       description: string;
       permissions: string[];
+      /**
+       * Published so a console can warn that submitting this action may stage
+       * an approval rather than run. `isHighRisk` is a predicate over the
+       * arguments and cannot be evaluated before the user has supplied them;
+       * this flag says only whether the predicate can ever return true.
+       */
+      canRequireApproval: boolean;
+      parameters: AgentToolParameter[];
       isHighRisk: (args: any) => boolean;
       handler: (workspaceId: string, userId: string, args: any) => Promise<any>;
     }
@@ -127,6 +154,10 @@ export class AgentService {
       description:
         'Retrieve the daily executive brief and key performance indicators.',
       permissions: ['ORG_OWNER', 'ORG_ADMIN', 'WORKSPACE_ADMIN', 'USER'],
+      canRequireApproval: false,
+      // Takes nothing. An empty array is the honest answer; omitting the key
+      // would be indistinguishable from "not documented yet".
+      parameters: [],
       isHighRisk: () => false,
       handler: async (workspaceId, userId) => {
         const user = await this.prisma.user.findUnique({
@@ -139,6 +170,52 @@ export class AgentService {
     this.toolRegistry.set('createContact', {
       description: 'Create a new contact record.',
       permissions: ['ORG_OWNER', 'ORG_ADMIN', 'WORKSPACE_ADMIN'],
+      canRequireApproval: false,
+      parameters: [
+        {
+          name: 'firstName',
+          type: 'string',
+          required: true,
+          description: "The contact's given name.",
+        },
+        {
+          name: 'lastName',
+          type: 'string',
+          required: true,
+          description: "The contact's family name.",
+        },
+        {
+          name: 'emails',
+          type: 'string[]',
+          required: false,
+          description: 'One or more email addresses.',
+        },
+        {
+          name: 'phones',
+          type: 'string[]',
+          required: false,
+          description: 'One or more phone numbers.',
+        },
+        {
+          name: 'tags',
+          type: 'string[]',
+          required: false,
+          description: 'Free-form labels used for filtering and search.',
+        },
+        {
+          name: 'source',
+          type: 'string',
+          required: false,
+          description: 'Where this contact came from, e.g. "referral".',
+        },
+        {
+          name: 'companyId',
+          type: 'string',
+          required: false,
+          description:
+            'Id of a company in this workspace to link the contact to.',
+        },
+      ],
       isHighRisk: () => false,
       handler: async (workspaceId, userId, args) => {
         return this.contactService.create(workspaceId, args);
@@ -148,6 +225,16 @@ export class AgentService {
     this.toolRegistry.set('searchContacts', {
       description: 'Search contacts by name, email, phone, or tags.',
       permissions: ['ORG_OWNER', 'ORG_ADMIN', 'WORKSPACE_ADMIN', 'USER'],
+      canRequireApproval: false,
+      parameters: [
+        {
+          name: 'query',
+          type: 'string',
+          required: false,
+          description:
+            'Text to match against name, email, phone or tags. Omitted or empty returns every contact in the workspace.',
+        },
+      ],
       isHighRisk: () => false,
       handler: async (workspaceId, userId, args) => {
         return this.contactService.search(workspaceId, args.query || '');
@@ -157,6 +244,15 @@ export class AgentService {
     this.toolRegistry.set('createPipeline', {
       description: 'Create a new deal pipeline.',
       permissions: ['ORG_OWNER', 'ORG_ADMIN', 'WORKSPACE_ADMIN'],
+      canRequireApproval: false,
+      parameters: [
+        {
+          name: 'name',
+          type: 'string',
+          required: true,
+          description: 'Display name for the pipeline.',
+        },
+      ],
       isHighRisk: () => false,
       handler: async (workspaceId, userId, args) => {
         return this.pipelineService.create(workspaceId, args.name);
@@ -166,6 +262,48 @@ export class AgentService {
     this.toolRegistry.set('createOpportunity', {
       description: 'Create a new deal opportunity.',
       permissions: ['ORG_OWNER', 'ORG_ADMIN', 'WORKSPACE_ADMIN'],
+      // The only tool whose isHighRisk predicate can return true.
+      canRequireApproval: true,
+      parameters: [
+        {
+          name: 'name',
+          type: 'string',
+          required: true,
+          description: 'Display name for the deal.',
+        },
+        {
+          name: 'pipelineId',
+          type: 'string',
+          required: true,
+          description: 'Id of the pipeline this deal belongs to.',
+        },
+        {
+          name: 'stageId',
+          type: 'string',
+          required: true,
+          description:
+            'Id of the stage to open the deal in. Must belong to the pipeline above.',
+        },
+        {
+          name: 'value',
+          type: 'number',
+          required: false,
+          description:
+            'Deal value. Above 5000 this action is staged for approval instead of running immediately.',
+        },
+        {
+          name: 'probability',
+          type: 'number',
+          required: false,
+          description: 'Percentage likelihood of closing, 0-100.',
+        },
+        {
+          name: 'contactId',
+          type: 'string',
+          required: false,
+          description: 'Id of the contact this deal is with.',
+        },
+      ],
       isHighRisk: (args) => (args.value || 0) > 5000,
       handler: async (workspaceId, userId, args) => {
         return this.opportunityService.create(workspaceId, args);
@@ -175,6 +313,21 @@ export class AgentService {
     this.toolRegistry.set('moveOpportunity', {
       description: 'Move an opportunity to another stage.',
       permissions: ['ORG_OWNER', 'ORG_ADMIN', 'WORKSPACE_ADMIN'],
+      canRequireApproval: false,
+      parameters: [
+        {
+          name: 'id',
+          type: 'string',
+          required: true,
+          description: 'Id of the opportunity to move.',
+        },
+        {
+          name: 'stageId',
+          type: 'string',
+          required: true,
+          description: 'Id of the destination stage.',
+        },
+      ],
       isHighRisk: () => false,
       handler: async (workspaceId, userId, args) => {
         return this.opportunityService.moveStage(
@@ -193,40 +346,23 @@ export class AgentService {
         name,
         description: value.description,
         permissions: value.permissions,
+        canRequireApproval: value.canRequireApproval,
+        // Copied, not referenced: the registry is a long-lived singleton and a
+        // caller mutating the published array would silently reshape what every
+        // later caller is told this tool accepts.
+        parameters: value.parameters.map((p) => ({ ...p })),
       });
     }
     return list;
   }
 
-  previewPlan(workspaceId: string, userId: string, description: string) {
-    const plan = [];
-    if (description.toLowerCase().includes('wedding')) {
-      plan.push({
-        action: 'createPipeline',
-        args: { name: 'Wedding Lead Pipeline' },
-      });
-      plan.push({
-        action: 'createContact',
-        args: {
-          firstName: 'Sarah',
-          lastName: 'Wedding-Lead',
-          emails: ['sarah@wed.com'],
-        },
-      });
-    } else {
-      plan.push({
-        action: 'createPipeline',
-        args: { name: 'Standard Pipeline' },
-      });
-    }
-
-    return {
-      status: 'PLAN_PREVIEW',
-      plan,
-      message:
-        'Proposed execution plan compiled. Approve to execute or cancel.',
-    };
-  }
+  // REMOVED: previewPlan(). It advertised itself as a planner but matched the
+  // word "wedding" in the description and returned hard-coded steps, one of
+  // which created a contact -- name, surname and email address -- that the user
+  // had never mentioned. Anything else returned a single "Standard Pipeline"
+  // step. It was reachable by any token holder and had no route to becoming
+  // correct, so it was deleted rather than hidden. A real planner belongs to
+  // the AI workflow phase and must be built against the tool registry below.
 
   cancelExecution(sessionId: string) {
     const active = this.activeExecutions.get(sessionId);
@@ -745,6 +881,145 @@ export class AgentService {
    * exactly-once execution is DEFERRED TO PHASE 5 (durable execution substrate
    * with claimable, resumable jobs and a transactional outbox).
    */
+  /**
+   * The approval inbox.
+   *
+   * Before this existed, a staged high-risk action was invisible: nothing
+   * listed approvals, so `POST /agent/approvals/:id/resolve` could only be
+   * called by someone who already had an id they had no way to obtain. Staged
+   * actions sat until they expired.
+   *
+   * PENDING first, then everything else newest-first. Not filtered to PENDING
+   * by default: a queue that silently hides resolved items reads as "nothing
+   * happened" when in fact something was rejected or expired, which is the
+   * opposite of what an approval record is for.
+   */
+  async listApprovals(workspaceId: string, status?: ApprovalStatus) {
+    const approvals = await this.prisma.agentApproval.findMany({
+      where: { workspaceId, ...(status ? { status } : {}) },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Requester emails are resolved in one query rather than per row.
+    const requesterIds = [...new Set(approvals.map((a) => a.requestedById))];
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: requesterIds } },
+      select: { id: true, email: true, firstName: true, lastName: true },
+    });
+    const byId = new Map(users.map((u) => [u.id, u]));
+
+    const rank = (s: ApprovalStatus) => (s === ApprovalStatus.PENDING ? 0 : 1);
+
+    return {
+      approvals: approvals
+        .sort(
+          (a, b) =>
+            rank(a.status) - rank(b.status) ||
+            b.createdAt.getTime() - a.createdAt.getTime(),
+        )
+        .map((a) => ({
+          id: a.id,
+          toolName: a.toolName,
+          // Already sanitized at staging time -- staging refuses outright if
+          // any argument would have to be redacted to be stored, so what is
+          // here is what was submitted.
+          arguments: a.arguments,
+          status: a.status,
+          // The role the REQUESTER held when they staged it. Showing the
+          // approver's own role here would misrepresent the authority the
+          // action will actually execute under.
+          requesterRole: a.requesterRole,
+          requestedById: a.requestedById,
+          requestedByEmail: byId.get(a.requestedById)?.email ?? null,
+          requestedByName: byId.get(a.requestedById)
+            ? `${byId.get(a.requestedById)!.firstName} ${byId.get(a.requestedById)!.lastName}`
+            : null,
+          createdAt: a.createdAt.toISOString(),
+          expiresAt: a.expiresAt ? a.expiresAt.toISOString() : null,
+          resolvedById: a.resolvedById,
+        })),
+    };
+  }
+
+  /**
+   * Withdraws a still-pending request, by the person who made it.
+   *
+   * A requester who staged something by mistake previously had no way out:
+   * only an administrator could reject it, and only if they somehow learned it
+   * existed. Cancellation is restricted to the requester on purpose -- an
+   * administrator already has REJECT, and letting them cancel instead would let
+   * a decision be recorded as if no decision had been made.
+   *
+   * CANCELLED is a distinct terminal state rather than a reuse of REJECTED. On
+   * a REJECTED row `resolvedById` names the approver who decided; on a
+   * CANCELLED row it is null because nobody approved anything. Collapsing the
+   * two would produce a row claiming a human declined the action with no human
+   * attached to it.
+   */
+  async cancelApproval(
+    workspaceId: string,
+    requesterId: string,
+    approvalId: string,
+  ) {
+    const existing = await this.prisma.agentApproval.findUnique({
+      where: { id: approvalId },
+    });
+
+    // Tenant isolation, matching resolveApproval: an approval belonging to
+    // another workspace is indistinguishable from one that does not exist.
+    if (!existing || existing.workspaceId !== workspaceId) {
+      throw new NotFoundException('Staged approval record not found');
+    }
+
+    if (existing.requestedById !== requesterId) {
+      throw new ForbiddenException(
+        'Only the person who requested this action can withdraw it. An administrator can reject it instead.',
+      );
+    }
+
+    // Conditional claim, like every other state transition here: two
+    // simultaneous cancels cannot both write an audit row, and a cancel racing
+    // a resolve cannot overwrite the approver's decision.
+    const claim = await this.prisma.agentApproval.updateMany({
+      where: {
+        id: approvalId,
+        workspaceId,
+        status: ApprovalStatus.PENDING,
+      },
+      data: { status: ApprovalStatus.CANCELLED },
+    });
+
+    if (claim.count !== 1) {
+      throw new ConflictException({
+        statusCode: 409,
+        reason: APPROVAL_REFUSAL_REASONS.NOT_PENDING,
+        message:
+          'This request is no longer pending, so it cannot be withdrawn. Nothing was changed.',
+      });
+    }
+
+    await this.writeApprovalAudit({
+      action: APPROVAL_AUDIT_ACTIONS.CANCELLED,
+      workspaceId,
+      actorType: 'USER',
+      actorId: requesterId,
+      approvalId,
+      toolName: existing.toolName,
+      requestedById: existing.requestedById,
+      requesterRole: existing.requesterRole,
+      // Explicitly null: no approver acted. This is the field that makes
+      // CANCELLED distinguishable from REJECTED in the audit record.
+      approvedById: null,
+      outcome: 'CANCELLED',
+    });
+
+    return {
+      id: approvalId,
+      status: ApprovalStatus.CANCELLED,
+      message: 'Request withdrawn. Nothing was executed.',
+    };
+  }
+
   async resolveApproval(
     workspaceId: string,
     approverId: string,

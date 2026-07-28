@@ -670,3 +670,433 @@ cookie, email, or client name before sending.**
 
 Check 7 matters most today: before this build, two tabs refreshing at the same moment
 could each mint a session from one token. Now exactly one wins and the other retries.
+
+---
+
+## 18. Phase 2 — the gaps that made the product unusable for a team
+
+Branch `phase2/agent-contract-and-honesty`, PR #5, CI run `30295741309` (both jobs green,
+all 15 suites present in the log). Not merged at time of writing.
+
+### Fabrications removed
+
+- `POST /agent/plan/preview` **deleted**, not hidden. It advertised a planner and
+  keyword-matched the description: "wedding" returned two hard-coded steps, one of which
+  created a contact ("Sarah Wedding-Lead", sarah@wed.com) the user had never mentioned.
+  It was reachable by any token holder and had no route to becoming correct.
+- The dashboard brief no longer asserts **"No automations failed today."** There is no
+  automation engine; the line reported the absence of failures in a system that cannot
+  fail. A comment in `dashboard.service.ts` says why it must not return.
+
+### Closed defects
+
+| Was | Now |
+|---|---|
+| `execute` / `execute/cancel` bound raw body properties, bypassing the ValidationPipe. Missing `toolName` → `404 Tool undefined not found`; missing `sessionId` → `201 CANCELLED` having cancelled nothing | Whole-body DTOs; `whitelist` + `forbidNonWhitelisted` apply |
+| `GET /agent/tools` published no parameter schemas | Every tool publishes name/type/required/description per parameter, plus `canRequireApproval` |
+| Workspace switching required the password again | `GET /api/auth/memberships` + `POST /api/auth/switch-workspace` |
+| Session payload carried `workspaceId` and role only | Also carries `workspaceName` and `organizationName`; the sidebar shows the active workspace |
+| `Invitation` model existed with **zero** code referencing it | Six `/team` endpoints + `POST /team/invitations/accept`; token hashed at rest, returned once |
+| No endpoint listed approvals | `GET /agent/approvals`, member-readable, PENDING first, DTO-validated status filter |
+| A requester could not withdraw their own request | `POST /agent/approvals/:id/cancel`; `CANCELLED` is a distinct terminal state |
+| No UI for any of the above | `/approvals`, `/team`, `/invite` |
+
+### Last-owner protection needed a lock
+
+Removing or demoting the final `ORG_OWNER` orphans a workspace. The rule is a
+check-then-act, and under READ COMMITTED two transactions removing *different* owners
+each see the other's row still present, both count two, and both commit. Same shape as
+the Phase 0C-R refresh-token amplification, same answer: `SELECT ... FOR UPDATE` on the
+Workspace row.
+
+**Proven by mutation:** with the lock removed, three concurrent removals all succeed and
+the workspace is left with **zero owners**. With it, one always remains.
+
+### Migrations
+
+- `20260727180000_invitation_token_hash_and_provenance` — replaces plaintext `token` with
+  `tokenHash`, adds `invitedById` / `acceptedById` / `acceptedAt`, adds `REVOKED`.
+  **Deletes existing Invitation rows**: a plaintext token cannot become a hash and stay
+  verifiable. Safe because nothing had ever created one.
+- `20260727190000_approval_cancelled_status` — additive enum value.
+
+Both ship rollbacks stating what they cannot restore. Applied only to
+`demm_crm_phase2_test`; **`demm_crm` is untouched at `applied=12 tables=73`**.
+
+### Also fixed in passing
+
+- `test-refresh-concurrency.ts` used fixed subdomains and deleted nothing, so it could
+  only ever run **once** against a given database. Invisible on CI, where the database
+  dies with the job. Now run-scoped with teardown, verified by running it twice.
+- `test-workspace-selection.ts` called `teardownSession()` at the end of `main()` rather
+  than in a `finally`, so any throw left the refresh timer pending and the suite **hung
+  instead of failing**.
+- `start:prod` ran `node dist/main`, which does not exist. Because the root-level
+  `test-*.ts` / `verify-*.ts` files are inside the compile, TypeScript's common source
+  root is `.` and the entry is `dist/src/main.js` — which the Dockerfile has always used,
+  so deploys were unaffected and only the npm script was dead.
+
+### Known limitations carried out of Phase 2
+
+- **The three new pages have not been exercised in a browser.** They are type-checked and
+  production-built, and their data contracts are covered by 77 backend assertions against
+  a real PostgreSQL instance, but that is not the same as proving the React renders. The
+  preview tooling in the authoring session was pinned to the quarantined Desktop checkout
+  (§9), not to the release clone, so no click-through was possible.
+- **No email delivery.** An invitation produces a link the administrator sends themselves.
+  The `/team` page says so rather than implying a message was sent.
+- **A brand-new person must create an account before accepting.** `register` always
+  creates a new Organization and Workspace, so an invitee ends up with a spare workspace
+  alongside the one they were invited to. Acceptance itself works; the tidy path
+  (`register` with an invitation token) is not built.
+- **Approval expiry is still lazy** — evaluated on the next resolve attempt, not swept.
+- Phases 3–11 of the finishing plan are untouched. The workflow engine still does not
+  exist, and no launch pack exists.
+
+---
+
+## 19. Memory and review receipts — actually captured
+
+Earlier reports in this effort said `PREPARED LOCALLY — REMOTE CAPTURE NOT CONFIRMED`.
+That was wrong, and the correct word was "untried", not "unavailable". The documented
+mechanisms work.
+
+### DOM26 v3 — reachable
+
+`GET https://intelligence.demmmarketing.com/health` → `200`,
+`{"status":"online","engrams":62468,"version":"3.0.0","stack":"pgvector+ollama"}`.
+Direct IP (`34.138.159.127:8004`) times out, exactly as CLAUDE.md documents; the
+domain is the canonical path.
+
+Captured engrams, domain `DEMM`, all embedded:
+
+| id | subject | salience |
+|---|---|---|
+| `eng_a7d0672c73` | Team-authorization privilege escalation found and fixed | 0.95 |
+| `eng_d9f31052ba` | Destructive invitation migration replaced with in-place backfill | 0.90 |
+| `eng_dd7f19b486` | Replay-detection residual risk accepted with measurements | 0.92 |
+
+No tenant content, credentials, tokens, hashes, emails or customer data was sent.
+
+### G-Brain — reachable
+
+`mcp__gbrain__*` is available through ToolSearch. Page
+`demm-crm-phase2-security-decisions` written, 2 chunks embedded. `auto_link` and
+`auto_timeline` reported `skipped: remote` and `write_through` reported
+`no_repo_configured` — server-side configuration, not a failed write.
+
+### G-Stack — skills on disk, partially registered
+
+`~/.claude/skills/gstack/` contains `review`, `cso`, `qa`, `qa-only`,
+`design-review`, `devex-review`, `health`, `careful`, `plan-*-review` and others.
+
+- `gstack` (router) and `review` ARE registered with the Skill tool and were invoked.
+- `cso` exists on disk with valid frontmatter but is NOT registered in this session;
+  it was executed by reading and following the skill file directly.
+
+**Gates executed against `05b6d5d` → `f7d3051`:**
+
+| Gate | How | Result |
+|---|---|---|
+| gstack router | Skill tool | routed to `/review` |
+| `/review` | Skill tool | 1 HIGH finding, fixed |
+| `cso` security sweep | skill file followed directly | 1 NOT A FINDING, rest clean |
+
+**Findings:**
+
+- **HIGH — fixed (`f7d3051`).** `acceptInvitation` created a membership with no
+  existing-membership check. An invitation issued before the person joined by
+  another route stays PENDING; accepting it violated
+  `@@unique([userId, organizationId, workspaceId])` → P2002 → HTTP 500. Because
+  acceptance is one transaction, the status claim rolled back too, so the
+  invitation returned to PENDING and every retry failed identically — a
+  permanently stuck link reporting a server error. Proven by mutation: 500
+  without the guard, 400 with it. Regression assertions 35a/35b added.
+- **NOT A FINDING.** `stripe-webhook.controller.ts` is the only unauthenticated
+  mutating surface. It fails closed when `STRIPE_WEBHOOK_SECRET` is absent,
+  requires the `stripe-signature` header, and verifies via
+  `stripe.webhooks.constructEvent`.
+- **Clean.** No raw token or hash reaches a log or an audit payload; `tokenHash`
+  never leaves the service; no tenant table is read by id alone without a
+  workspace scope.
+- **Process note.** A grep for `WorkspaceGuard` gave a false negative on
+  `invitation.controller.ts` because the word appears in a comment there. The
+  absence of that guard on `POST /team/invitations/accept` is deliberate and
+  documented — an invitee has no membership yet.
+
+### Still not run
+
+`/qa`, `/design-review`, `/devex-review`, `/health`, and the accessibility gate.
+
+---
+
+## 20. Invitation acceptance — idempotent and terminal (`26e8715`)
+
+CI run `30326569865`: all three jobs green.
+
+### Three states of one bug
+
+| Version | Symptom | Why it was still wrong |
+|---|---|---|
+| v1 | HTTP **500** | `membership.create` hit `@@unique([userId, organizationId, workspaceId])` |
+| v2 (`f7d3051`) | HTTP **400** | the `throw` sat INSIDE the transaction, rolling the status claim back — invitation returned to PENDING and every retry failed identically |
+| v3 (`e7e0a54`) | HTTP **200** + outcome | conflict-safe insert; invitation always terminal |
+
+v2 also missed a **second race entirely**: two DIFFERENT pending invitations for
+the same user and workspace. Each accept claims its OWN row, so both claims
+succeed; both then read "no membership" and both insert. Measured: statuses
+`201` and `500`, with the second row stuck at PENDING.
+
+### Why read-then-create cannot work here
+
+The read is not the arbiter. Any check-then-act across two different rows has a
+window where both actors observe the same pre-state — the same shape as the
+last-owner rule (`SELECT ... FOR UPDATE`) and refresh-token rotation
+(conditional UPDATE). Here the arbiter already existed: the compound unique
+index.
+
+`INSERT ... ON CONFLICT DO NOTHING`, with the affected row count deciding the
+outcome. No exception, so the claim always stands. `DO NOTHING` and never
+`DO UPDATE`: an old invitation must not rewrite an existing membership's role.
+
+### Contract
+
+| outcome | meaning | HTTP |
+|---|---|---|
+| `JOINED` | created a new membership | 200 |
+| `ALREADY_MEMBER` | account already had access; role unchanged | 200 |
+| `ALREADY_ACCEPTED` | same account retried a consumed link | 200 |
+
+200 rather than 201 because the endpoint is idempotent — 201 asserts creation,
+true only on the JOINED path. The `outcome` field carries the distinction.
+No contract depended on 201: the route shipped in this unreleased phase and its
+only caller (`frontend/src/lib/api.ts:354`) treats any 2xx as success.
+
+### Evidence
+
+`test-invitation-acceptance.ts` — 33 assertions, **11 failing beforehand**.
+Mutation: with `ON CONFLICT DO NOTHING` removed, assertion 9 → 500,
+assertion 29 → `200,500`, assertions 11 and 31 → rows stuck at PENDING.
+Restored: 33/33.
+
+Suites updated to the new contract: `test-team-management.ts` 25/30/35a,
+`test-invitation-migration.ts` 21.
+
+### Memory receipts
+
+- DOM26 v3: `eng_c965e53805` (this fix), `eng_d2c70ca4d5` (the G-Stack finding)
+- G-Brain: `demm-crm-invitation-acceptance-idempotency` (2 chunks)
+
+### Remaining before merge — NOT done
+
+- Browser journeys: invitation end-to-end, UI role changes, cross-tab, approval
+  filtering, contacts. Current suite is 6 journeys / 26 controls.
+- All accessibility and keyboard testing.
+- G-Stack gates not yet run: `/qa`, `/design-review`, `/devex-review`, `/health`.
+- Phase 0 tag `v0.1.4-phase0-baseline` absent; PR #5 unmerged; no staging deploy.
+- Communications Core not started.
+
+---
+
+## 21. Strict same-link idempotency (`5442356`, `b90753d`)
+
+### "Does not crash" was not idempotent
+
+Six simultaneous requests for the SAME link by the SAME person produced one 200
+and several 400s — the loser of the conditional claim threw:
+
+```
+new member      -> 200,400,400,400,200,200
+existing member -> 200,400,400,400,400,200
+```
+
+Every one had the same intent and the same correct end state.
+
+**Fix:** on claim loss, re-read inside the transaction; when the row is ACCEPTED
+by this same `userId`, return `ALREADY_ACCEPTED` rather than throwing. Consumed
+by anyone else, revoked, or expired still refuses, with the same generic message
+so a caller never learns who used it.
+
+Contract, all HTTP 200: exactly one `JOINED` or `ALREADY_MEMBER`, every loser
+`ALREADY_ACCEPTED`, one membership, **one** acceptance audit, invitation terminal.
+
+### `hasAccess` / `role` come from the membership, never the invitation
+
+The old code fell back to `invitation.role`. An evicted user reopening their
+link was told they still held `ORG_OWNER`. The invitation records what was
+*offered*, not what is *held*. Now `hasAccess:false`, `role:null`, and the
+membership is **not** recreated — an administrator's removal stands.
+
+### The downstream defect this exposed
+
+`/invite` discarded the response: call, `setPhase DONE`, redirect. Once 200 also
+meant "already used, no access", it announced **"You are in"** and dropped an
+evicted user into a workspace they cannot open. Now reads `hasAccess` and renders
+a distinct `NO_ACCESS` state.
+
+**Lesson:** widening a contract is not backwards-compatible just because the
+status code didn't change. Grep the callers before shipping the widening.
+
+### Evidence
+
+`test-invitation-acceptance.ts` 53/53 (20 new assertions 34–53, **6 failing
+beforehand**). Mutation: re-read removed → `400,200,400,400,200,200` and
+`400,200,400,400,400,400`. Restored → 53/53.
+Backend: team 56/0, team-authz 32/0, invitation-migration 24/0, lint/build clean.
+Frontend: typecheck clean, production build clean with both guards.
+CI `30364270826` green on `5442356`.
+
+### Receipts
+
+DOM26 v3 `eng_b300831cc0` · G-Brain `demm-crm-strict-idempotency-and-honest-clients`
+
+### Still outstanding
+
+G-Stack `/qa`, `/design-review`, `/devex-review`, `/health`; full browser
+journeys (6 / 26 controls); all accessibility and keyboard testing; Phase 0 tag;
+PR #5 merge; staging deploy; Communications Core.
+
+### 21a. Invitation browser journey — WIP, declared not coverage
+
+`frontend/e2e/invitation.spec.ts` exists and is marked `test.fixme` — **not**
+`skip`. Both journeys time out on the first `fill()` on the Team page; cause not
+yet identified.
+
+`fixme` is deliberate: it reports as expected-to-fail rather than vanishing
+silently from the run. **Do not count this file as coverage until it runs.**
+
+What it will prove, and why it matters: the `/invite` page rendering
+`hasAccess:false` honestly. That behaviour is proven at the API layer (53
+assertions) but the browser gap is exactly what let the "You are in" defect ship
+to an evicted user. Browser UAT remains **6 journeys / 26 controls**.
+
+---
+
+## 22. P1 — a brand-new teammate cannot accept an invitation
+
+**Found by removing the `fixme` and letting the browser journey run.** This is a
+product defect, not a test defect, and it blocks PR #5.
+
+### Root cause
+
+Login is two-step: password → `preAuthToken` → **select workspace** → access
+token. An invited person who belongs to no workspace yet has nothing to select,
+so no access token is ever issued.
+
+`/invite` gates on `getAuthToken()` (`src/app/invite/page.tsx:48`) and the
+backend route is behind `JwtAuthGuard`. Both require an access token the invitee
+can never obtain. They are bounced to `/`.
+
+The exact person invitations exist for is the one person who cannot use one.
+
+### Evidence
+
+Browser snapshot at failure — the invitee is on the login page, not `/invite`:
+
+```yaml
+- main:
+  - heading "DEMM CRM"
+  - paragraph: WELCOME BACK TO THE FUTURE
+  - textbox "Email address"
+  - textbox "Password"
+  - button "Sign In"
+```
+
+Trace, screenshot and console preserved under
+`frontend/test-results/invitation-an-invited-pers-*/`.
+
+**Ruled out first, with evidence, before concluding this:** the `/team` page
+renders correctly on full navigation (URL `/team`, `data-session-state`
+`AUTHENTICATED`, email input count 1), and `fill()` succeeds in **12ms** and
+**48ms**. The original 60s timeout was a stale server holding port 3101 from a
+prior run, not a locator or hydration problem.
+
+### Fix options — needs an owner decision
+
+1. **Issue a workspace-less access token** when an account has no memberships
+   (no `workspaceId` claim), so it can reach `/invite` and nothing else.
+   Preserves "possession of the link is necessary but not sufficient".
+2. **Accept the `preAuthToken`** on `/team/invitations/accept` only.
+   Smaller blast radius; adds a second credential type to one route.
+3. **Make acceptance public**, keyed on token + email match. Rejected: it drops
+   the authenticated-recipient check that stops a forwarded link being used.
+
+Recommendation: option 1.
+
+### Status
+
+`frontend/e2e/invitation.spec.ts` is committed **without** `fixme` and **fails**.
+That is deliberate. CI going red is the correct signal while a core journey is
+broken — the same principle as the Gate 3 guard. Do not re-add a bypass to make
+the pipeline green.
+
+Browser UAT: **6 journeys / 26 controls passing**, 2 journeys failing on this P1.
+
+---
+
+## 22. BLOCKER — an invited person cannot accept their first invitation
+
+Found by finally running the invitation journey in a real browser. **This blocks
+PR #5.**
+
+### My previous diagnosis was wrong
+
+Handoff §21a said "both journeys time out on the first `fill()` on the Team
+page". That was incorrect. Measured with diagnostics:
+
+```
+DIAG URL          http://127.0.0.1:3100/team     <- correct, no redirect
+DIAG SESSION      AUTHENTICATED                  <- restoration completed
+DIAG INPUT COUNT  1                              <- locator resolves uniquely
+```
+
+Zero console errors, zero `pageerror`, zero failed requests, zero HTTP >= 400.
+The Team page is fine. The failure was downstream and moved each time a blocking
+step was passed.
+
+### The actual defect
+
+A person invited to their **first** workspace cannot accept the invitation.
+
+```
+after login:        "You signed in, but this account is not part of any
+                     workspace yet."          -- no session established
+opening the link:   URL becomes "/"           -- /invite requires
+                     getAuthToken(), finds none, bounces to Sign In
+```
+
+**Why.** `login()` returns only a `preAuthToken`. `issueTokensForMembership()`
+refuses to mint a session without a membership. So an account with zero
+workspaces can never hold an access token — and `/invite` is gated on
+`getAuthToken()`. The invitation link is unusable by exactly the person it
+exists for.
+
+**Why 53 backend assertions missed it.** Every API test signs a JWT directly,
+bypassing login entirely. The gap is only visible through the real sign-in flow.
+
+### The fix is an auth change, not a test edit
+
+The backend must be able to issue a session for an authenticated account with no
+membership — either a workspace-less access token, or a narrowly-scoped
+invitation-acceptance token. `POST /team/invitations/accept` already uses
+`JwtAuthGuard` alone with no `WorkspaceGuard`, so it would accept a
+workspace-less token as-is.
+
+Design decision required before implementing: whether a workspace-less token is
+generally issuable (simpler, wider blast radius) or minted only for invitation
+acceptance (narrower, more machinery).
+
+### Harness corrections made along the way
+
+- **Per-persona browser contexts.** The spec drove three accounts through one
+  page using `clearCookies()`. That leaves the app holding in-memory session
+  state for the previous account and the login form never re-renders — the 60s
+  budget is consumed waiting for `getByPlaceholder('Email address')`. A new
+  context is what a second real person actually is.
+- **`page.unrouteAll({ behavior: 'ignoreErrors' })` in `afterEach`.** Without it
+  `route.fetch()` can still be in flight when a test ends, producing
+  `route.fetch: Test ended` — a flake unrelated to the behaviour under test.
+
+`invitation.spec.ts` stays `test.fixme` with the true reason recorded in the
+file. Removing it requires the auth change above. Playwright: **6 passed, 2
+fixme.** Browser UAT remains **6 journeys / 26 controls**.

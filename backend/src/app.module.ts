@@ -1,5 +1,6 @@
 import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { ProxyAwareThrottlerGuard } from './common/guards/proxy-aware-throttler.guard';
 import { APP_GUARD } from '@nestjs/core';
 import { PrismaService } from './prisma.service';
 import { AuthModule } from './modules/auth/auth.module';
@@ -13,6 +14,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { AgentModule } from './modules/agent/agent.module';
 import { Dom26rModule } from './modules/dom26r/dom26r.module';
 import { MarketingModule } from './modules/marketing/marketing.module';
+import { TeamModule } from './modules/team/team.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
@@ -36,6 +38,7 @@ import { CorrelationIdMiddleware } from './common/middleware/correlation-id.midd
     AgentModule,
     Dom26rModule,
     MarketingModule,
+    TeamModule,
   ],
   controllers: [AppController],
   providers: [
@@ -43,7 +46,7 @@ import { CorrelationIdMiddleware } from './common/middleware/correlation-id.midd
     PrismaService,
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: ProxyAwareThrottlerGuard,
     },
   ],
 })

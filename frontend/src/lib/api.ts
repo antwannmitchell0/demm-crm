@@ -20,6 +20,13 @@ export interface User {
   lastName: string;
   role: string;
   workspaceId: string;
+  /**
+   * Display names for the active context, mirroring SessionUserMeta. Optional
+   * for the same reason: a session established by an older backend carries the
+   * ids only, so the UI must fall back rather than render "undefined".
+   */
+  workspaceName?: string;
+  organizationName?: string;
 }
 
 /**
@@ -95,6 +102,33 @@ export class ApiError extends Error {
  */
 const NON_RETRYABLE_PREFIX = 'api/auth/';
 
+/**
+ * Routes under `api/auth/` that are ordinary bearer-authorised READS rather
+ * than credential exchanges, and so may be refreshed and replayed like any
+ * other resource.
+ *
+ * The prefix rule above exists because a 401 from a credential route means the
+ * credential itself was rejected -- refreshing and replaying is meaningless at
+ * best and recursive at worst. `memberships` is not that: it is a plain list of
+ * the caller's workspaces that happens to be mounted on the auth controller,
+ * and a 401 from it means only that the access token aged out. Excluding it
+ * would strand the workspace picker exactly when a user has left a tab open.
+ *
+ * Note the direction this enumeration fails in. The prefix rule's own comment
+ * records that an earlier ENUMERATION OF CREDENTIAL ROUTES omitted `register`
+ * -- an omission that made a credential route retryable. This list is the
+ * inverse: it enumerates the SAFE routes, so forgetting to add one costs a
+ * retry, not a security property.
+ */
+const RETRYABLE_AUTH_ROUTES = new Set(['api/auth/memberships']);
+
+function isNonRetryable(endpoint: string): boolean {
+  if (!endpoint.startsWith(NON_RETRYABLE_PREFIX)) return false;
+  // Compare on the path only: a query string must not smuggle a credential
+  // route past this check, and must not stop a safe one from matching.
+  return !RETRYABLE_AUTH_ROUTES.has(endpoint.split('?')[0]);
+}
+
 async function request(
   endpoint: string,
   options: RequestInit = {},
@@ -126,11 +160,7 @@ async function request(
   // guarantees termination: a second 401 falls through to the normal error path
   // instead of looping. Auth endpoints are excluded so a refresh can never
   // recursively trigger another refresh.
-  if (
-    response.status === 401 &&
-    !hasRetried &&
-    !endpoint.startsWith(NON_RETRYABLE_PREFIX)
-  ) {
+  if (response.status === 401 && !hasRetried && !isNonRetryable(endpoint)) {
     const refreshed = await sessionClient.refreshSession();
     if (refreshed) {
       return request(endpoint, options, true);
@@ -169,6 +199,27 @@ export const api = {
     passwordPlain: string,
   ): Promise<sessionClient.LoginOutcome> => {
     return sessionClient.beginLogin(email, passwordPlain);
+  },
+
+  /**
+   * Creates an account for somebody holding an invitation link.
+   *
+   * No workspaceName or subdomain, unlike register(): this person is joining
+   * an existing workspace, not founding one, and passing those would create a
+   * spare organization they never asked for. It grants no membership either --
+   * accepting the invitation is the separate step that does that.
+   */
+  registerInvited: async (data: {
+    token: string;
+    email: string;
+    passwordPlain: string;
+    firstName: string;
+    lastName: string;
+  }) => {
+    return request('api/auth/register-invited', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
   },
 
   register: async (data: {
@@ -266,6 +317,102 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ toolName, arguments: args }),
     });
+  },
+
+  // Approvals. Before these existed a staged high-risk action was invisible:
+  // nothing listed approvals, so the resolve endpoint could only be called by
+  // someone who already had an id they had no way to obtain.
+  getApprovals: async (status?: string) => {
+    return request(
+      `agent/approvals${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+    );
+  },
+
+  resolveApproval: async (id: string, action: 'APPROVE' | 'REJECT') => {
+    return request(`agent/approvals/${id}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    });
+  },
+
+  /** Withdraws your OWN pending request. Approvers reject; requesters cancel. */
+  cancelApproval: async (id: string) => {
+    return request(`agent/approvals/${id}/cancel`, { method: 'POST' });
+  },
+
+  // Team
+  getTeamMembers: async () => {
+    return request('team/members');
+  },
+
+  getTeamInvitations: async () => {
+    return request('team/invitations');
+  },
+
+  inviteTeamMember: async (email: string, role: string) => {
+    return request('team/invitations', {
+      method: 'POST',
+      body: JSON.stringify({ email, role }),
+    });
+  },
+
+  revokeInvitation: async (id: string) => {
+    return request(`team/invitations/${id}`, { method: 'DELETE' });
+  },
+
+  changeMemberRole: async (userId: string, role: string) => {
+    return request(`team/members/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role }),
+    });
+  },
+
+  removeMember: async (userId: string) => {
+    return request(`team/members/${userId}`, { method: 'DELETE' });
+  },
+
+  acceptInvitation: async (token: string) => {
+    return request('team/invitations/accept', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    });
+  },
+
+  /**
+   * Acceptance for somebody who cannot sign in yet -- invited to their FIRST
+   * workspace, so no membership exists and no access token can be minted.
+   *
+   * Goes to the BFF, not the backend. The server-side chain mints a capability
+   * scoped to this one invitation and spends it immediately; neither that
+   * capability nor the pre-session token is ever returned here, and the
+   * refresh token arrives only as an httpOnly cookie.
+   */
+  acceptInvitationWithCredentials: async (
+    email: string,
+    passwordPlain: string,
+    token: string,
+  ) => {
+    const response = await fetch('/api/session/accept-invitation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ email, passwordPlain, token }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new ApiError(
+        (data as { error?: string })?.error ??
+          'That invitation could not be accepted.',
+        response.status,
+      );
+    }
+    return data as {
+      outcome: string | null;
+      hasAccess: boolean;
+      role: string | null;
+      access_token: string | null;
+      user: unknown;
+    };
   },
 
   // Marketing: Offers

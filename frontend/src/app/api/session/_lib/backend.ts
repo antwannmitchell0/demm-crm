@@ -19,8 +19,22 @@ import { resolveBackendBaseUrl } from './config';
 const ALLOWED_BACKEND_PATHS = [
   'api/auth/login',
   'api/auth/select-workspace',
+  // Spends the httpOnly refresh cookie to move the session into another
+  // workspace. It belongs here, and not in a general proxy, for the same reason
+  // as refresh: this is the only tier that may read that cookie.
+  'api/auth/switch-workspace',
   'api/auth/refresh',
   'api/auth/logout',
+  // The two hops of pre-session invitation acceptance. They are here, and not
+  // reachable from the browser, because the capability they exchange must
+  // never leave the server: it is minted in the first hop and spent in the
+  // second, within one request handler.
+  //
+  // 'team/...' has no 'api/auth' prefix because the backend mounts
+  // AuthController at 'api/auth' and every other controller unprefixed -- the
+  // same load-bearing inconsistency noted above.
+  'api/auth/pre-session/invitation-capability',
+  'team/invitations/accept-pre-session',
 ] as const;
 
 export type AllowedBackendPath = (typeof ALLOWED_BACKEND_PATHS)[number];

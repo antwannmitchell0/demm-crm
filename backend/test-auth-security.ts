@@ -265,7 +265,21 @@ async function runAuthSecurityTests() {
     where: { action: 'REFRESH_TOKEN_REUSE_DETECTED', userId: userA.id },
   });
 
-  // Replay the already-rotated token A1.
+  // MEASURED LIMIT, asserted rather than hidden. A replay arriving inside the
+  // tolerance is indistinguishable from a concurrent second tab, so it is
+  // refused without family revocation -- the documented residual detection
+  // window (AuthService.CLOCK_SKEW_ALLOWANCE_MS). Push the revocation outside
+  // that window so the theft path is exercised deterministically.
+  await prisma.refreshToken.updateMany({
+    where: {
+      hashedToken: crypto
+        .createHash('sha256')
+        .update(sessA.refresh_token)
+        .digest('hex'),
+    },
+    data: { revokedAt: new Date(Date.now() - 60_000) },
+  });
+
   const replayRes = await doRefresh(sessA.refresh_token);
   check(
     'T6: replaying the already-rotated token A is rejected with 401',
@@ -342,16 +356,25 @@ async function runAuthSecurityTests() {
     orderBy: { createdAt: 'asc' },
   });
   // TWO events are expected here, and that is correct rather than a
-  // double-count: EVERY presentation of a known-revoked token is a replay
-  // signal. This section presents two of them -- the deliberate replay of
-  // token A, and the check above that token B is now dead (token B having just
-  // been revoked by that first event). Only unknown and expired tokens are
-  // silent.
+  // CONTRACT CHANGED. It used to be "every presentation of a known-revoked
+  // token is a replay signal", and this section produced two of them. That
+  // rule also fired on a second browser tab presenting the same cookie a few
+  // milliseconds late, which revoked the family and signed a real user out of
+  // every device -- measured intermittently in the workspace-switching suite.
+  //
+  // A presentation is now audited as reuse only when it is classified as
+  // THEFT: revoked longer ago than the grace window, or carrying no revokedAt
+  // at all. This section produces exactly one such event -- the backdated
+  // replay of token A. The immediate replay before it is benign and silent, as
+  // are unknown and expired tokens.
+  //
+  // Token B is not a second event: the backdated replay already revoked it, and
+  // presenting it lands inside the grace window of ITS revocation.
   const reuseAuditDelta = reuseAudits.length - reuseAuditsBefore;
   const latestReuseAudit = reuseAudits[reuseAudits.length - 1];
   check(
-    `T6: each presentation of a revoked token writes a REFRESH_TOKEN_REUSE_DETECTED record (delta=${reuseAuditDelta}, expected 2)`,
-    reuseAuditDelta === 2 &&
+    `T6: the backdated replay writes one REFRESH_TOKEN_REUSE_DETECTED record; token B, revoked moments ago, falls inside the documented window and is silent (delta=${reuseAuditDelta}, expected 1)`,
+    reuseAuditDelta === 1 &&
       latestReuseAudit.actorType === 'SYSTEM' &&
       latestReuseAudit.actorId === userA.id &&
       (latestReuseAudit.payload as any)?.outcome ===

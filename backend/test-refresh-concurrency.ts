@@ -39,26 +39,37 @@ const authService = new AuthService(prisma, jwtService);
 
 const hash = (t: string) => crypto.createHash('sha256').update(t).digest('hex');
 
+// Fixtures were originally keyed on the block name alone (`conc-race`), and
+// nothing was ever deleted. That is invisible on CI, where the database is
+// created and destroyed with the job, but it meant a second local run collided
+// on Workspace.subdomain and the suite could only ever be run once against a
+// given database. Every fixture is now run-scoped and removed in teardown.
+const RUN = `${process.pid}-${Math.floor(process.uptime() * 1e6)}`;
+const createdOrgIds: string[] = [];
+const createdUserIds: string[] = [];
+
 /** Creates an isolated org/workspace/user/membership and returns the ids. */
 async function seedAccount(tag: string) {
   const org = await prisma.organization.create({
-    data: { name: `Concurrency Org ${tag}` },
+    data: { name: `Concurrency Org ${tag} ${RUN}` },
   });
+  createdOrgIds.push(org.id);
   const workspace = await prisma.workspace.create({
     data: {
       name: `Concurrency WS ${tag}`,
-      subdomain: `conc-${tag}`,
+      subdomain: `conc-${tag}-${RUN}`,
       organizationId: org.id,
     },
   });
   const user = await prisma.user.create({
     data: {
-      email: `conc-${tag}@example.invalid`,
+      email: `conc-${tag}-${RUN}@example.invalid`,
       passwordHash: 'not-a-real-hash',
       firstName: 'Conc',
       lastName: tag,
     },
   });
+  createdUserIds.push(user.id);
   await prisma.membership.create({
     data: {
       userId: user.id,
@@ -322,12 +333,35 @@ async function main() {
 
   console.log('==========================================================');
   console.log(`📊 ATOMIC REFRESH SUITE: ${pass} passed, ${fail} failed.`);
-  await prisma.$disconnect();
   if (fail > 0) process.exitCode = 1;
 }
 
-main().catch(async (e) => {
-  console.error(e);
+/**
+ * Removes every fixture this run created, so the suite is re-runnable against
+ * the same database. RefreshToken and Membership are deleted explicitly:
+ * Organization cascades to Workspace, but these rows hang off User.
+ */
+async function teardown() {
+  try {
+    await prisma.refreshToken.deleteMany({
+      where: { userId: { in: createdUserIds } },
+    });
+    await prisma.membership.deleteMany({
+      where: { userId: { in: createdUserIds } },
+    });
+    await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
+    await prisma.organization.deleteMany({
+      where: { id: { in: createdOrgIds } },
+    });
+  } catch {
+    // Teardown must never mask a real result.
+  }
   await prisma.$disconnect().catch(() => undefined);
-  process.exitCode = 1;
-});
+}
+
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exitCode = 1;
+  })
+  .finally(teardown);

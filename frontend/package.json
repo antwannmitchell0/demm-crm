@@ -11,13 +11,16 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "tsc --noEmit && next build",
-    "test:e2e": "node ../backend/node_modules/ts-node/dist/bin.js test-pilot-e2e.ts",
+    "test:e2e": "playwright test",
     "test:session-routes": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\",\"jsx\":\"react-jsx\",\"esModuleInterop\":true}' node ../backend/node_modules/ts-node/dist/bin.js test-session-routes.ts",
     "test:session-orchestration": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\",\"jsx\":\"react-jsx\",\"esModuleInterop\":true}' node ../backend/node_modules/ts-node/dist/bin.js test-session-orchestration.ts",
     "test:workspace-selection": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\",\"jsx\":\"react-jsx\",\"esModuleInterop\":true}' node ../backend/node_modules/ts-node/dist/bin.js test-workspace-selection.ts",
     "test:honest-frontend": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\",\"jsx\":\"react-jsx\",\"esModuleInterop\":true}' node ../backend/node_modules/ts-node/dist/bin.js test-honest-frontend.ts",
     "test:build-guard": "node scripts/test-build-guard.js",
-    "verify": "npm run lint && npm run typecheck && npm run test:e2e && npm run build"
+    "verify": "npm run lint && npm run typecheck && npm run test:e2e && npm run build",
+    "test:password-free-switch": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\",\"jsx\":\"react-jsx\",\"esModuleInterop\":true}' node ../backend/node_modules/ts-node/dist/bin.js test-password-free-switch.ts",
+    "test:e2e:headed": "playwright test --headed",
+    "verify:journeys": "node scripts/verify-critical-journeys-enabled.js"
   },
   "dependencies": {
     "lucide-react": "^1.25.0",
@@ -26,12 +29,17 @@
     "react-dom": "19.2.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.0",
     "@tailwindcss/postcss": "^4",
+    "@types/bcrypt": "^6.0.0",
     "@types/node": "^20",
+    "@types/pg": "^8.20.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "bcrypt": "^6.0.0",
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
+    "pg": "^8.22.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

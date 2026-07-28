@@ -308,6 +308,24 @@ async function main() {
   // this suite recorded that as the live contract. T6 treats a replayed rotated
   // token as suspected theft and revokes every active refresh token for that
   // user, so the newest token must now be dead too.
+  // MEASURED LIMIT, made deterministic. A replay arriving inside the tolerance
+  // is indistinguishable from a concurrent second tab and is refused WITHOUT
+  // family revocation -- the documented residual detection window (see
+  // AuthService.CLOCK_SKEW_ALLOWANCE_MS). This suite replays immediately, so
+  // the revocation is backdated past that window to exercise the theft path.
+  await prisma.refreshToken.updateMany({
+    where: {
+      hashedToken: require('crypto')
+        .createHash('sha256')
+        .update(selectA.body.refresh_token)
+        .digest('hex'),
+    },
+    data: { revokedAt: new Date(Date.now() - 60_000) },
+  });
+  await makeRequest('POST', '/api/auth/refresh', {
+    refreshToken: selectA.body.refresh_token,
+  });
+
   const refreshAfterReuse = await makeRequest('POST', '/api/auth/refresh', {
     refreshToken: refreshA.body.refresh_token,
   });

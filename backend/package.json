@@ -25,7 +25,17 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main"
+    "start:prod": "node dist/src/main",
+    "test:agent-contract": "npx ts-node test-agent-contract.ts",
+    "test:workspace-switching": "npx ts-node test-workspace-switching.ts",
+    "test:team": "npx ts-node test-team-management.ts",
+    "test:approval-inbox": "npx ts-node test-approval-inbox.ts",
+    "test:team-authz": "npx ts-node test-team-authorization.ts",
+    "test:invitation-migration": "npx ts-node test-invitation-migration.ts",
+    "test:invitation-accept": "npx ts-node test-invitation-acceptance.ts",
+    "test:token-purpose": "npx ts-node test-token-purpose.ts",
+    "test:invitation-pre-session": "TRUSTED_PROXY_HOPS=1 ts-node test-invitation-pre-session.ts",
+    "test:invited-registration": "TRUSTED_PROXY_HOPS=1 ts-node test-invited-registration.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

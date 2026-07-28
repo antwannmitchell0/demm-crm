@@ -58,12 +58,17 @@ export class DashboardService {
 
     const userName = user.firstName || 'User';
 
+    // Every line below is derived from a query performed above. An
+    // unconditional "No automations failed today." used to sit between the
+    // revenue line and the sign-off: there is no automation engine in this
+    // product, so it reported the absence of failures in a system that cannot
+    // fail. Do not reinstate it, or anything like it, until something real is
+    // being measured.
     const brief = `${greeting}, ${userName}.
 ${leadsToday} new lead${leadsToday === 1 ? '' : 's'} entered today.
 ${likelyToBookCount} are highly likely to close.
 ${contactsNeedingFollowup} need immediate follow-up.
 Revenue this month is projected at $${projectedRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.
-No automations failed today.
 How can I assist you with your pipelines?`;
 
     return {
