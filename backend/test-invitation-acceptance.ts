@@ -47,7 +47,8 @@ function check(label: string, condition: boolean, detail?: string) {
   }
 }
 
-const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
+const sha256 = (v: string) =>
+  crypto.createHash('sha256').update(v).digest('hex');
 
 let activeApp: { close: () => Promise<void> } | null = null;
 let ctx: { orgIds: string[]; userIds: string[] } | null = null;
@@ -62,8 +63,12 @@ async function teardown() {
     await prisma.invitation
       .deleteMany({ where: { organizationId: { in: ctx.orgIds } } })
       .catch(() => undefined);
-    await prisma.auditLog.deleteMany({ where: { userId: u } }).catch(() => undefined);
-    await prisma.membership.deleteMany({ where: { userId: u } }).catch(() => undefined);
+    await prisma.auditLog
+      .deleteMany({ where: { userId: u } })
+      .catch(() => undefined);
+    await prisma.membership
+      .deleteMany({ where: { userId: u } })
+      .catch(() => undefined);
     await prisma.user.deleteMany({ where: { id: u } }).catch(() => undefined);
     await prisma.organization
       .deleteMany({ where: { id: { in: ctx.orgIds } } })
@@ -86,19 +91,29 @@ async function main() {
 
   const app = await NestFactory.create(AppModule, { logger: false });
   app.useGlobalPipes(
-    new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
   );
   await app.listen(0);
   activeApp = app;
   const base = `http://127.0.0.1:${(app.getHttpServer().address() as any).port}`;
 
   const suffix = Date.now();
-  const org = await prisma.organization.create({ data: { name: `Accept Org ${suffix}` } });
+  const org = await prisma.organization.create({
+    data: { name: `Accept Org ${suffix}` },
+  });
   const otherOrg = await prisma.organization.create({
     data: { name: `Accept Other ${suffix}` },
   });
   const ws = await prisma.workspace.create({
-    data: { organizationId: org.id, name: 'Accept WS', subdomain: `accept-${suffix}` },
+    data: {
+      organizationId: org.id,
+      name: 'Accept WS',
+      subdomain: `accept-${suffix}`,
+    },
   });
   const foreignWs = await prisma.workspace.create({
     data: {
@@ -138,16 +153,31 @@ async function main() {
 
   ctx = { orgIds: [org.id, otherOrg.id], userIds };
 
-  const mkMembership = (userId: string, workspaceId: string, role: Role, orgId = org.id) =>
+  const mkMembership = (
+    userId: string,
+    workspaceId: string,
+    role: Role,
+    orgId = org.id,
+  ) =>
     prisma.membership.create({
-      data: { userId, organizationId: orgId, workspaceId, role, permissions: [] },
+      data: {
+        userId,
+        organizationId: orgId,
+        workspaceId,
+        role,
+        permissions: [],
+      },
     });
 
   /** Creates an invitation and returns the RAW token alongside the row. */
   const mkInvite = async (
     email: string,
     role: Role = Role.USER,
-    opts: { workspaceId?: string; expiresAt?: Date; status?: InvitationStatus } = {},
+    opts: {
+      workspaceId?: string;
+      expiresAt?: Date;
+      status?: InvitationStatus;
+    } = {},
   ) => {
     const raw = crypto.randomBytes(32).toString('hex');
     const workspaceId = opts.workspaceId ?? ws.id;
@@ -159,7 +189,8 @@ async function main() {
         organizationId: workspaceId === foreignWs.id ? otherOrg.id : org.id,
         tokenHash: sha256(raw),
         status: opts.status ?? InvitationStatus.PENDING,
-        expiresAt: opts.expiresAt ?? new Date(Date.now() + 7 * 24 * 3600 * 1000),
+        expiresAt:
+          opts.expiresAt ?? new Date(Date.now() + 7 * 24 * 3600 * 1000),
       },
     });
     return { raw, row };
@@ -168,14 +199,18 @@ async function main() {
   const accept = (token: string, raw: string) =>
     fetch(`${base}/team/invitations/accept`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
       body: JSON.stringify({ token: raw }),
     });
 
   const statusOf = async (id: string) =>
     (await prisma.invitation.findUnique({ where: { id } }))?.status ?? null;
   const roleOf = async (userId: string, workspaceId = ws.id) =>
-    (await prisma.membership.findFirst({ where: { userId, workspaceId } }))?.role ?? null;
+    (await prisma.membership.findFirst({ where: { userId, workspaceId } }))
+      ?.role ?? null;
   const memberCount = async (userId: string, workspaceId = ws.id) =>
     prisma.membership.count({ where: { userId, workspaceId } });
 
@@ -185,8 +220,14 @@ async function main() {
     const res = await accept(newcomer.token, raw);
     const body: any = await res.json().catch(() => ({}));
 
-    check(`1. A nonmember accepting gets 200 (got ${res.status})`, res.status === 200);
-    check(`2. The outcome is JOINED (got "${body.outcome}")`, body.outcome === 'JOINED');
+    check(
+      `1. A nonmember accepting gets 200 (got ${res.status})`,
+      res.status === 200,
+    );
+    check(
+      `2. The outcome is JOINED (got "${body.outcome}")`,
+      body.outcome === 'JOINED',
+    );
     check(
       `3. Exactly one membership is created (got ${await memberCount(newcomer.user.id)})`,
       (await memberCount(newcomer.user.id)) === 1,
@@ -226,7 +267,10 @@ async function main() {
     const res = await accept(member.token, raw);
     const body: any = await res.json().catch(() => ({}));
 
-    check(`9. An existing member accepting gets 200 (got ${res.status})`, res.status === 200);
+    check(
+      `9. An existing member accepting gets 200 (got ${res.status})`,
+      res.status === 200,
+    );
     check(
       `10. The outcome is ALREADY_MEMBER (got "${body.outcome}")`,
       body.outcome === 'ALREADY_MEMBER',
@@ -273,7 +317,10 @@ async function main() {
   {
     const { raw, row } = await mkInvite(newcomer.user.email, Role.USER);
     const wrong = await accept(stranger.token, raw);
-    check(`17. A different account cannot use it (got ${wrong.status})`, wrong.status === 403);
+    check(
+      `17. A different account cannot use it (got ${wrong.status})`,
+      wrong.status === 403,
+    );
     check(
       `18. That refusal leaves it PENDING, not consumed (got ${await statusOf(row.id)})`,
       (await statusOf(row.id)) === InvitationStatus.PENDING,
@@ -287,7 +334,10 @@ async function main() {
       status: InvitationStatus.REVOKED,
     });
     const revoked = await accept(stranger.token, rawRevoked);
-    check(`20. A revoked invitation is unusable (got ${revoked.status})`, revoked.status >= 400);
+    check(
+      `20. A revoked invitation is unusable (got ${revoked.status})`,
+      revoked.status >= 400,
+    );
 
     const { raw: rawExpired, row: expiredRow } = await mkInvite(
       stranger.user.email,
@@ -295,17 +345,28 @@ async function main() {
       { expiresAt: new Date(Date.now() - 1000) },
     );
     const expired = await accept(stranger.token, rawExpired);
-    check(`21. An expired invitation is unusable (got ${expired.status})`, expired.status >= 400);
+    check(
+      `21. An expired invitation is unusable (got ${expired.status})`,
+      expired.status >= 400,
+    );
     check(
       `22. Expiry is recorded, not merely rejected (got ${await statusOf(expiredRow.id)})`,
       (await statusOf(expiredRow.id)) === InvitationStatus.EXPIRED,
     );
-    check('23. Neither creates a membership', (await memberCount(stranger.user.id)) === 0);
+    check(
+      '23. Neither creates a membership',
+      (await memberCount(stranger.user.id)) === 0,
+    );
   }
 
   // ===== E. Cross-tenant =====
   {
-    await mkMembership(crossTenant.user.id, foreignWs.id, Role.ORG_OWNER, otherOrg.id);
+    await mkMembership(
+      crossTenant.user.id,
+      foreignWs.id,
+      Role.ORG_OWNER,
+      otherOrg.id,
+    );
     const { raw } = await mkInvite(crossTenant.user.email, Role.USER);
     const res = await accept(crossTenant.token, raw);
     const body: any = await res.json().catch(() => ({}));
@@ -323,7 +384,9 @@ async function main() {
   {
     const { raw, row } = await mkInvite(racer.user.email, Role.USER);
     const results = await Promise.all(
-      Array.from({ length: 6 }, () => accept(racer.token, raw).then((r) => r.status)),
+      Array.from({ length: 6 }, () =>
+        accept(racer.token, raw).then((r) => r.status),
+      ),
     );
     const errors = results.filter((s) => s >= 500);
     check(
@@ -400,11 +463,166 @@ async function main() {
       '33. No audit payload contains a token or hash',
       !auditBlob.includes(raw) && !auditBlob.includes(sha256(raw)),
     );
-    await prisma.invitation.delete({ where: { id: row.id } }).catch(() => undefined);
+    await prisma.invitation
+      .delete({ where: { id: row.id } })
+      .catch(() => undefined);
   }
 
+  // ===== I. STRICT same-link idempotency =====
+  //
+  // "Does not crash" is not idempotent. Six simultaneous requests for the SAME
+  // token by the SAME authenticated person previously produced one 200 and five
+  // 400s, because the loser of the conditional claim threw. Every loser must
+  // instead be told the truth: the link was already accepted, by them.
+  {
+    const strictNew = await mkUser('strictnew');
+    const { raw, row } = await mkInvite(strictNew.user.email, Role.USER);
+
+    const responses = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        accept(strictNew.token, raw).then(async (r) => ({
+          status: r.status,
+          body: (await r.json().catch(() => ({}))) as any,
+        })),
+      ),
+    );
+    const statuses = responses.map((r) => r.status);
+    const outcomes = responses.map((r) => r.body?.outcome);
+
+    check(
+      `34. Six simultaneous new-member requests ALL return 200 (got ${statuses.join(',')})`,
+      statuses.every((s) => s === 200),
+    );
+    check(
+      `35. Exactly one is JOINED (got ${outcomes.filter((o) => o === 'JOINED').length})`,
+      outcomes.filter((o) => o === 'JOINED').length === 1,
+    );
+    check(
+      `36. The other five are ALREADY_ACCEPTED [${outcomes.join(',')}]`,
+      outcomes.filter((o) => o === 'ALREADY_ACCEPTED').length === 5,
+    );
+    check(
+      `37. Exactly one membership exists (got ${await memberCount(strictNew.user.id)})`,
+      (await memberCount(strictNew.user.id)) === 1,
+    );
+    check(
+      `38. The invitation is terminal (got ${await statusOf(row.id)})`,
+      TERMINAL.includes((await statusOf(row.id))!),
+    );
+    const audits = await prisma.auditLog.count({
+      where: {
+        userId: strictNew.user.id,
+        action: 'team.invitation.accepted',
+        workspaceId: ws.id,
+      },
+    });
+    check(`39. Exactly ONE acceptance audit is written, not six (got ${audits})`, audits === 1);
+  }
+
+  // ===== J. STRICT same-link idempotency for an EXISTING member =====
+  {
+    const strictMember = await mkUser('strictmember');
+    await mkMembership(strictMember.user.id, ws.id, Role.WORKSPACE_ADMIN);
+    const { raw } = await mkInvite(strictMember.user.email, Role.USER);
+
+    const responses = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        accept(strictMember.token, raw).then(async (r) => ({
+          status: r.status,
+          body: (await r.json().catch(() => ({}))) as any,
+        })),
+      ),
+    );
+    const statuses = responses.map((r) => r.status);
+    const outcomes = responses.map((r) => r.body?.outcome);
+
+    check(
+      `40. Six simultaneous existing-member requests ALL return 200 (got ${statuses.join(',')})`,
+      statuses.every((s) => s === 200),
+    );
+    check(
+      `41. Exactly one is ALREADY_MEMBER (got ${outcomes.filter((o) => o === 'ALREADY_MEMBER').length})`,
+      outcomes.filter((o) => o === 'ALREADY_MEMBER').length === 1,
+    );
+    check(
+      `42. The other five are ALREADY_ACCEPTED [${outcomes.join(',')}]`,
+      outcomes.filter((o) => o === 'ALREADY_ACCEPTED').length === 5,
+    );
+    check(
+      `43. The existing role is untouched (got ${await roleOf(strictMember.user.id)})`,
+      (await roleOf(strictMember.user.id)) === Role.WORKSPACE_ADMIN,
+    );
+  }
+
+  // ===== K. Membership REMOVED after acceptance =====
+  //
+  // The link was genuinely used, so it stays terminal -- but the person no
+  // longer has access. Reporting the invitation's historical role here would
+  // tell them they hold a role they do not, and re-creating the membership
+  // would silently undo an administrator's removal.
+  {
+    const evicted = await mkUser('evicted');
+    const { raw, row } = await mkInvite(evicted.user.email, Role.ORG_OWNER);
+
+    const first = await accept(evicted.token, raw);
+    const firstBody: any = await first.json().catch(() => ({}));
+    check(
+      `44. Precondition: the invitation was genuinely used (got "${firstBody.outcome}")`,
+      firstBody.outcome === 'JOINED',
+    );
+
+    await prisma.membership.deleteMany({
+      where: { userId: evicted.user.id, workspaceId: ws.id },
+    });
+
+    const retry = await accept(evicted.token, raw);
+    const retryBody: any = await retry.json().catch(() => ({}));
+
+    check(`45. Reopening the link after removal returns 200 (got ${retry.status})`, retry.status === 200);
+    check(
+      `46. The outcome is ALREADY_ACCEPTED (got "${retryBody.outcome}")`,
+      retryBody.outcome === 'ALREADY_ACCEPTED',
+    );
+    check(
+      `47. hasAccess is FALSE -- it must not imply access they no longer have (got ${retryBody.hasAccess})`,
+      retryBody.hasAccess === false,
+    );
+    check(
+      `48. role is NULL, not the invitation's historical ORG_OWNER (got ${JSON.stringify(retryBody.role)})`,
+      retryBody.role === null,
+    );
+    check(
+      `49. Membership is NOT recreated -- an administrator's removal stands (got ${await memberCount(evicted.user.id)})`,
+      (await memberCount(evicted.user.id)) === 0,
+    );
+    check(
+      `50. The invitation stays terminal (got ${await statusOf(row.id)})`,
+      TERMINAL.includes((await statusOf(row.id))!),
+    );
+  }
+
+  // ===== L. A consumed link still refuses the WRONG account =====
+  {
+    const consumedBy = await mkUser('consumedby');
+    const intruder = await mkUser('intruder');
+    const { raw } = await mkInvite(consumedBy.user.email, Role.USER);
+    await accept(consumedBy.token, raw);
+
+    const res = await accept(intruder.token, raw);
+    const body: any = await res.json().catch(() => ({}));
+    check(`51. A consumed link is still refused to a different account (got ${res.status})`, res.status === 403);
+    check(
+      '52. That refusal leaks no invitation state',
+      body?.outcome === undefined && body?.hasAccess === undefined,
+    );
+    check('53. It creates no membership for the intruder', (await memberCount(intruder.user.id)) === 0);
+  }
+
+
   console.log('==========================================================');
-  console.log(`📊 INVITATION ACCEPTANCE SUITE: ${pass} passed, ${fail} failed.`);
+  console.log(
+    `📊 INVITATION ACCEPTANCE SUITE: ${pass} passed, ${fail} failed.`,
+  );
   if (fail > 0) process.exitCode = 1;
 }
 

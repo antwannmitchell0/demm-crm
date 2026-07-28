@@ -288,9 +288,15 @@ export class TeamService {
       return {
         outcome: 'ALREADY_ACCEPTED' as const,
         workspaceId: invitation.workspaceId,
-        // The membership's CURRENT role, never the invitation's -- an old link
-        // must not describe a role the person no longer holds.
-        role: already?.role ?? invitation.role,
+        // Reported from the MEMBERSHIP, never the invitation.
+        //
+        // If an administrator removed this person after they accepted, the link
+        // is still legitimately terminal but they no longer have access.
+        // Falling back to the invitation's historical role would tell them they
+        // hold a role they do not, and the UI would offer a workspace they
+        // cannot open. `hasAccess` says so plainly and `role` is null.
+        hasAccess: Boolean(already),
+        role: already?.role ?? null,
       };
     }
 
@@ -311,6 +317,37 @@ export class TeamService {
         },
       });
       if (claim.count !== 1) {
+        // WE LOST THE CLAIM. Someone moved this row out of PENDING between our
+        // read and this write. That is not automatically an error: with six
+        // simultaneous requests for the SAME link by the SAME person, five land
+        // here, and answering 400 made "idempotent" mean only "does not crash".
+        // Measured before this: statuses 200,400,400,400,200,200.
+        //
+        // Re-read INSIDE the transaction to find out who won.
+        const current = await tx.invitation.findUnique({
+          where: { id: invitation.id },
+        });
+
+        if (
+          current?.status === InvitationStatus.ACCEPTED &&
+          current.acceptedById === userId
+        ) {
+          // The winner was this same person. Their request reached the intended
+          // end state, so report it truthfully rather than failing.
+          const membership = await tx.membership.findFirst({
+            where: { userId, workspaceId: invitation.workspaceId },
+          });
+          return {
+            outcome: 'ALREADY_ACCEPTED' as const,
+            workspaceId: invitation.workspaceId,
+            hasAccess: Boolean(membership),
+            role: membership?.role ?? null,
+          };
+        }
+
+        // Consumed by somebody else, revoked, or expired underneath us. Still
+        // refused, and deliberately with the same generic message as any other
+        // invalid link -- a caller must not learn who else used it.
         throw new BadRequestException('This invitation is no longer valid.');
       }
 
@@ -375,7 +412,8 @@ export class TeamService {
       return {
         outcome: outcome,
         workspaceId: invitation.workspaceId,
-        role: membership?.role ?? invitation.role,
+        hasAccess: Boolean(membership),
+        role: membership?.role ?? null,
       };
     });
   }
