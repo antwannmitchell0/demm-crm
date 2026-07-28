@@ -39,11 +39,23 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Invalid token');
     }
 
-    // `tokenType` is required going forward. The `undefined` case is a bounded
-    // allowance for access tokens minted before this field existed: they carry
-    // no `purpose` (rejected above) and expire in 15 minutes, so the window
-    // closes on its own. Once deployed for longer than that, tighten this to an
-    // exact `payload.tokenType !== 'access'` rejection.
+    // LEGACY ALLOWANCE -- REMOVE AFTER 2026-08-04.
+    //
+    // `tokenType` is required going forward. `undefined` is accepted only for
+    // access tokens minted by the build that shipped before the claim existed.
+    // They carry no `purpose`, so the check above already covers the dangerous
+    // case, and they expire 15 minutes after the last old instance stops
+    // serving.
+    //
+    // The removal is dated, not "eventually": staging deploys 2026-07-28, so
+    // any legacy token is dead by 2026-07-28 + 15 minutes. The date above
+    // leaves a week of margin and is the point at which this branch and its
+    // two test assertions (test-token-purpose.ts, 19c) are deleted and the
+    // condition becomes `payload.tokenType !== 'access'`.
+    //
+    // Leaving it indefinitely would mean a token class with no declared type
+    // is permanently valid, which is the same "absence of a claim is an
+    // answer" mistake this whole change exists to remove.
     if (payload.tokenType !== undefined && payload.tokenType !== 'access') {
       throw new UnauthorizedException('Invalid token');
     }

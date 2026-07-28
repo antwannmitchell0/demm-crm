@@ -554,6 +554,44 @@ export async function switchWorkspace(workspaceId: string): Promise<void> {
 }
 
 /**
+ * Enters the workspace an invitation was just accepted for.
+ *
+ * THE DEFECT THIS FIXES. The authenticated /invite path called
+ * acceptInvitation() and then redirected straight to /dashboard. That created
+ * the membership but left the access and refresh session bound to whatever
+ * workspace was active before -- so somebody who belonged to Workspace B and
+ * accepted an invitation to Workspace A landed on a dashboard still showing B,
+ * having been told they were in A. The row existed; the session did not.
+ *
+ * Deliberately routed through beginWorkspaceSwitch() + switchWorkspace(), the
+ * same pair the workspace switcher uses. That path spends and rotates the
+ * refresh cookie through the BFF, adopts the returned token and metadata, and
+ * broadcasts to other tabs. Setting a workspace id in client state instead
+ * would change what is displayed without changing what the session is
+ * authorized for, which is the same lie in a different place.
+ *
+ * The membership list is re-read from the server and checked BEFORE switching.
+ * If acceptance reported success but the workspace is not actually offered to
+ * this account, that is a contradiction, and the honest move is to say so
+ * rather than to attempt a switch that will fail less legibly.
+ */
+export async function enterAcceptedWorkspace(
+  workspaceId: string,
+  backendBaseUrl: string,
+): Promise<void> {
+  const choices = await beginWorkspaceSwitch(backendBaseUrl);
+
+  if (!choices.some((choice) => choice.workspaceId === workspaceId)) {
+    cancelPendingWorkspaceSelection();
+    throw new Error(
+      'You were added to that workspace, but it is not available on your account yet. Please sign in again.',
+    );
+  }
+
+  await switchWorkspace(workspaceId);
+}
+
+/**
  * Accepts an invitation using a password, and enters the workspace.
  *
  * FOR THE PERSON WHO CANNOT SIGN IN YET. Someone invited to their first

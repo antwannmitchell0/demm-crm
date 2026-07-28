@@ -34,7 +34,7 @@
     "test:invitation-migration": "npx ts-node test-invitation-migration.ts",
     "test:invitation-accept": "npx ts-node test-invitation-acceptance.ts",
     "test:token-purpose": "npx ts-node test-token-purpose.ts",
-    "test:invitation-pre-session": "ts-node test-invitation-pre-session.ts",
+    "test:invitation-pre-session": "TRUSTED_PROXY_HOPS=1 ts-node test-invitation-pre-session.ts",
     "test:invited-registration": "TRUSTED_PROXY_HOPS=1 ts-node test-invited-registration.ts"
   },
   "dependencies": {

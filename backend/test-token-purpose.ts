@@ -310,6 +310,52 @@ async function main() {
     );
   }
 
+  // ===== F. Both claims are required, not just the purpose =====
+  //
+  // A token's CLASS and its ERRAND are separate facts. Checking only the errand
+  // would accept anything carrying the right purpose string, including a future
+  // token class that reuses it -- the same "one claim stands in for another"
+  // mistake that made a pre-session token usable as a session.
+  {
+    const purposeOnly = sign({ sub: user.id, purpose: 'workspace-selection' }, '5m');
+    check(
+      `22. A purpose without a pre-session tokenType cannot select a workspace (got ${(await postSelect(purposeOnly)).status})`,
+      (await postSelect(purposeOnly)).status === 401,
+    );
+
+    const wrongClass = sign(
+      { sub: user.id, tokenType: 'access', purpose: 'workspace-selection' },
+      '5m',
+    );
+    check(
+      `23. An access-class token carrying the right purpose is still refused (got ${(await postSelect(wrongClass)).status})`,
+      (await postSelect(wrongClass)).status === 401,
+    );
+
+    const classOnly = sign({ sub: user.id, tokenType: 'pre-session' }, '5m');
+    check(
+      `24. A pre-session token with no purpose cannot select a workspace (got ${(await postSelect(classOnly)).status})`,
+      (await postSelect(classOnly)).status === 401,
+    );
+
+    const mint = (t: string) =>
+      fetch(`${base}/api/auth/pre-session/invitation-capability`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${t}`,
+        },
+        body: JSON.stringify({ token: 'a'.repeat(64) }),
+      });
+    check(
+      `25. Minting also requires both claims -- purpose alone is refused (got ${(await mint(purposeOnly)).status})`,
+      (await mint(purposeOnly)).status === 401,
+    );
+    check(
+      `26. ...and an access-class token with the right purpose is refused (got ${(await mint(wrongClass)).status})`,
+      (await mint(wrongClass)).status === 401,
+    );
+  }
   console.log('==========================================================');
   console.log(`📊 TOKEN PURPOSE SUITE: ${pass} passed, ${fail} failed.`);
   if (fail > 0) process.exitCode = 1;

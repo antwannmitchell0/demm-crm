@@ -25,6 +25,19 @@ export interface SeedResult {
   admin: { email: string; id: string };
   member: { email: string; id: string };
   invitee: { email: string; id: string };
+  /**
+   * Belongs to workspace B and NOT workspace A. Exists so a journey can accept
+   * an invitation to A while holding a live session in B -- the case where
+   * acceptance created the membership but left the session bound to the old
+   * workspace.
+   */
+  crossWorkspace: { email: string; id: string };
+  /**
+   * Deliberately has NO User row. The invited-registration form can only be
+   * exercised by somebody who does not yet have an account, and every other
+   * persona here already does.
+   */
+  newcomerEmail: string;
   workspaceA: { id: string; name: string };
   workspaceB: { id: string; name: string };
   pendingApprovalId: string;
@@ -88,6 +101,8 @@ export async function seed(): Promise<SeedResult> {
     const member = await mkUser('member', 'Mia', 'Member');
     // Has an account but belongs to nothing -- the invitation recipient.
     const invitee = await mkUser('invitee', 'Ivan', 'Invitee');
+    // In workspace B only -- see crossWorkspace on SeedResult.
+    const crossWorkspace = await mkUser('cross', 'Cora', 'Cross');
 
     const mkMembership = (userId: string, workspaceId: string, role: string) =>
       c.query(
@@ -102,6 +117,7 @@ export async function seed(): Promise<SeedResult> {
     await mkMembership(owner.id, wsB, 'ORG_OWNER');
     await mkMembership(admin.id, wsA, 'WORKSPACE_ADMIN');
     await mkMembership(member.id, wsA, 'USER');
+    await mkMembership(crossWorkspace.id, wsB, 'USER');
 
     // A pending high-risk approval requested by the ADMIN, so the owner can
     // resolve it without self-approving.
@@ -163,6 +179,10 @@ export async function seed(): Promise<SeedResult> {
       admin,
       member,
       invitee,
+      crossWorkspace,
+      // Never inserted. The journey that uses it asserts no such row exists
+      // before it starts, and removes what it creates in teardown.
+      newcomerEmail: `newcomer-${runId}@example.invalid`,
       workspaceA: { id: wsA, name: 'Downtown Studio' },
       workspaceB: { id: wsB, name: 'Airport Location' },
       pendingApprovalId: approvalId,

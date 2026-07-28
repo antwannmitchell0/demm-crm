@@ -1,6 +1,22 @@
 import { test, expect, type Page, type BrowserContext } from '@playwright/test';
 import { fixtures, signIn, record, installBackendRouting } from './helpers';
-import { UAT_PASSWORD } from './uat-db';
+import { UAT_PASSWORD, UAT_DATABASE_URL } from './uat-db';
+import { Client } from 'pg';
+
+/**
+ * Counts read straight from the database. A journey that only checks the
+ * screen cannot see a spare Organization created behind it, and creating one
+ * per invited person is the specific mistake this flow exists to avoid.
+ */
+async function withDb<T>(body: (c: Client) => Promise<T>): Promise<T> {
+  const c = new Client({ connectionString: UAT_DATABASE_URL });
+  await c.connect();
+  try {
+    return await body(c);
+  } finally {
+    await c.end();
+  }
+}
 
 /**
  * The invitation journey, end to end, in a real browser.
@@ -215,6 +231,189 @@ test('a person invited to their first workspace can accept and get in', async ({
       kind: 'form',
       label: 'Re-use a consumed link while still a member',
       role: 'invitee',
+      expected: 'idempotent -- no error shown',
+      actual: errored ? 'SHOWED AN ERROR' : 'no error',
+      pass: !errored,
+    });
+    expect(errored, 'retrying a consumed link must not error').toBe(false);
+  });
+});
+
+test('a brand-new person can register from the link and get in', async ({
+  page,
+}) => {
+  // THE FORM NOTHING HAD EVER CLICKED. Every other persona already has an
+  // account, so the invited-registration form -- the one that exists precisely
+  // for somebody who has none -- was never exercised in a browser.
+  const email = F.newcomerEmail;
+
+  const before = await withDb(async (c) => ({
+    users: Number((await c.query('SELECT count(*) FROM "User" WHERE email = $1', [email])).rows[0].count),
+    orgs: Number((await c.query('SELECT count(*) FROM "Organization"')).rows[0].count),
+    workspaces: Number((await c.query('SELECT count(*) FROM "Workspace"')).rows[0].count),
+  }));
+  expect(before.users, 'this journey requires an address with no account').toBe(0);
+
+  await signIn(page, F.owner.email, { chooseWorkspace: F.workspaceA.name });
+  const link = await issueInvitationFor(page, email);
+  record({
+    route: '/team',
+    kind: 'form',
+    label: 'Create invitation for an address with no account',
+    role: 'ORG_OWNER',
+    expected: 'one-time link shown exactly once',
+    actual: 'link shown',
+    network: 'POST /team/invitations',
+    pass: true,
+  });
+
+  await asNewPerson(page, async (newcomer) => {
+    await newcomer.goto(pathOf(link));
+
+    // FORCED FAILURE AFTER REGISTRATION, BEFORE ACCEPTANCE. The account will
+    // exist and the invitation will not be accepted -- the exact partial state
+    // the recipient must be able to resolve by pressing the button again.
+    let failedOnce = false;
+    await newcomer.route('**/api/session/accept-invitation', async (route) => {
+      if (!failedOnce) {
+        failedOnce = true;
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'Service temporarily unavailable.' }),
+        });
+        return;
+      }
+      await route.fallback();
+    });
+
+    await newcomer.getByRole('button', { name: /create one here/i }).click();
+    await newcomer.getByLabel(/first name/i).fill('Nova');
+    await newcomer.getByLabel(/last name/i).fill('Newcomer');
+    await newcomer.getByLabel(/email address/i).fill(email);
+    await newcomer.getByLabel(/choose a password/i).fill(UAT_PASSWORD);
+    await newcomer.getByRole('button', { name: /create account and join/i }).click();
+
+    // The specific error text, not just "an alert exists": the page has a
+    // persistent live region, so getByRole('alert') alone matches even on a
+    // clean render and would pass vacuously.
+    await expect(
+      newcomer.getByRole('button', { name: /try again/i }),
+    ).toBeVisible({ timeout: 20_000 });
+    expect(failedOnce, 'the acceptance call must actually have been made').toBe(true);
+    const created = await withDb(async (c) =>
+      Number((await c.query('SELECT count(*) FROM "User" WHERE email = $1', [email])).rows[0].count),
+    );
+    record({
+      route: '/invite',
+      kind: 'form',
+      label: 'Acceptance fails after the account was created',
+      role: 'newcomer',
+      expected: 'account exists, invitation not yet accepted, error shown',
+      actual: `user rows=${created}`,
+      pass: created === 1,
+    });
+    expect(created, 'registration must have committed before the failure').toBe(1);
+
+    // RECOVERY THROUGH THE UI, with no instruction to switch forms. Pressing
+    // "Try again" must return to the registration form they were using, and
+    // re-submitting must succeed -- the second registration is a no-op that
+    // reports ALREADY_REGISTERED rather than "user already exists".
+    await newcomer.getByRole('button', { name: /try again/i }).click();
+    await expect(
+      newcomer.getByRole('button', { name: /create account and join/i }),
+    ).toBeVisible({ timeout: 15_000 });
+    await newcomer.getByLabel(/choose a password/i).fill(UAT_PASSWORD);
+    await newcomer.getByRole('button', { name: /create account and join/i }).click();
+
+    await newcomer.waitForURL(/\/dashboard/, { timeout: 30_000 });
+    record({
+      route: '/invite',
+      kind: 'form',
+      label: 'Retry after a failed acceptance',
+      role: 'newcomer',
+      expected: 'completes without re-typing anything but the password',
+      actual: 'entered /dashboard',
+      network: 'POST /api/auth/register-invited, POST /api/session/accept-invitation',
+      pass: true,
+    });
+
+    await expect(newcomer.getByText(F.workspaceA.name).first()).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const after = await withDb(async (c) => {
+      const u = await c.query('SELECT id FROM "User" WHERE email = $1', [email]);
+      const id = u.rows[0]?.id;
+      return {
+        users: u.rowCount ?? 0,
+        orgs: Number((await c.query('SELECT count(*) FROM "Organization"')).rows[0].count),
+        workspaces: Number((await c.query('SELECT count(*) FROM "Workspace"')).rows[0].count),
+        memberships: Number(
+          (await c.query('SELECT count(*) FROM "Membership" WHERE "userId" = $1', [id])).rows[0].count,
+        ),
+        role: (
+          await c.query('SELECT role FROM "Membership" WHERE "userId" = $1', [id])
+        ).rows[0]?.role,
+      };
+    });
+
+    record({
+      route: '/dashboard',
+      kind: 'nav',
+      label: 'Registration created no spare tenant',
+      role: 'newcomer',
+      expected: 'organizations and workspaces unchanged, exactly one membership',
+      actual: `orgs ${before.orgs}->${after.orgs}, ws ${before.workspaces}->${after.workspaces}, memberships ${after.memberships}`,
+      pass:
+        after.orgs === before.orgs &&
+        after.workspaces === before.workspaces &&
+        after.memberships === 1,
+    });
+    expect(after.users, 'exactly one account').toBe(1);
+    expect(after.orgs, 'no spare organization').toBe(before.orgs);
+    expect(after.workspaces, 'no spare workspace').toBe(before.workspaces);
+    expect(after.memberships, 'exactly one membership').toBe(1);
+    expect(after.role, 'the invited role is the one granted').toBe('USER');
+
+    // The session survives a reload, and no pre-session credential is readable.
+    await newcomer.reload();
+    await expect(newcomer.getByText(F.workspaceA.name).first()).toBeVisible({
+      timeout: 20_000,
+    });
+    const leaked = await newcomer.evaluate(() =>
+      /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(
+        [
+          JSON.stringify(window.localStorage),
+          JSON.stringify(window.sessionStorage),
+          document.cookie,
+          window.location.href,
+        ].join('|'),
+      ),
+    );
+    record({
+      route: '/dashboard',
+      kind: 'nav',
+      label: 'Session survives reload, credentials unreadable',
+      role: 'newcomer',
+      expected: 'still signed in; no JWT in storage, cookies or URL',
+      actual: leaked ? 'A JWT WAS READABLE' : 'session restored, none readable',
+      pass: !leaked,
+    });
+    expect(leaked, 'no capability or pre-session token may be readable').toBe(false);
+  });
+
+  // Re-opening the same link is idempotent, not an error.
+  await asNewPerson(page, async (retry) => {
+    await acceptWithPassword(retry, link, email);
+    await retry.waitForLoadState('networkidle').catch(() => undefined);
+    const body = await retry.locator('body').innerText();
+    const errored = /could not be accepted|no longer valid/i.test(body);
+    record({
+      route: '/invite',
+      kind: 'form',
+      label: 'Re-use the link after registering through it',
+      role: 'newcomer',
       expected: 'idempotent -- no error shown',
       actual: errored ? 'SHOWED AN ERROR' : 'no error',
       pass: !errored,

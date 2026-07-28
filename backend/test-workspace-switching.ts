@@ -281,7 +281,7 @@ async function main() {
   {
     const session = await authService.selectWorkspace(
       jwt.sign(
-        { sub: user.id, purpose: 'workspace-selection' },
+        { sub: user.id, tokenType: 'pre-session', purpose: 'workspace-selection' },
         process.env.JWT_SECRET!,
         { expiresIn: '5m' },
       ),
@@ -359,7 +359,7 @@ async function main() {
   {
     const session = await authService.selectWorkspace(
       jwt.sign(
-        { sub: user.id, purpose: 'workspace-selection' },
+        { sub: user.id, tokenType: 'pre-session', purpose: 'workspace-selection' },
         process.env.JWT_SECRET!,
         { expiresIn: '5m' },
       ),
@@ -402,7 +402,7 @@ async function main() {
   {
     const session = await authService.selectWorkspace(
       jwt.sign(
-        { sub: user.id, purpose: 'workspace-selection' },
+        { sub: user.id, tokenType: 'pre-session', purpose: 'workspace-selection' },
         process.env.JWT_SECRET!,
         { expiresIn: '5m' },
       ),
@@ -474,7 +474,7 @@ async function main() {
     // That must fail CLOSED -- treated as theft, the pre-existing behaviour.
     const legacySession = await authService.selectWorkspace(
       jwt.sign(
-        { sub: user.id, purpose: 'workspace-selection' },
+        { sub: user.id, tokenType: 'pre-session', purpose: 'workspace-selection' },
         process.env.JWT_SECRET!,
         { expiresIn: '5m' },
       ),
@@ -501,7 +501,7 @@ async function main() {
     });
     const outsiderSession = await authService.selectWorkspace(
       jwt.sign(
-        { sub: outsider.id, purpose: 'workspace-selection' },
+        { sub: outsider.id, tokenType: 'pre-session', purpose: 'workspace-selection' },
         process.env.JWT_SECRET!,
         { expiresIn: '5m' },
       ),

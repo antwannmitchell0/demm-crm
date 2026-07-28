@@ -388,13 +388,24 @@ export class AuthService {
   // only source of truth for who the caller is here, never a client-
   // supplied userId.
   async selectWorkspace(preAuthToken: string, workspaceId: string) {
-    let preAuthPayload: { sub: string; purpose: string };
+    let preAuthPayload: {
+      sub: string;
+      purpose?: string;
+      tokenType?: string;
+    };
     try {
       preAuthPayload = this.jwtService.verify(preAuthToken);
     } catch {
       throw new UnauthorizedException('Invalid or expired pre-auth token');
     }
-    if (preAuthPayload.purpose !== 'workspace-selection') {
+    // BOTH claims, not just purpose. A token's class and its errand are
+    // separate facts, and checking only the errand would accept anything that
+    // happened to carry the right purpose string -- including a future token
+    // class that reuses it. This is the mirror of the check JwtStrategy makes.
+    if (
+      preAuthPayload.tokenType !== 'pre-session' ||
+      preAuthPayload.purpose !== 'workspace-selection'
+    ) {
       throw new UnauthorizedException('Invalid pre-auth token');
     }
 
@@ -422,13 +433,16 @@ export class AuthService {
    * five-minute ceiling, because the BFF consumes it in the next hop.
    */
   async mintInvitationCapability(preAuthToken: string, rawToken: string) {
-    let payload: { sub: string; purpose?: string };
+    let payload: { sub: string; purpose?: string; tokenType?: string };
     try {
       payload = this.jwtService.verify(preAuthToken);
     } catch {
       throw new UnauthorizedException('Invalid or expired pre-auth token');
     }
-    if (payload.purpose !== 'workspace-selection') {
+    if (
+      payload.tokenType !== 'pre-session' ||
+      payload.purpose !== 'workspace-selection'
+    ) {
       throw new UnauthorizedException('Invalid pre-auth token');
     }
 
@@ -447,6 +461,34 @@ export class AuthService {
     // Distinguishing them would confirm to the holder of a stray link that it
     // is a real invitation, and that the address it names is a real account.
     if (!invitation || invitation.email !== user.email.trim().toLowerCase()) {
+      throw new NotFoundException('Invitation not found.');
+    }
+
+    // STATUS POLICY, stated explicitly because two of the four values are
+    // allowed and the reason differs for each.
+    //
+    //   PENDING  -- the ordinary case.
+    //   ACCEPTED -- allowed ONLY for the account that accepted it, and only so
+    //               a retry can complete. The BFF chain is four hops; if the
+    //               last one fails the caller must be able to run it again,
+    //               and acceptance itself is idempotent, so re-minting grants
+    //               nothing new. Anyone else gets the same 404 as a stray link.
+    //   REVOKED  -- refused. An administrator withdrew it.
+    //   EXPIRED  -- refused, as is any invitation past expiresAt regardless of
+    //               the stored status, since the sweep to EXPIRED is lazy.
+    if (invitation.expiresAt < new Date()) {
+      throw new BadRequestException('This invitation has expired.');
+    }
+    if (
+      invitation.status === InvitationStatus.REVOKED ||
+      invitation.status === InvitationStatus.EXPIRED
+    ) {
+      throw new NotFoundException('Invitation not found.');
+    }
+    if (
+      invitation.status === InvitationStatus.ACCEPTED &&
+      invitation.acceptedById !== user.id
+    ) {
       throw new NotFoundException('Invitation not found.');
     }
 

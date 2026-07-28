@@ -3,8 +3,13 @@
 import React, { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { api, getAuthToken, getActiveUser, ApiError } from '../../lib/api';
-import { acceptInvitationAndEnter } from '../../lib/session/client';
+import {
+  acceptInvitationAndEnter,
+  enterAcceptedWorkspace,
+} from '../../lib/session/client';
 import { MailCheck, Loader2 } from 'lucide-react';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 /**
  * Accepting an invitation link.
@@ -34,7 +39,12 @@ type Phase =
   // them after they used the link. A distinct state, because it is neither a
   // success to celebrate nor a failure to retry.
   | { kind: 'NO_ACCESS' }
-  | { kind: 'FAILED'; message: string };
+  // `returnTo` is the form the person was using when it failed. Sending every
+  // failure back to READY put somebody who had just filled the REGISTRATION
+  // form in front of the "you are signed in as ..." form instead -- for an
+  // account that, at that moment, had no session. Recovery has to return you
+  // to where you were, not to where a signed-in user would have been.
+  | { kind: 'FAILED'; message: string; returnTo: Phase['kind'] };
 
 function InviteInner() {
   const params = useSearchParams();
@@ -87,6 +97,7 @@ function InviteInner() {
       setPassword('');
       setPhase({
         kind: 'FAILED',
+        returnTo: 'NEEDS_SIGN_IN',
         message:
           err instanceof Error
             ? err.message
@@ -124,6 +135,7 @@ function InviteInner() {
       setPassword('');
       setPhase({
         kind: 'FAILED',
+        returnTo: 'NEEDS_ACCOUNT',
         message:
           err instanceof ApiError || err instanceof Error
             ? err.message
@@ -149,13 +161,30 @@ function InviteInner() {
         return;
       }
 
+      // The membership now exists, but this browser's session is still bound
+      // to whatever workspace was active before. Redirecting here would show
+      // somebody the workspace they were already in while telling them they
+      // had joined a different one. Bind the session first, through the same
+      // path the workspace switcher uses.
+      const workspaceId = result?.workspaceId;
+      if (typeof workspaceId !== 'string') {
+        setPhase({
+          kind: 'FAILED',
+          returnTo: 'READY',
+          message: 'That invitation could not be completed. Please try again.',
+        });
+        return;
+      }
+      await enterAcceptedWorkspace(workspaceId, API_URL);
+
       setPhase({ kind: 'DONE' });
-      // A full load, not a client route change: the session's workspace list
-      // has changed and everything on screen belongs to the previous context.
+      // A full load, not a client route change: the session now belongs to a
+      // different workspace and everything on screen belongs to the old one.
       window.location.assign('/dashboard');
     } catch (err: unknown) {
       setPhase({
         kind: 'FAILED',
+        returnTo: 'READY',
         message:
           err instanceof ApiError
             ? err.message
@@ -381,7 +410,7 @@ function InviteInner() {
               {phase.message}
             </div>
             <button
-              onClick={() => setPhase({ kind: 'READY' })}
+              onClick={() => setPhase({ kind: phase.returnTo } as Phase)}
               className="mt-4 w-full py-3 rounded-xl border border-slate-700 text-slate-200 text-sm font-semibold hover:bg-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400 active:translate-y-px transition"
             >
               Try again

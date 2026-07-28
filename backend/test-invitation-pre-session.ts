@@ -142,11 +142,18 @@ async function main() {
     return { raw, inv };
   };
 
+  // A rotating source address per call. This suite makes far more capability
+  // mints than one client's 20/min budget allows, and collapsing them onto
+  // 127.0.0.1 would measure the rate limiter rather than the behaviour under
+  // test. TRUSTED_PROXY_HOPS=1 is set by the npm script, matching the shape the
+  // deployment uses. The limiter itself is covered in test-invited-registration.
+  let clientSeq = 0;
   const post = (path: string, body: unknown, bearer?: string) =>
     fetch(`${base}${path}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-Forwarded-For': `203.0.113.${(clientSeq++ % 250) + 1}, 130.211.0.1`,
         ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
       },
       body: JSON.stringify(body ?? {}),
@@ -498,6 +505,63 @@ async function main() {
       acc.status === 200 &&
         accBody?.outcome === 'JOINED' &&
         accBody?.hasAccess === true,
+    );
+  }
+  // ===== H. Which invitation states may mint a capability =====
+  //
+  // Minting is a capability grant, so the state policy belongs here as well as
+  // at acceptance -- refusing only at the last hop would mean a withdrawn
+  // invitation still produced a live credential naming it.
+  {
+    const revokedEmail = `revoked-cap-${s}@example.invalid`;
+    const revokedUser = await prisma.user.create({
+      data: {
+        email: revokedEmail,
+        passwordHash,
+        firstName: 'Rae',
+        lastName: 'Revoked',
+      },
+    });
+    ctx!.userIds.push(revokedUser.id);
+    const revLogin = await login(revokedEmail);
+
+    const { raw: revRaw, inv: revInv } = await makeInvitation(revokedEmail);
+    await prisma.invitation.update({
+      where: { id: revInv.id },
+      data: { status: InvitationStatus.REVOKED },
+    });
+    const revoked = await post(MINT, { token: revRaw }, revLogin.body?.preAuthToken);
+    check(
+      `41. A REVOKED invitation cannot mint a capability (got ${revoked.status})`,
+      revoked.status === 404,
+    );
+
+    const { raw: expRaw, inv: expInv } = await makeInvitation(revokedEmail);
+    await prisma.invitation.update({
+      where: { id: expInv.id },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+    const expired = await post(MINT, { token: expRaw }, revLogin.body?.preAuthToken);
+    check(
+      `42. An EXPIRED invitation cannot mint a capability (got ${expired.status})`,
+      expired.status >= 400,
+    );
+
+    // Accepted by SOMEBODY ELSE. The retry allowance is for the accepting
+    // account only; for anyone else the link is spent.
+    const { raw: othRaw, inv: othInv } = await makeInvitation(revokedEmail);
+    await prisma.invitation.update({
+      where: { id: othInv.id },
+      data: {
+        status: InvitationStatus.ACCEPTED,
+        acceptedById: owner.id,
+        acceptedAt: new Date(),
+      },
+    });
+    const foreign = await post(MINT, { token: othRaw }, revLogin.body?.preAuthToken);
+    check(
+      `43. An invitation accepted by a DIFFERENT account cannot mint (got ${foreign.status})`,
+      foreign.status === 404,
     );
   }
   console.log('==========================================================');

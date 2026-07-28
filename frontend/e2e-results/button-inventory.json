@@ -2,6 +2,89 @@
   {
     "route": "/team",
     "kind": "form",
+    "label": "Invite someone who already belongs to another workspace",
+    "role": "ORG_OWNER",
+    "expected": "one-time link shown exactly once",
+    "actual": "link shown",
+    "network": "POST /team/invitations",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "nav",
+    "label": "Signed in to the OTHER workspace first",
+    "role": "invitee",
+    "expected": "\"Airport Location\" is the active workspace",
+    "actual": "visible",
+    "pass": true
+  },
+  {
+    "route": "/invite",
+    "kind": "status-action",
+    "label": "hasAccess:false does not move the session",
+    "role": "invitee",
+    "expected": "still in \"Airport Location\"",
+    "actual": "unchanged",
+    "pass": true
+  },
+  {
+    "route": "/invite",
+    "kind": "form",
+    "label": "No password prompt for an authenticated invitee",
+    "role": "invitee",
+    "expected": "zero password fields",
+    "actual": "0",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "nav",
+    "label": "Active session moved to the invited workspace",
+    "role": "invitee",
+    "expected": "\"Downtown Studio\" is active after accepting",
+    "actual": "visible",
+    "network": "POST /api/session/switch-workspace",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "nav",
+    "label": "Previous workspace no longer presented as active",
+    "role": "invitee",
+    "expected": "\"Airport Location\" not shown as the current context",
+    "actual": "gone",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "status-action",
+    "label": "Credentials after a switch-on-accept",
+    "role": "invitee",
+    "expected": "no JWT in storage, cookies or the URL",
+    "actual": "none readable",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "nav",
+    "label": "Second tab follows the workspace switch",
+    "role": "invitee",
+    "expected": "the other tab shows \"Downtown Studio\", still signed in",
+    "actual": "followed",
+    "pass": true
+  },
+  {
+    "route": "/invite",
+    "kind": "button",
+    "label": "Re-open the consumed link while a member",
+    "role": "invitee",
+    "expected": "idempotent -- no error shown",
+    "actual": "no error",
+    "pass": true
+  },
+  {
+    "route": "/team",
+    "kind": "form",
     "label": "Create invitation for a workspace-less account",
     "role": "ORG_OWNER",
     "expected": "one-time link shown exactly once",
@@ -60,6 +143,62 @@
     "kind": "form",
     "label": "Re-use a consumed link while still a member",
     "role": "invitee",
+    "expected": "idempotent -- no error shown",
+    "actual": "no error",
+    "pass": true
+  },
+  {
+    "route": "/team",
+    "kind": "form",
+    "label": "Create invitation for an address with no account",
+    "role": "ORG_OWNER",
+    "expected": "one-time link shown exactly once",
+    "actual": "link shown",
+    "network": "POST /team/invitations",
+    "pass": true
+  },
+  {
+    "route": "/invite",
+    "kind": "form",
+    "label": "Acceptance fails after the account was created",
+    "role": "newcomer",
+    "expected": "account exists, invitation not yet accepted, error shown",
+    "actual": "user rows=1",
+    "pass": true
+  },
+  {
+    "route": "/invite",
+    "kind": "form",
+    "label": "Retry after a failed acceptance",
+    "role": "newcomer",
+    "expected": "completes without re-typing anything but the password",
+    "actual": "entered /dashboard",
+    "network": "POST /api/auth/register-invited, POST /api/session/accept-invitation",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "nav",
+    "label": "Registration created no spare tenant",
+    "role": "newcomer",
+    "expected": "organizations and workspaces unchanged, exactly one membership",
+    "actual": "orgs 1->1, ws 2->2, memberships 1",
+    "pass": true
+  },
+  {
+    "route": "/dashboard",
+    "kind": "nav",
+    "label": "Session survives reload, credentials unreadable",
+    "role": "newcomer",
+    "expected": "still signed in; no JWT in storage, cookies or URL",
+    "actual": "session restored, none readable",
+    "pass": true
+  },
+  {
+    "route": "/invite",
+    "kind": "form",
+    "label": "Re-use the link after registering through it",
+    "role": "newcomer",
     "expected": "idempotent -- no error shown",
     "actual": "no error",
     "pass": true
@@ -191,7 +330,7 @@
     "role": "ORG_OWNER",
     "expected": "POST resolve, row leaves pending",
     "actual": "resolve requested",
-    "network": "POST /agent/approvals/2deaabcb-4490-41d3-b5f2-24902fb6cd2b/resolve",
+    "network": "POST /agent/approvals/4a88e396-8f08-4b01-b520-4b5e6bd0e3f3/resolve",
     "pass": true
   },
   {
@@ -277,7 +416,7 @@
     "role": "ORG_OWNER",
     "expected": "DELETE invitation, row disappears",
     "actual": "delete requested",
-    "network": "DELETE /team/invitations/150509c6-58d0-4bcf-92bc-f21b24840341",
+    "network": "DELETE /team/invitations/60f72d3c-ee64-472c-9b70-5b6656661197",
     "pass": true
   },
   {
