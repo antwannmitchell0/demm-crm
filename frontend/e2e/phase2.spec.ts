@@ -33,6 +33,14 @@ async function clickAndCapture(
   return req ? `${req.method()} ${new URL(req.url()).pathname}` : 'NO REQUEST';
 }
 
+// Tear the interceptor down before the test context closes. Without this,
+// route.fetch() can still be in flight when the test ends and Playwright
+// raises "route.fetch: Test ended" -- a flake that has nothing to do with the
+// behaviour under test. The remedy is the one Playwright itself names.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: 'ignoreErrors' }).catch(() => undefined);
+});
+
 test.afterAll(() => flushInventory());
 
 // ===========================================================================

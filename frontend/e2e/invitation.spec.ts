@@ -28,29 +28,47 @@ test.describe.configure({ mode: 'serial' });
 // returns hasAccess:false. What is NOT yet proven is that the /invite page
 // renders it correctly in a browser, which is precisely the gap that let the
 // "You are in" defect ship. Do not treat this file as coverage until it runs.
-// DIAGNOSTIC RUN: fixme temporarily lifted
+// BLOCKED ON A PRODUCT DEFECT, NOT A TEST DEFECT.
+//
+// A person invited to their FIRST workspace cannot accept the invitation.
+// Measured in a real browser:
+//
+//   after login:  "You signed in, but this account is not part of any
+//                  workspace yet."           -- no session is established
+//   opening the
+//   invite link:  URL redirects to "/"       -- /invite requires
+//                  getAuthToken(), finds none, bounces to Sign In
+//
+// login() only returns a preAuthToken, and issueTokensForMembership() refuses
+// to mint a session without a membership -- so an account with zero workspaces
+// can never hold an access token, and /invite can never run. The invitation
+// link is unusable by exactly the person it exists for.
+//
+// Every API-layer test passes because it signs a JWT directly, bypassing login.
+// That is why 53 backend assertions did not catch this.
+//
+// fixme, not skip: this reports as expected-to-fail rather than vanishing.
+// Removing it requires the AUTH CHANGE described in handoff 22, not a test edit.
+test.fixme(true, 'BLOCKED: a workspace-less account cannot obtain a session -- see handoff 22');
 
 const F = fixtures();
+
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: 'ignoreErrors' }).catch(() => undefined);
+});
 
 /** The one-time link is shown once, at creation, and never again. */
 async function issueInvitationFor(
   page: import('@playwright/test').Page,
   email: string,
 ) {
-  page.on('console', (m) => console.log(`[browser:${m.type()}] ${m.text()}`));
   page.on('pageerror', (e) => console.error('[browser:pageerror]', e.message));
-  page.on('requestfailed', (r) =>
-    console.error('[browser:requestfailed]', r.method(), r.url(), JSON.stringify(r.failure())),
-  );
   page.on('response', (r) => {
     if (r.status() >= 400) console.error('[browser:http]', r.status(), r.request().method(), r.url());
   });
 
   await page.goto('/team');
-  await page.waitForTimeout(3000);
-  console.log('DIAG URL', page.url());
   console.log('DIAG SESSION', await page.locator('[data-session-state]').first().getAttribute('data-session-state').catch(() => 'NO ATTR'));
-  console.log('DIAG BODY', (await page.locator('body').innerText()).slice(0, 600).replace(/\s+/g, ' '));
   console.log('DIAG INPUT COUNT', await page.getByLabel(/email address to invite/i).count());
 
   await page.getByLabel(/email address to invite/i).fill(email);
@@ -113,21 +131,28 @@ test('an invited person can accept, and retrying is honest', async ({ page }) =>
     token,
   );
 
-  // --- The invited person signs in and accepts ---
-  await page.context().clearCookies();
-  await page.goto('/');
-  await page.getByPlaceholder('Email address').fill(inviteEmail);
-  await page.getByPlaceholder('Password').fill(UAT_PASSWORD);
-  await page.getByRole('button', { name: /sign in/i }).click();
-  await page.waitForTimeout(2500);
+  // --- The invited person signs in and accepts, in a FRESH CONTEXT ---
+  //
+  // A separate browser context per persona, NOT clearCookies() on the same
+  // page. Clearing cookies mid-test leaves the running application holding
+  // in-memory session state for the previous account, and the login form never
+  // re-renders -- measured: `getByPlaceholder('Email address')` never resolves
+  // and the whole 60s budget is consumed. A new context is what a second real
+  // person actually is.
+  const inviteeCtx = await page.context().browser()!.newContext();
+  const inviteePage = await inviteeCtx.newPage();
+  await installBackendRouting(inviteePage);
+  await inviteePage.goto('/');
+  await inviteePage.getByPlaceholder('Email address').fill(inviteEmail);
+  await inviteePage.getByPlaceholder('Password').fill(UAT_PASSWORD);
+  await inviteePage.getByRole('button', { name: /sign in/i }).click();
+  await inviteePage.waitForTimeout(2500);
 
-  console.log('DIAG after-login URL', page.url());
-  console.log('DIAG after-login BODY', (await page.locator('body').innerText()).slice(0,300).replace(/\s+/g,' '));
-  await page.goto(pathOf(link));
-  await page.waitForTimeout(2000);
-  console.log('DIAG invite URL', page.url());
-  console.log('DIAG invite BODY', (await page.locator('body').innerText()).slice(0,400).replace(/\s+/g,' '));
-  const acceptBtn = page.getByRole('button', { name: /accept invitation/i });
+  console.log('DIAG after-login BODY', (await inviteePage.locator('body').innerText()).slice(0,300).replace(/\s+/g,' '));
+  await inviteePage.goto(pathOf(link));
+  await inviteePage.waitForTimeout(2000);
+  console.log('DIAG invite BODY', (await inviteePage.locator('body').innerText()).slice(0,400).replace(/\s+/g,' '));
+  const acceptBtn = inviteePage.getByRole('button', { name: /accept invitation/i });
   await expect(acceptBtn).toBeVisible({ timeout: 15_000 });
   await acceptBtn.click();
   await page.waitForURL(/\/dashboard/, { timeout: 20_000 });
@@ -160,7 +185,6 @@ test('an invited person can accept, and retrying is honest', async ({ page }) =>
   const retryBtn = page.getByRole('button', { name: /accept invitation/i });
   await expect(retryBtn).toBeVisible({ timeout: 15_000 });
   await retryBtn.click();
-  await page.waitForTimeout(3000);
   const retryBody = await page.locator('body').innerText();
   const retryErrored = /could not be accepted|no longer valid/i.test(retryBody);
   record({
@@ -197,7 +221,6 @@ test('a removed member reopening their link is told the truth', async ({
 
   await page.goto(pathOf(link));
   await page.getByRole('button', { name: /accept invitation/i }).click();
-  await page.waitForTimeout(3000);
   record({
     route: '/invite',
     kind: 'button',
@@ -217,7 +240,6 @@ test('a removed member reopening their link is told the truth', async ({
   });
   const row = page.locator('div').filter({ hasText: F.member.email }).last();
   await row.getByRole('button', { name: /remove/i }).first().click();
-  await page.waitForTimeout(3000);
   record({
     route: '/team',
     kind: 'table-action',
@@ -242,7 +264,6 @@ test('a removed member reopening their link is told the truth', async ({
   if (await btn.isVisible().catch(() => false)) {
     await btn.click();
   }
-  await page.waitForTimeout(3000);
 
   const body = await page.locator('body').innerText();
   const claimsSuccess = /you are in|taking you to the workspace/i.test(body);

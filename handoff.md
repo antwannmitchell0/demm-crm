@@ -1031,3 +1031,72 @@ broken — the same principle as the Gate 3 guard. Do not re-add a bypass to mak
 the pipeline green.
 
 Browser UAT: **6 journeys / 26 controls passing**, 2 journeys failing on this P1.
+
+---
+
+## 22. BLOCKER — an invited person cannot accept their first invitation
+
+Found by finally running the invitation journey in a real browser. **This blocks
+PR #5.**
+
+### My previous diagnosis was wrong
+
+Handoff §21a said "both journeys time out on the first `fill()` on the Team
+page". That was incorrect. Measured with diagnostics:
+
+```
+DIAG URL          http://127.0.0.1:3100/team     <- correct, no redirect
+DIAG SESSION      AUTHENTICATED                  <- restoration completed
+DIAG INPUT COUNT  1                              <- locator resolves uniquely
+```
+
+Zero console errors, zero `pageerror`, zero failed requests, zero HTTP >= 400.
+The Team page is fine. The failure was downstream and moved each time a blocking
+step was passed.
+
+### The actual defect
+
+A person invited to their **first** workspace cannot accept the invitation.
+
+```
+after login:        "You signed in, but this account is not part of any
+                     workspace yet."          -- no session established
+opening the link:   URL becomes "/"           -- /invite requires
+                     getAuthToken(), finds none, bounces to Sign In
+```
+
+**Why.** `login()` returns only a `preAuthToken`. `issueTokensForMembership()`
+refuses to mint a session without a membership. So an account with zero
+workspaces can never hold an access token — and `/invite` is gated on
+`getAuthToken()`. The invitation link is unusable by exactly the person it
+exists for.
+
+**Why 53 backend assertions missed it.** Every API test signs a JWT directly,
+bypassing login entirely. The gap is only visible through the real sign-in flow.
+
+### The fix is an auth change, not a test edit
+
+The backend must be able to issue a session for an authenticated account with no
+membership — either a workspace-less access token, or a narrowly-scoped
+invitation-acceptance token. `POST /team/invitations/accept` already uses
+`JwtAuthGuard` alone with no `WorkspaceGuard`, so it would accept a
+workspace-less token as-is.
+
+Design decision required before implementing: whether a workspace-less token is
+generally issuable (simpler, wider blast radius) or minted only for invitation
+acceptance (narrower, more machinery).
+
+### Harness corrections made along the way
+
+- **Per-persona browser contexts.** The spec drove three accounts through one
+  page using `clearCookies()`. That leaves the app holding in-memory session
+  state for the previous account and the login form never re-renders — the 60s
+  budget is consumed waiting for `getByPlaceholder('Email address')`. A new
+  context is what a second real person actually is.
+- **`page.unrouteAll({ behavior: 'ignoreErrors' })` in `afterEach`.** Without it
+  `route.fetch()` can still be in flight when a test ends, producing
+  `route.fetch: Test ended` — a flake unrelated to the behaviour under test.
+
+`invitation.spec.ts` stays `test.fixme` with the true reason recorded in the
+file. Removing it requires the auth change above. Playwright: **6 passed, 2
+fixme.** Browser UAT remains **6 journeys / 26 controls**.
