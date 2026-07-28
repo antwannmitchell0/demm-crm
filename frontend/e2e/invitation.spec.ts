@@ -28,7 +28,7 @@ test.describe.configure({ mode: 'serial' });
 // returns hasAccess:false. What is NOT yet proven is that the /invite page
 // renders it correctly in a browser, which is precisely the gap that let the
 // "You are in" defect ship. Do not treat this file as coverage until it runs.
-test.fixme(true, 'invitation browser journey under construction -- see comment');
+// DIAGNOSTIC RUN: fixme temporarily lifted
 
 const F = fixtures();
 
@@ -37,7 +37,22 @@ async function issueInvitationFor(
   page: import('@playwright/test').Page,
   email: string,
 ) {
+  page.on('console', (m) => console.log(`[browser:${m.type()}] ${m.text()}`));
+  page.on('pageerror', (e) => console.error('[browser:pageerror]', e.message));
+  page.on('requestfailed', (r) =>
+    console.error('[browser:requestfailed]', r.method(), r.url(), JSON.stringify(r.failure())),
+  );
+  page.on('response', (r) => {
+    if (r.status() >= 400) console.error('[browser:http]', r.status(), r.request().method(), r.url());
+  });
+
   await page.goto('/team');
+  await page.waitForTimeout(3000);
+  console.log('DIAG URL', page.url());
+  console.log('DIAG SESSION', await page.locator('[data-session-state]').first().getAttribute('data-session-state').catch(() => 'NO ATTR'));
+  console.log('DIAG BODY', (await page.locator('body').innerText()).slice(0, 600).replace(/\s+/g, ' '));
+  console.log('DIAG INPUT COUNT', await page.getByLabel(/email address to invite/i).count());
+
   await page.getByLabel(/email address to invite/i).fill(email);
   await page.getByRole('button', { name: /create link/i }).click();
   await expect(
@@ -106,7 +121,12 @@ test('an invited person can accept, and retrying is honest', async ({ page }) =>
   await page.getByRole('button', { name: /sign in/i }).click();
   await page.waitForTimeout(2500);
 
+  console.log('DIAG after-login URL', page.url());
+  console.log('DIAG after-login BODY', (await page.locator('body').innerText()).slice(0,300).replace(/\s+/g,' '));
   await page.goto(pathOf(link));
+  await page.waitForTimeout(2000);
+  console.log('DIAG invite URL', page.url());
+  console.log('DIAG invite BODY', (await page.locator('body').innerText()).slice(0,400).replace(/\s+/g,' '));
   const acceptBtn = page.getByRole('button', { name: /accept invitation/i });
   await expect(acceptBtn).toBeVisible({ timeout: 15_000 });
   await acceptBtn.click();

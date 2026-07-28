@@ -969,3 +969,65 @@ What it will prove, and why it matters: the `/invite` page rendering
 `hasAccess:false` honestly. That behaviour is proven at the API layer (53
 assertions) but the browser gap is exactly what let the "You are in" defect ship
 to an evicted user. Browser UAT remains **6 journeys / 26 controls**.
+
+---
+
+## 22. P1 — a brand-new teammate cannot accept an invitation
+
+**Found by removing the `fixme` and letting the browser journey run.** This is a
+product defect, not a test defect, and it blocks PR #5.
+
+### Root cause
+
+Login is two-step: password → `preAuthToken` → **select workspace** → access
+token. An invited person who belongs to no workspace yet has nothing to select,
+so no access token is ever issued.
+
+`/invite` gates on `getAuthToken()` (`src/app/invite/page.tsx:48`) and the
+backend route is behind `JwtAuthGuard`. Both require an access token the invitee
+can never obtain. They are bounced to `/`.
+
+The exact person invitations exist for is the one person who cannot use one.
+
+### Evidence
+
+Browser snapshot at failure — the invitee is on the login page, not `/invite`:
+
+```yaml
+- main:
+  - heading "DEMM CRM"
+  - paragraph: WELCOME BACK TO THE FUTURE
+  - textbox "Email address"
+  - textbox "Password"
+  - button "Sign In"
+```
+
+Trace, screenshot and console preserved under
+`frontend/test-results/invitation-an-invited-pers-*/`.
+
+**Ruled out first, with evidence, before concluding this:** the `/team` page
+renders correctly on full navigation (URL `/team`, `data-session-state`
+`AUTHENTICATED`, email input count 1), and `fill()` succeeds in **12ms** and
+**48ms**. The original 60s timeout was a stale server holding port 3101 from a
+prior run, not a locator or hydration problem.
+
+### Fix options — needs an owner decision
+
+1. **Issue a workspace-less access token** when an account has no memberships
+   (no `workspaceId` claim), so it can reach `/invite` and nothing else.
+   Preserves "possession of the link is necessary but not sufficient".
+2. **Accept the `preAuthToken`** on `/team/invitations/accept` only.
+   Smaller blast radius; adds a second credential type to one route.
+3. **Make acceptance public**, keyed on token + email match. Rejected: it drops
+   the authenticated-recipient check that stops a forwarded link being used.
+
+Recommendation: option 1.
+
+### Status
+
+`frontend/e2e/invitation.spec.ts` is committed **without** `fixme` and **fails**.
+That is deliberate. CI going red is the correct signal while a core journey is
+broken — the same principle as the Gate 3 guard. Do not re-add a bypass to make
+the pipeline green.
+
+Browser UAT: **6 journeys / 26 controls passing**, 2 journeys failing on this P1.
