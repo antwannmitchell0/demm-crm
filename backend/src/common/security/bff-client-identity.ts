@@ -113,12 +113,21 @@ export function verifyInternalClientIdentity(req: {
   const read = (name: string): string | null => {
     const raw = req.headers?.[name];
     if (typeof raw === 'string' && raw.trim() !== '') return raw.trim();
-    // A non-string means the header arrived more than once. That is ambiguous
-    // by definition and is refused rather than resolved by picking one.
     return null;
   };
 
-  const present = IDENTITY_HEADERS.filter((h) => read(h) !== null);
+  // PRESENCE IS NOT VALIDITY, and the two must be judged separately.
+  //
+  // A header sent twice arrives as an array, which read() refuses -- correctly,
+  // since picking one of two conflicting values is a guess. But if presence
+  // were measured with read(), duplicating ALL THREE headers would make the set
+  // look absent and quietly hand the request to the address-based path. That is
+  // the caller choosing which identity path applies, which is the one thing
+  // this must never allow. Presence is therefore "the key exists at all".
+  const isPresent = (name: string): boolean =>
+    req.headers?.[name] !== undefined && req.headers?.[name] !== null;
+
+  const present = IDENTITY_HEADERS.filter(isPresent);
   if (present.length === 0) return null;
 
   const reject = (): never => {
@@ -127,6 +136,9 @@ export function verifyInternalClientIdentity(req: {
   };
 
   if (present.length !== IDENTITY_HEADERS.length) reject();
+  // Present but unusable (duplicated, empty, non-string) is a failed claim, not
+  // an absent one.
+  if (IDENTITY_HEADERS.some((h) => read(h) === null)) reject();
 
   const secret = process.env.BFF_RATE_LIMIT_SIGNING_SECRET;
   if (!secret || secret.trim() === '') {

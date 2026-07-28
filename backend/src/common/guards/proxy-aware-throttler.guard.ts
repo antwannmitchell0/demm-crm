@@ -68,13 +68,40 @@ export class ProxyAwareThrottlerGuard extends ThrottlerGuard {
    * broken header -- picking whichever one is emptier. Throwing before the
    * limiter runs removes that choice.
    */
-  canActivate(context: ExecutionContext): Promise<boolean> {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<Record<string, any>>();
-    const identity = verifyInternalClientIdentity(req);
-    if (identity) {
-      req[VERIFIED_CLIENT_KEY] = identity.key;
+
+    let rejection: Error | null = null;
+    try {
+      const identity = verifyInternalClientIdentity(req);
+      if (identity) {
+        req[VERIFIED_CLIENT_KEY] = identity.key;
+      }
+    } catch (error) {
+      // Held, not thrown yet -- see below. Narrowed rather than rethrown as
+      // unknown: the verifier only ever throws BadRequestException, and a
+      // non-Error escaping here would mean something else entirely went wrong.
+      rejection =
+        error instanceof Error ? error : new Error('Invalid request.');
     }
-    return super.canActivate(context);
+
+    // COUNT FIRST, REJECT SECOND.
+    //
+    // Throwing straight from the catch would mean a malformed claim never
+    // reached the limiter, so forged-header traffic would be entirely
+    // unthrottled: every such request costs an HMAC and a parse, and nothing
+    // would ever slow it down. A rejected claim leaves VERIFIED_CLIENT_KEY
+    // unset, so it counts under the sender's own address -- which is exactly
+    // right. Sending rubbish must spend your budget, not somebody else's and
+    // not nobody's.
+    //
+    // A 429 from here still wins over the 400: being over budget is the more
+    // useful thing to tell a caller who is also sending malformed headers.
+    const allowed = await super.canActivate(context);
+    if (rejection) {
+      throw rejection;
+    }
+    return allowed;
   }
 
   protected getTracker(req: Record<string, any>): Promise<string> {

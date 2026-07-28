@@ -290,6 +290,11 @@ async function main() {
 
     const nowTs = () => String(Math.floor(Date.now() / 1000));
 
+    // Each forgery scenario gets its OWN source address. They are independent
+    // cases, and now that a malformed claim correctly consumes the sender's
+    // budget (assertion 17), sharing one address would make the later ones
+    // measure the rate limiter instead of the verifier.
+    let forgerySeq = 0;
     const directWithIdentity = (
       backendPath: string,
       headers: Record<string, string>,
@@ -297,7 +302,11 @@ async function main() {
     ) =>
       fetch(`${BACKEND}/${backendPath}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...headers },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Forwarded-For': `192.0.2.${10 + forgerySeq++}, ${EDGE}`,
+          ...headers,
+        },
         body: JSON.stringify(body),
       });
 
@@ -460,6 +469,64 @@ async function main() {
       );
       check(
         `14. A partial internal-header set is rejected, not ignored (got ${res.status})`,
+        res.status === 400,
+      );
+    }
+
+    // 17: a malformed claim must COUNT against the sender's budget.
+    //
+    // Rejecting before the limiter ran would make forged-header traffic free:
+    // every such request costs an HMAC and a parse, and nothing would ever slow
+    // it down. Sent from an address with its own budget, the first few are
+    // refused as 400 and the run eventually turns to 429 -- which is the proof
+    // they were counted rather than waved through.
+    {
+      const seen: number[] = [];
+      for (let i = 0; i < 8; i++) {
+        const ts = nowTs();
+        const r = await fetch(`${BACKEND}/${P}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Forwarded-For': `192.0.2.150, ${EDGE}`,
+            'x-demm-rate-limit-key': 'c'.repeat(64),
+            'x-demm-rate-limit-timestamp': ts,
+            'x-demm-rate-limit-signature': 'd'.repeat(64),
+          },
+          body: JSON.stringify(ordinaryBody(800 + i)),
+        });
+        seen.push(r.status);
+      }
+      check(
+        `17. A malformed identity claim consumes the sender's budget (${seen.join(',')})`,
+        seen.includes(400) && seen.includes(429),
+        'forged-header traffic was never counted, so it could be sent without limit',
+      );
+    }
+
+    // 18: duplicating ALL THREE headers must not select the address path.
+    // Presence is "the key exists", not "the key is usable" -- otherwise a
+    // caller could opt out of identity checking by sending each header twice.
+    {
+      const ts = nowTs();
+      const key = keyFor(CLIENT_B);
+      const sig = sign('POST', P, key, ts);
+      const res = await fetch(`${BACKEND}/${P}`, {
+        method: 'POST',
+        headers: [
+          ['Content-Type', 'application/json'],
+          ['X-Forwarded-For', `192.0.2.160, ${EDGE}`],
+          ['x-demm-rate-limit-key', key],
+          ['x-demm-rate-limit-key', key],
+          ['x-demm-rate-limit-timestamp', ts],
+          ['x-demm-rate-limit-timestamp', ts],
+          ['x-demm-rate-limit-signature', sig],
+          ['x-demm-rate-limit-signature', sig],
+        ],
+        body: JSON.stringify(ordinaryBody(850)),
+      });
+      check(
+        `18. Duplicated identity headers are refused, not silently downgraded (got ${res.status})`,
         res.status === 400,
       );
     }
