@@ -197,7 +197,10 @@ async function main() {
       },
       body: JSON.stringify(body),
     });
-    return { status: r.status, body: (await r.json().catch(() => ({}))) as any };
+    return {
+      status: r.status,
+      body: (await r.json().catch(() => ({}))) as any,
+    };
   };
   const attempt = (
     token: string,
@@ -462,8 +465,9 @@ async function main() {
     check(
       '16b. No refresh-token row was created by registering',
       created
-        ? (await prisma.refreshToken.count({ where: { userId: created.id } })) ===
-            0
+        ? (await prisma.refreshToken.count({
+            where: { userId: created.id },
+          })) === 0
         : false,
     );
   }
@@ -538,7 +542,9 @@ async function main() {
     // 18. Now complete it for real, then retry the tail as if session
     // establishment had failed.
     const fresh = await loginFor();
-    const firstAccept = await acceptWith((await mint(fresh?.preAuthToken)).token);
+    const firstAccept = await acceptWith(
+      (await mint(fresh?.preAuthToken)).token,
+    );
     check(
       `18. Acceptance completes (${firstAccept.body?.outcome})`,
       firstAccept.status === 200 && firstAccept.body?.outcome === 'JOINED',
