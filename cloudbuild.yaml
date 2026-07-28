@@ -58,11 +58,17 @@ steps:
       # to X-Forwarded-For, so exactly one trailing entry is ours. The guard
       # counts in from the RIGHT past that one; anything further left is
       # client-written and must never be trusted as an identity.
-      - '--set-env-vars=TRUSTED_PROXY_HOPS=1'
+      # --update-env-vars, NOT --set-env-vars: the latter REPLACES the entire
+      # environment. Using it here wiped DATABASE_URL, JWT_SECRET and six other
+      # variables, and the container refused to start. The service's own config
+      # guard caught it and Cloud Run kept traffic on the previous revision, so
+      # the deploy failed safe -- but the flag is a trap and the merge form is
+      # the only correct one for adding a variable.
+      - '--update-env-vars=TRUSTED_PROXY_HOPS=1'
       # Lets the backend VERIFY the client identity the BFF asserts. Without it
       # a signed claim cannot be checked and is refused, and registration falls
       # back to limiting every customer as one.
-      - '--set-secrets=BFF_RATE_LIMIT_SIGNING_SECRET=demm-crm-bff-rate-limit-secret:latest'
+      - '--update-secrets=BFF_RATE_LIMIT_SIGNING_SECRET=demm-crm-bff-rate-limit-secret:latest'
       - '--quiet'
     waitFor: ['push-backend']
 
@@ -101,12 +107,14 @@ steps:
       # Same topology fact as the backend's TRUSTED_PROXY_HOPS, named separately
       # because the two services could sit behind different chains and a single
       # shared value would quietly become wrong for one of them.
-      - '--set-env-vars=FRONTEND_TRUSTED_PROXY_HOPS=1'
-      - '--set-env-vars=BFF_RATE_LIMIT_SIGNATURE_TTL_SECONDS=30'
+      # One flag, comma-separated: repeating --update-env-vars is accepted but
+      # repeating --set-env-vars is not additive, and keeping them together
+      # removes the chance of anyone reintroducing that difference.
+      - '--update-env-vars=FRONTEND_TRUSTED_PROXY_HOPS=1,BFF_RATE_LIMIT_SIGNATURE_TTL_SECONDS=30'
       # RUNTIME ONLY -- deliberately not a build arg. The BFF reads this when it
       # handles a request, so baking it into the image would put a secret in a
       # build layer and a build log for no benefit.
-      - '--set-secrets=BFF_RATE_LIMIT_SIGNING_SECRET=demm-crm-bff-rate-limit-secret:latest'
+      - '--update-secrets=BFF_RATE_LIMIT_SIGNING_SECRET=demm-crm-bff-rate-limit-secret:latest'
       - '--quiet'
     waitFor: ['push-frontend']
 
