@@ -129,6 +129,32 @@ function isNonRetryable(endpoint: string): boolean {
   return !RETRYABLE_AUTH_ROUTES.has(endpoint.split('?')[0]);
 }
 
+/**
+ * POSTs to a same-origin BFF route under /api/session.
+ *
+ * Separate from request() on purpose: request() targets the BACKEND origin and
+ * attaches the access token and workspace header. These routes are same-origin,
+ * take no bearer token, and exist so a credential never crosses an origin from
+ * browser JavaScript. `credentials: 'same-origin'` so any cookie the route sets
+ * is accepted, and the browser sends an Origin header the route can validate.
+ */
+async function postSessionRoute(path: string, body: unknown): Promise<any> {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new ApiError(
+      (data as { error?: string })?.error ?? `Request failed: ${response.status}`,
+      response.status,
+    );
+  }
+  return data;
+}
+
 async function request(
   endpoint: string,
   options: RequestInit = {},
@@ -216,10 +242,7 @@ export const api = {
     firstName: string;
     lastName: string;
   }) => {
-    return request('api/auth/register-invited', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    return postSessionRoute('/api/session/register-invited', data);
   },
 
   register: async (data: {
@@ -230,10 +253,7 @@ export const api = {
     workspaceName: string;
     subdomain: string;
   }) => {
-    return request('api/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    return postSessionRoute('/api/session/register', data);
   },
 
   getMe: async () => {

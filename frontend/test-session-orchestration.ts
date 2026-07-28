@@ -178,8 +178,29 @@ async function main() {
   );
 
   // --- 5. Auth routes are never intercepted --------------------------------
+  //
+  // Probed with api/auth/me rather than register(). Registration now goes
+  // through the BFF via postSessionRoute(), which has no refresh machinery at
+  // all -- so asserting "no refresh happened" there would be trivially true and
+  // would silently stop exercising isNonRetryable(). api/auth/me still travels
+  // through request(), starts with the non-retryable prefix, and is absent from
+  // RETRYABLE_AUTH_ROUTES, so it is the case this check was written for.
   calls = [];
   protectedResponder = () => 401;
+  try {
+    await api.getMe();
+  } catch {
+    /* expected */
+  }
+  check(
+    '14. A 401 from a credential route triggers no refresh and no retry',
+    calls.filter((c) => c.url.includes('/api/session/refresh')).length === 0 &&
+      calls.filter((c) => c.url.includes('api/auth/me')).length === 1,
+  );
+
+  // And the new transport: registration reaches the BFF, once, and never the
+  // backend origin directly.
+  calls = [];
   try {
     await api.register({
       email: 'x@example.com',
@@ -193,9 +214,10 @@ async function main() {
     /* expected */
   }
   check(
-    '14. A 401 from an auth route triggers no refresh and no retry',
-    calls.filter((c) => c.url.includes('/api/session/refresh')).length === 0 &&
-      calls.filter((c) => c.url.includes('api/auth/register')).length === 1,
+    '14b. Registration goes to the BFF once, never to the backend origin',
+    calls.filter((c) => c.url.includes('/api/session/register')).length === 1 &&
+      calls.filter((c) => c.url.includes('api/auth/register')).length === 0 &&
+      calls.filter((c) => c.url.includes('/api/session/refresh')).length === 0,
   );
 
   // --- 6. Logout clears memory --------------------------------------------

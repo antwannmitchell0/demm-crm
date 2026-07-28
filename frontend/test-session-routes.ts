@@ -105,6 +105,27 @@ function startStubBackend(): Promise<{ server: http.Server; port: number }> {
         return send(401, { message: 'Invalid email or password' });
       }
 
+      if (req.url === '/api/auth/register') {
+        return send(201, {
+          id: 'user-new',
+          email: body.email,
+          firstName: body.firstName,
+          lastName: body.lastName,
+          workspaceId: 'ws-new',
+          organizationId: 'org-new',
+        });
+      }
+
+      if (req.url === '/api/auth/register-invited') {
+        return send(201, {
+          outcome: 'CREATED',
+          userId: 'user-invited',
+          email: body.email,
+          firstName: body.firstName,
+          lastName: body.lastName,
+        });
+      }
+
       if (req.url === '/api/auth/select-workspace') {
         if (req.headers.authorization !== `Bearer ${PRE_AUTH}`) {
           return send(401, { message: 'Invalid or expired pre-auth token' });
@@ -481,6 +502,121 @@ async function main() {
       '24. No refresh token was written to the server log',
       !serverLog.includes(REFRESH_1) && !serverLog.includes(REFRESH_2),
     );
+    // ---------------- REGISTRATION THROUGH THE BFF ----------------
+    //
+    // Both registration endpoints used to be called cross-origin straight from
+    // browser JavaScript, so the two requests carrying a plaintext password
+    // were the only credential-bearing requests NOT behind the origin guard.
+    // These assertions exist to keep them on this tier.
+    const regRes = await jsonPost('/api/session/register', {
+      email: 'new@example.com',
+      passwordPlain: 'pw',
+      firstName: 'New',
+      lastName: 'Person',
+      workspaceName: 'New WS',
+      subdomain: 'new-ws',
+    });
+    const regBody = await regRes.json();
+    check(
+      '25. Registration through the BFF succeeds and returns the account',
+      regRes.status === 201 && regBody.id === 'user-new',
+    );
+    check(
+      '26. Registration sets NO refresh cookie -- registering is not signing in',
+      refreshCookie(regRes) === undefined,
+    );
+    check(
+      '27. Cross-origin registration is rejected (403)',
+      (
+        await jsonPost(
+          '/api/session/register',
+          {
+            email: 'new@example.com',
+            passwordPlain: 'pw',
+            firstName: 'New',
+            lastName: 'Person',
+            workspaceName: 'New WS',
+            subdomain: 'new-ws',
+          },
+          { origin: 'https://evil.example' },
+        )
+      ).status === 403,
+    );
+    check(
+      '28. An unexpected field is rejected with 400, not silently dropped',
+      (
+        await jsonPost('/api/session/register', {
+          email: 'new@example.com',
+          passwordPlain: 'pw',
+          firstName: 'New',
+          lastName: 'Person',
+          workspaceName: 'New WS',
+          subdomain: 'new-ws',
+          role: 'SUPERADMIN',
+        })
+      ).status === 400,
+    );
+
+    const invRes = await jsonPost('/api/session/register-invited', {
+      token: 'a'.repeat(64),
+      email: 'invited@example.com',
+      passwordPlain: 'pw',
+      firstName: 'Ida',
+      lastName: 'Invited',
+    });
+    const invBody = await invRes.json();
+    check(
+      '29. Invited registration through the BFF succeeds',
+      invRes.status === 201 && invBody.outcome === 'CREATED',
+    );
+    check(
+      '30. Invited registration sets NO refresh cookie',
+      refreshCookie(invRes) === undefined,
+    );
+    check(
+      '31. Cross-origin invited registration is rejected (403)',
+      (
+        await jsonPost(
+          '/api/session/register-invited',
+          {
+            token: 'a'.repeat(64),
+            email: 'invited@example.com',
+            passwordPlain: 'pw',
+            firstName: 'Ida',
+            lastName: 'Invited',
+          },
+          { origin: 'https://evil.example' },
+        )
+      ).status === 403,
+    );
+    check(
+      '32. workspaceName/subdomain are refused here -- an invitee joins, never founds',
+      (
+        await jsonPost('/api/session/register-invited', {
+          token: 'a'.repeat(64),
+          email: 'invited@example.com',
+          passwordPlain: 'pw',
+          firstName: 'Ida',
+          lastName: 'Invited',
+          workspaceName: 'Sneaky',
+          subdomain: 'sneaky',
+        })
+      ).status === 400,
+    );
+
+    // Neither password nor raw token may appear in anything this tier records.
+    const regCalls = backendCalls.filter(
+      (c) => c.path === '/api/auth/register' || c.path === '/api/auth/register-invited',
+    );
+    check(
+      '33. Both registration calls reached the backend from the server tier',
+      regCalls.length >= 2,
+    );
+    check(
+      '34. Only whitelisted fields were forwarded -- no role rode along',
+      regCalls.every((c) => !('role' in (c.body ?? {}))),
+    );
+
   } finally {
     teardown();
   }

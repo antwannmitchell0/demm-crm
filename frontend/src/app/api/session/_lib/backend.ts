@@ -35,6 +35,12 @@ const ALLOWED_BACKEND_PATHS = [
   // same load-bearing inconsistency noted above.
   'api/auth/pre-session/invitation-capability',
   'team/invitations/accept-pre-session',
+  // Account creation. These carry a plaintext password, which is the same
+  // reason login is on this list: a credential should reach the backend from
+  // the server tier, over one origin, behind the origin guard -- not from
+  // browser JavaScript across origins.
+  'api/auth/register',
+  'api/auth/register-invited',
 ] as const;
 
 export type AllowedBackendPath = (typeof ALLOWED_BACKEND_PATHS)[number];

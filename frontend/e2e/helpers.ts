@@ -146,6 +146,17 @@ export async function signIn(
 
 /** Fails the test if anything token-shaped reached browser-readable storage. */
 export async function assertNoCredentialInStorage(page: Page) {
+  // Settle first. Callers reach here right after a workspace switch, which is a
+  // FULL navigation -- entering a workspace replaces the shared refresh cookie,
+  // so the app reloads rather than re-rendering. Evaluating into a context that
+  // is already tearing down fails with "Execution context was destroyed",
+  // which is a race in the assertion, not a finding about storage. Observed
+  // intermittently in CI; the same test passes 4/4 in isolation.
+  //
+  // Waiting on load state rather than a timeout: the condition is "the document
+  // this evaluate will run in is the one that will still be here afterwards".
+  await page.waitForLoadState('domcontentloaded');
+
   const dump = await page.evaluate(() => ({
     local: Object.entries(localStorage),
     session: Object.entries(sessionStorage),

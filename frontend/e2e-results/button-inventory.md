@@ -41,7 +41,7 @@ A control with no row here was never clicked. Absence is the signal.
 | `/approvals` | nav | Approvals page load | ORG_OWNER | pending requests listed | listed | GET /agent/approvals | — | PASS |
 | `/approvals` | status-action | Request arguments | ORG_OWNER | arguments shown verbatim | visible | — | — | PASS |
 | `/approvals` | status-action | REJECTED status label | ORG_OWNER | distinct from cancelled | "Rejected by an approver" | — | — | PASS |
-| `/approvals` | button | Approve and run | ORG_OWNER | POST resolve, row leaves pending | resolve requested | POST /agent/approvals/4a88e396-8f08-4b01-b520-4b5e6bd0e3f3/resolve | — | PASS |
+| `/approvals` | button | Approve and run | ORG_OWNER | POST resolve, row leaves pending | resolve requested | POST /agent/approvals/9eb7e4de-c733-4efd-8996-09c863b5c1a2/resolve | — | PASS |
 | `/approvals` | button | Approve control for own request | WORKSPACE_ADMIN (requester) | not offered to the requester | not offered | — | — | PASS |
 | `/team` | nav | Team page load | ORG_OWNER | members listed | listed | GET /team/members | — | PASS |
 | `/team` | status-action | Member payload | ORG_OWNER | no password hash exposed | none present | — | — | PASS |
@@ -50,7 +50,7 @@ A control with no row here was never clicked. Absence is the signal.
 | `/team` | select | Invite role select | ORG_OWNER | SUPERADMIN and AGENT absent | only grantable roles | — | — | PASS |
 | `/team` | button | Create link | ORG_OWNER | POST invitation, one-time link shown with a warning | link shown with retrieval warning | POST /team/invitations | — | PASS |
 | `/team` | table-action | Pending invitation row | ORG_OWNER | new invitation appears as pending | visible | — | — | PASS |
-| `/team` | table-action | Revoke invitation | ORG_OWNER | DELETE invitation, row disappears | delete requested | DELETE /team/invitations/60f72d3c-ee64-472c-9b70-5b6656661197 | — | PASS |
+| `/team` | table-action | Revoke invitation | ORG_OWNER | DELETE invitation, row disappears | delete requested | DELETE /team/invitations/75bc939c-b0c5-4e82-9388-037f1d1b7c45 | — | PASS |
 | `/dashboard` | modal | Switch workspace | ORG_OWNER | opens picker by READING memberships, no password prompt | memberships read | GET /api/auth/memberships | — | PASS |
 | `/dashboard` | modal | Switch dialog password field | ORG_OWNER | no password input | none | — | — | PASS |
 | `/dashboard` | modal | Workspace choice list | ORG_OWNER | workspaces shown by name | "Airport Location" visible | — | — | PASS |
